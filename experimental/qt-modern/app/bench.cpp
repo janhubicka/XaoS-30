@@ -38,6 +38,10 @@ int main(int argc,char**argv) {
             else if(a=="--scalar") r.settings.simd=false;
             else if(a=="--no-interior") r.settings.analytic=false;
             else if(a=="--uniform") r.settings.uniform=true;
+            else if(a=="--slice") r.settings.sliceMilliseconds=integer<unsigned>(next());
+            else if(a=="--solid-guess") r.settings.solidGuessRange=integer<unsigned>(next());
+            else if(a=="--no-guess") r.settings.solidGuessRange=0;
+            else if(a=="--no-fill") r.settings.dynamicFill=false;
             else if(a=="--frames") frames=integer<int>(next());
             else if(a=="--zoom") { std::string z=next(); size_t used=0; zoom=std::stod(z,&used); if(used!=z.size()||!std::isfinite(zoom)||zoom<=0) throw std::invalid_argument("invalid zoom factor"); }
             else if(a=="--limits") { std::istringstream ss(next()); std::string item; while(std::getline(ss,item,',')) limits.push_back(integer<uint32_t>(item)); }
@@ -51,6 +55,7 @@ int main(int argc,char**argv) {
                 std::cout<<"XaoS Modern headless renderer/benchmark\n"
                 "--width N --height N --iterations N --precision BITS (0=adaptive)\n"
                 "--threads N --counts | --state --scalar --no-interior --uniform\n"
+                "--slice MS --solid-guess N | --no-guess --no-fill\n"
                 "--center-re DECIMAL --center-im DECIMAL --span DECIMAL\n"
                 "--formula mandelbrot|julia|ship --julia-re DECIMAL --julia-im DECIMAL\n"
                 "--frames N --zoom FACTOR --limits 128,256,512 --output FILE.ppm\n"
@@ -61,7 +66,7 @@ int main(int argc,char**argv) {
         if(frames<1) throw std::invalid_argument("frames must be positive");
         r.view=View::parse(re,im,span,r.width,16,r.settings.memoryBudget);
         ThreadExecutor executor(threads); Renderer renderer; Cancellation stop;
-        std::cout<<"frame,width,height,limit,backend,bits,mode,threads,simd,ms,reused,started,resumed,steps,pending,estimated_bytes\n";
+        std::cout<<"frame,width,height,limit,backend,bits,mode,threads,simd,ms,reused,started,resumed,steps,pending,estimated_bytes,guessed,filled\n";
         std::shared_ptr<const FrameBase> f;
         if(!limits.empty()) frames=static_cast<int>(limits.size());
         for(int i=0;i<frames;++i) {
@@ -69,7 +74,8 @@ int main(int argc,char**argv) {
             f=renderer.render(r,executor,stop); const auto&s=f->stats;
             std::cout<<i<<','<<r.width<<','<<r.height<<','<<r.settings.iterations<<','<<s.backend<<','<<s.bits<<','
                 <<(r.settings.saveState?"state":"counts")<<','<<threads<<','<<s.simd<<','<<s.milliseconds<<','
-                <<s.reused<<','<<s.started<<','<<s.resumed<<','<<s.steps<<','<<s.pending<<','<<s.estimatedBytes<<'\n';
+                <<s.reused<<','<<s.started<<','<<s.resumed<<','<<s.steps<<','<<s.pending<<','<<s.estimatedBytes<<','
+                <<s.solidGuessed<<','<<s.filled<<'\n';
             if(i+1<frames && zoom!=1) r.view.zoom(.5,.5,zoom,r.width,r.height);
         }
         if(!output.empty()) writePPM(*f,output);

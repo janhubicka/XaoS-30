@@ -2,7 +2,7 @@
 
 ## Executed successfully on the final source
 
-The regression binary reports **310,755 checks** in each of these configurations:
+The regression binary reports **326,615 checks** in each of these configurations:
 
 | Configuration | Result | Evidence |
 |---|---|---|
@@ -15,10 +15,11 @@ not proof of absence of every possible race or memory defect. Worker and cache
 paths exercised are listed below. No independent human or external agent review
 is claimed.
 
-The final four added checks cover a manual-precision pixel-step regression and
-rejection of malformed/oversized precision and decimal exponent inputs. The
-pixel-step regression would fail if division were performed first at the original
-128-bit camera precision and only subsequently widened to 384 bits.
+The suite now additionally locks down the first classic XaoS palette entries and
+palette-index convention, and exercises a monochromatic interactive zoom where
+solid guessing leaves pending mathematical state and a subsequent same-view
+slice refines it exactly. The manual-precision pixel-step regression and malformed
+input checks remain included.
 
 ## Coverage
 
@@ -41,7 +42,11 @@ pixel-step regression would fail if division were performed first at the origina
    `1e-100` against a same-precision independently formed rational coordinate.
 7. Pre-cancellation, preservation of known samples on cancellation, and mid-orbit
    cancellation/resumption are checked for native and 256-bit nonescaping orbits.
-8. Validation failures, memory-estimate rejection, exception barriers, and worker
+8. The classic XaoS default palette table is checked against hard-coded initial
+   entries and the original escape-time index convention.
+9. Interactive solid guessing is exercised on a monochromatic region: guessed
+   display pixels remain pending counts, then a later slice resolves them exactly.
+10. Validation failures, memory-estimate rejection, exception barriers, and worker
    recovery after an exception are tested.
 
 These establish equivalence under the chosen finite-precision arithmetic
