@@ -145,6 +145,25 @@ template<class F> void verifyCoordinates(const FrameBase&frame) {
         CHECK(frame.at(x,y)==expected);
     }
 }
+template<class F> void verifyKnownCoordinates(const FrameBase&frame) {
+    const auto&r=frame.request; Cancellation stop;
+    BigKernel<F> kernel(frame.stats.bits);
+    for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
+        const Count actual=frame.at(x,y);
+        if(!actual.known(r.settings.iterations)) continue;
+        Count expected;
+        if(frame.stats.backend=="GMP") {
+            expected=kernel.run(frame.xs[static_cast<size_t>(x)],frame.ys[static_cast<size_t>(y)],
+                r.settings.juliaRe,r.settings.juliaIm,{},nullptr,r.settings.iterations,stop,true,r.settings.analytic);
+        } else {
+            std::array<Lane,4>a{};
+            a[0]=prepareLane<F>(frame.xs[static_cast<size_t>(x)].toDouble(),frame.ys[static_cast<size_t>(y)].toDouble(),
+                  r.settings.juliaRe.toDouble(),r.settings.juliaIm.toDouble(),{},nullptr,r.settings.analytic);
+            iterateFour(a,1,r.settings.iterations,stop,true,F::ship,false); expected=a[0].count;
+        }
+        CHECK(actual==expected);
+    }
+}
 void zoomTests() {
     ThreadExecutor pool(3); Cancellation stop;
     for(mp_bitcnt_t precision:{0ul,192ul}) for(bool state:{false,true}) {
@@ -251,7 +270,9 @@ void previewTests() {
     auto preview=renderer.render(r,pool,stop);
     CHECK(preview->stats.solidGuessed>0);
     CHECK(preview->stats.pending>0);
-    CHECK(!preview->stats.complete);
+    // Solid guesses are finished display samples in the classic zoomer; they do
+    // not force an exact per-pixel recomputation merely because motion stopped.
+    CHECK(preview->stats.complete);
     uint64_t guesses=0;
     for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
         CHECK(preview->displayAt(x,y)==0xff000000u);
@@ -263,7 +284,18 @@ void previewTests() {
     CHECK(guesses==preview->stats.solidGuessed);
     auto refined=renderer.render(r,pool,stop);
     CHECK(refined->stats.complete);
-    CHECK(refined->stats.pending==0);
+    CHECK(refined->stats.reused>0);
+    CHECK(refined->stats.started<static_cast<uint64_t>(r.width*r.height)/4);
+    verifyKnownCoordinates<Mandelbrot>(*refined);
+
+    // Guessed display samples must never masquerade as resumable orbit state.
+    // A later iteration-limit increase can still be refined to the exact result.
+    r.settings.sliceMilliseconds=0;
+    r.settings.uniform=true;
+    r.settings.iterations=1200;
+    auto increased=renderer.render(r,pool,stop);
+    Renderer fresh; auto expected=fresh.render(r,pool,stop);
+    sameCounts(*increased,*expected);
 }
 
 
@@ -289,7 +321,21 @@ void resolutionFeedbackTests() {
     auto finer=renderer.render(r,pool,go);
     const size_t finerResolution=unique(finer->previewXs)+unique(finer->previewYs);
     CHECK(finerResolution>coarseResolution);
-    CHECK(finer->xs==coarse->xs && finer->ys==coarse->ys);
+    CHECK(finer->stats.reused>0);
+    verifyKnownCoordinates<Mandelbrot>(*finer);
+
+    // Continue zooming from a timeout-filled frame. With fill disabled for this
+    // diagnostic pass, the displayed DP coordinates and the coordinates at which
+    // orbits are evaluated must be identical. The previous two-axis implementation
+    // diverged here: previewXs/previewYs came from the collapsed image while xs/ys
+    // came from the pre-fill exact grid.
+    r.view.zoom(.39,.63,.97,r.width,r.height);
+    r.settings.dynamicFill=false;
+    Cancellation noWork; noWork.cancelled.store(true);
+    auto moving=renderer.render(r,pool,noWork);
+    CHECK(moving->previewXs==moving->xs);
+    CHECK(moving->previewYs==moving->ys);
+    r.settings.dynamicFill=true;
     r.settings.sliceMilliseconds=0;
     auto exact=renderer.render(r,pool,go); CHECK(exact->stats.complete);
     CHECK(exact->previewXs.empty());
