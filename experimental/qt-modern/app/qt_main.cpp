@@ -51,7 +51,11 @@ QImage makeImage(const FrameBase&f) {
         auto*data=reinterpret_cast<QRgb*>(image.scanLine(row));
         const int y=f.request.height-1-row;
         for(int x=0;x<f.request.width;++x) {
-            data[x]=f.displayAt(x,y);
+            // Leave genuinely unresolved pixels transparent. The previously
+            // published frame is drawn underneath at its transformed viewport,
+            // which is both less destructive and closer to classic XaoS than
+            // smearing a single computed pixel across an edge.
+            data[x]=f.qualityAt(x,y)==DisplayQuality::Missing?0u:f.displayAt(x,y);
         }
     }
     return image;
@@ -169,7 +173,12 @@ class Canvas final:public QWidget {
     }
 protected:
     void paintEvent(QPaintEvent*) override {
-        QPainter p(this);p.fillRect(rect(),Qt::black);
+        QPainter p(this);
+        // QPainter backends differ in their default image-scaling behavior. XaoS
+        // is a sample-reuse zoomer, not a bilinear image zoomer: keep moved rows
+        // and columns crisp while new resolution is being computed.
+        p.setRenderHint(QPainter::SmoothPixmapTransform,false);
+        p.fillRect(rect(),Qt::black);
         drawView(p,fallback_,fallbackView_);drawView(p,image_,imageView_);
         p.setPen(Qt::white);
         p.drawText(12,22,"Hold left/right: zoom   |   Middle drag: pan   |   Wheel: zoom   |   I: more iterations");
@@ -190,14 +199,14 @@ protected:
         pointer_=e->position();
         if(dragging_) {
             auto d=pointer_-lastDrag_;lastDrag_=pointer_;
-            try {view.pan(d.x(),d.y(),std::max(1,width()));submit(false);} catch(const std::exception&ex){if(onStatus)onStatus(ex.what());}
+            try {view.pan(d.x(),d.y(),std::max(1,width()));submit(true);} catch(const std::exception&ex){if(onStatus)onStatus(ex.what());}
         }
     }
     void wheelEvent(QWheelEvent*e) override {
         const double steps=e->angleDelta().y()/120.;
         try {
             view.zoom(e->position().x()/std::max(1,width()),e->position().y()/std::max(1,height()),
-                      std::exp(-.2*steps),std::max(1,width()),std::max(1,height()));submit(false);
+                      std::exp(-.2*steps),std::max(1,width()),std::max(1,height()));submit(true);
         }catch(const std::exception&ex){if(onStatus)onStatus(ex.what());}
         e->accept();
     }
@@ -214,10 +223,10 @@ public:
             const double seconds=std::min<qint64>(motionClock_.restart(),100)/1000.;
             try {
                 view.zoom(pointer_.x()/std::max(1,width()),pointer_.y()/std::max(1,height()),
-                          std::exp(-direction_*seconds*.75),std::max(1,width()),std::max(1,height()));submit(false);
+                          std::exp(-direction_*seconds*.75),std::max(1,width()),std::max(1,height()));submit(true);
             }catch(const std::exception&e){motion_.stop();if(onStatus)onStatus(e.what());}
         });
-        connect(&idle_,&QTimer::timeout,this,[this]{submit(true);});
+        connect(&idle_,&QTimer::timeout,this,[this]{submit(false);});
         coordinator_=std::jthread([this](std::stop_token s){coordinator(s);});
     }
     ~Canvas() override {
@@ -227,20 +236,24 @@ public:
         wake_.notify_all();
         if(coordinator_.joinable()) coordinator_.join();
     }
-    void submit(bool uniform=true) {
+    void submit(bool interactive=false) {
         if(width()<1||height()<1) return;
         const double dpr=devicePixelRatioF();
         Request request{view,std::max(1,static_cast<int>(std::ceil(width()*dpr))),
                              std::max(1,static_cast<int>(std::ceil(height()*dpr))),settings};
-        request.settings.uniform=uniform;
+        // Never switch to an ideal uniform grid merely because the pointer stopped.
+        // Classic XaoS keeps its DP-selected row/column coordinates and progressively
+        // inserts missing resolution. Forcing uniform here discarded almost every
+        // moved row/column and caused the visible full recomputation after zooming.
+        request.settings.uniform=false;
         request.settings.focusX=pointer_.x()/width();request.settings.focusY=pointer_.y()/height();
         {
             std::lock_guard lock(mutex_);
             if(active_) active_->cancelled.store(true,std::memory_order_relaxed);
-            pending_=Job{std::move(request),threads_,++serial_,!uniform};
+            pending_=Job{std::move(request),threads_,++serial_,interactive};
         }
         wake_.notify_one();update();
-        if(!uniform) idle_.start();
+        if(interactive) idle_.start();
     }
     void setThreads(size_t n) {threads_=n;submit();}
     void reset() {view=View{};submit();}
@@ -316,7 +329,7 @@ int main(int argc,char**argv) {
     if(smoke) {window.resize(420,320);window.iterations->setValue(64);window.canvas->setThreads(2);}
     window.show();
     if(smoke) {
-        QTimer::singleShot(200,&window,[&]{window.canvas->view.zoom(.4,.6,.97,std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));window.canvas->submit(false);});
+        QTimer::singleShot(200,&window,[&]{window.canvas->view.zoom(.4,.6,.97,std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));window.canvas->submit(true);});
         QTimer::singleShot(400,&window,[&]{window.iterations->setValue(128);});
         QTimer::singleShot(600,&window,[&]{window.canvas->settings.minimumPrecision=128;window.canvas->submit();});
         QTimer::singleShot(1200,&window,[&]{window.canvas->settings.saveState=false;window.canvas->submit();});

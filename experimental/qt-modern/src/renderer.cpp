@@ -41,7 +41,7 @@ template<class Real> Big quantize(Big b,mp_bitcnt_t bits) {
 }
 template<class Real>
 Axis makeAxis(const Big& center,const Big& step,int n,mp_bitcnt_t bits,
-              const std::vector<Big>* old,bool sameView,bool uniform,double radius) {
+              const std::vector<Big>* old,bool uniform,double radius) {
     const mp_bitcnt_t p=std::is_same_v<Real,double>?std::max<mp_bitcnt_t>(128,bits):bits;
     auto c=center.atPrecision(p),s=step.atPrecision(p);
     auto extent=scale(s,static_cast<double>(n));
@@ -59,12 +59,6 @@ Axis makeAxis(const Big& center,const Big& step,int n,mp_bitcnt_t bits,
             if(j<old->size() && (*old)[j]==ideal[static_cast<size_t>(i)]) a.source[static_cast<size_t>(i)]=static_cast<int>(j++);
         }
         a.coordinates=std::move(ideal); a.uniform=true; return a;
-    }
-    if(sameView && old->size()==static_cast<size_t>(n)) {
-        a.coordinates=*old;
-        std::iota(a.source.begin(),a.source.end(),0);
-        a.uniform=(a.coordinates==ideal);
-        return a;
     }
     std::vector<double> positions; positions.reserve(old->size());
     const Big first=add(low,scale(s,.5));
@@ -100,6 +94,22 @@ Axis makeAxis(const Big& center,const Big& step,int n,mp_bitcnt_t bits,
     }
     a.uniform=a.coordinates==ideal;
     return a;
+}
+
+// Saved count/orbit state is only valid at the exact complex coordinate where it
+// was calculated.  The visual DP may reuse a timeout-filled row/column whose
+// presentation coordinate was collapsed onto a neighbour, so its source map is
+// intentionally *not* suitable for orbit-state reuse.  Map exact old axes to the
+// newly selected DP coordinates by equality instead.
+std::vector<int> exactSources(const std::vector<Big>& target,const std::vector<Big>* old) {
+    std::vector<int> source(target.size(),-1);
+    if(!old) return source;
+    size_t j=0;
+    for(size_t i=0;i<target.size();++i) {
+        while(j<old->size() && (*old)[j]<target[i]) ++j;
+        if(j<old->size() && (*old)[j]==target[i]) source[i]=static_cast<int>(j++);
+    }
+    return source;
 }
 bool compatible(const FrameBase& old,const Request&r,mp_bitcnt_t bits) {
     const auto&s=old.request.settings;
@@ -214,32 +224,29 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
 
     auto step=divide(r.view.span.atPrecision(std::max(bits,r.view.span.precision())),
                      static_cast<unsigned long>(r.width));
-    const bool same=old && old->request.view==r.view && old->request.width==r.width && old->request.height==r.height;
-    auto ax=makeAxis<Real>(r.view.re,step,r.width,bits,old?&old->xs:nullptr,same,r.settings.uniform,r.settings.reuseRadius);
-    auto ay=makeAxis<Real>(r.view.im,step,r.height,bits,old?&old->ys:nullptr,same,r.settings.uniform,r.settings.reuseRadius);
-    // Keep a second pair of axes for presentation resolution.  Classic XaoS
-    // writes timeout-filled lines back to xpos/ypos at the coordinate they copied;
-    // the next DP pass consequently creates those lines again.  We reproduce that
-    // feedback loop here without lying about the coordinates attached to saved
-    // orbit state.  Never take makeAxis's same-view identity shortcut for these
-    // tables: duplicate preview coordinates are precisely the signal to refine.
+    // There is exactly one row/column coordinate system for the new frame: the
+    // one selected by the XaoS DP from the *displayed* old rows/columns.  Timeout
+    // fill may have collapsed old presentation coordinates; those duplicates are
+    // the feedback signal that makes the next pass recreate missing resolution.
+    //
+    // Orbit/count state has a different validity rule: it may be copied only when
+    // an old exact sample coordinate is identical to the newly selected coordinate.
+    // Keeping these two source maps separate fixes the previous bug where a newly
+    // refined visual line was nevertheless evaluated at a stale "exact-axis"
+    // coordinate.
     const auto*oldPreviewX=old?(old->previewXs.empty()?&old->xs:&old->previewXs):nullptr;
     const auto*oldPreviewY=old?(old->previewYs.empty()?&old->ys:&old->previewYs):nullptr;
-    Axis pax,pay;
-    if(r.settings.sliceMilliseconds) {
-        pax=makeAxis<Real>(r.view.re,step,r.width,bits,oldPreviewX,false,r.settings.uniform,r.settings.reuseRadius);
-        pay=makeAxis<Real>(r.view.im,step,r.height,bits,oldPreviewY,false,r.settings.uniform,r.settings.reuseRadius);
-    } else {
-        // Exact/unbounded renders neither need a second DP nor a duplicate Big
-        // coordinate table. An empty preview axis means "identical to xs/ys".
-        pax.source=ax.source; pax.cost=ax.cost; pax.uniform=ax.uniform;
-        pay.source=ay.source; pay.cost=ay.cost; pay.uniform=ay.uniform;
-    }
+    auto ax=makeAxis<Real>(r.view.re,step,r.width,bits,oldPreviewX,r.settings.uniform,r.settings.reuseRadius);
+    auto ay=makeAxis<Real>(r.view.im,step,r.height,bits,oldPreviewY,r.settings.uniform,r.settings.reuseRadius);
+    auto stateSourceX=exactSources(ax.coordinates,old?&old->xs:nullptr);
+    auto stateSourceY=exactSources(ay.coordinates,old?&old->ys:nullptr);
     f->xs=std::move(ax.coordinates); f->ys=std::move(ay.coordinates);
     if(r.settings.sliceMilliseconds) {
-        f->previewXs=std::move(pax.coordinates); f->previewYs=std::move(pay.coordinates);
+        // Start presentation coordinates at the real sample coordinates. Fill may
+        // collapse unresolved entries later, exactly like classic xpos/ypos.
+        f->previewXs=f->xs; f->previewYs=f->ys;
     }
-    f->stats.lineCost=pax.cost+pay.cost;
+    f->stats.lineCost=ax.cost+ay.cost;
     f->stats.uniform=ax.uniform && ay.uniform;
     f->stats.bits=bits; f->stats.backend=big?"GMP":"double";
     f->stats.simd=!big && r.settings.simd && hasAVX2();
@@ -263,11 +270,11 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
             for(;;) {
                 const int y=nextRow.fetch_add(1,std::memory_order_relaxed);
                 if(y>=r.height) break;
-                const int sy=ay.source[static_cast<size_t>(y)];
-                const int psy=pay.source[static_cast<size_t>(y)];
+                const int sy=stateSourceY[static_cast<size_t>(y)];
+                const int psy=ay.source[static_cast<size_t>(y)];
                 for(int x=0;x<r.width;++x) {
-                    const int sx=ax.source[static_cast<size_t>(x)];
-                    const int psx=pax.source[static_cast<size_t>(x)];
+                    const int sx=stateSourceX[static_cast<size_t>(x)];
+                    const int psx=ax.source[static_cast<size_t>(x)];
                     const size_t d=f->index(x,y);
                     // Presentation reuse follows the collapsed preview coordinate
                     // tables, as the old image mover did.  If that visual sample is
@@ -276,9 +283,14 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         const size_t ps=static_cast<size_t>(psy)*static_cast<size_t>(old->stride)+static_cast<size_t>(psx);
                         if(old->displayQuality[ps]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
                             f->displayPixels[d]=old->displayPixels[ps];
-                            const bool atTrueCoordinate=f->previewXs[static_cast<size_t>(x)]==f->xs[static_cast<size_t>(x)] &&
-                                                        f->previewYs[static_cast<size_t>(y)]==f->ys[static_cast<size_t>(y)];
-                            f->displayQuality[d]=atTrueCoordinate?old->displayQuality[ps]:static_cast<uint8_t>(DisplayQuality::Fill);
+                            // The DP source is already at exactly this new presentation
+                            // coordinate. A timeout-filled old pixel becomes an ordinary
+                            // approximate sample once its collapsed coordinate is selected
+                            // by the next DP pass, just as classic XaoS clears dirty state
+                            // on the reused line. Keep it non-resumable, but do not carry
+                            // "needs resolution refinement" forever.
+                            const auto oldQuality=static_cast<DisplayQuality>(old->displayQuality[ps]);
+                            f->displayQuality[d]=static_cast<uint8_t>(oldQuality==DisplayQuality::Fill?DisplayQuality::Guess:oldQuality);
                         }
                     }
                     if(sx<0 || sy<0) continue;
@@ -409,8 +421,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     // Resolution readiness is a presentation property.  A timeout-filled line
     // deliberately has no DP source on the next pass even though its exact sample
     // coordinate and perhaps some orbit state still exist.
-    for(int y=0;y<r.height;++y) if(pay.source[static_cast<size_t>(y)]<0) rowReady[static_cast<size_t>(y)]=0,hasNewLines=true;
-    for(int x=0;x<r.width;++x) if(pax.source[static_cast<size_t>(x)]<0) colReady[static_cast<size_t>(x)]=0,hasNewLines=true;
+    for(int y=0;y<r.height;++y) if(ay.source[static_cast<size_t>(y)]<0) rowReady[static_cast<size_t>(y)]=0,hasNewLines=true;
+    for(int x=0;x<r.width;++x) if(ax.source[static_cast<size_t>(x)]<0) colReady[static_cast<size_t>(x)]=0,hasNewLines=true;
 
     auto colorAt=[&](int x,int y,uint32_t&color)->bool {
         const size_t i=f->index(x,y);
@@ -483,8 +495,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         std::vector<uint8_t> xDirty(colReady.size()),yDirty(rowReady.size());
         for(size_t i=0;i<colReady.size();++i) xDirty[i]=static_cast<uint8_t>(!colReady[i]);
         for(size_t i=0;i<rowReady.size();++i) yDirty[i]=static_cast<uint8_t>(!rowReady[i]);
-        const auto px=linePriorities(f->previewXs,oldPreviewX,xDirty,step);
-        const auto py=linePriorities(f->previewYs,oldPreviewY,yDirty,step);
+        const auto px=linePriorities(f->xs,oldPreviewX,xDirty,step);
+        const auto py=linePriorities(f->ys,oldPreviewY,yDirty,step);
         std::vector<LineTask> tasks;
         tasks.reserve(static_cast<size_t>(r.width+r.height));
         size_t serial=0;
@@ -566,9 +578,15 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         // Guesses are preview-only. If input stops, the next same-view slice
         // enters rasterRefine() and turns them into exact resumable orbit state.
     } else {
-        // Same coordinates after an interrupted preview or a higher iteration cap:
-        // resume pending orbit state without the old centre-out tile ordering.
-        rasterRefine();
+        const bool sameIteration=old && old->request.settings.iterations==r.settings.iterations;
+        // Solid guesses are finished image samples in classic XaoS.  They are not
+        // resumable orbit state, but a same-view/same-iteration pass must not turn
+        // around and calculate every guessed pixel exactly.  Doing that was the
+        // apparent full recomputation after zooming stopped.  Exact/unbounded
+        // requests, explicit uniform-grid requests, and iteration-limit changes do
+        // require mathematical refinement.
+        if(!r.settings.sliceMilliseconds || r.settings.uniform || !sameIteration)
+            rasterRefine();
     }
 
     // XaoS's interruptible renderer never exposes holes: when the time budget is
@@ -613,23 +631,22 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 f->previewYs[static_cast<size_t>(y)]=f->previewYs[static_cast<size_t>(src)];
             }
         }
-        // Very early cancellation can leave no fully completed line. In that rare
-        // case propagate whatever exact preview samples exist, without promoting them
-        // to row/column readiness.
-        for(int y=0;y<r.height;++y) {
-            int src=-1;for(int x=0;x<r.width;++x) { const size_t d=f->index(x,y);if(f->displayQuality[d]!=static_cast<uint8_t>(DisplayQuality::Missing)) src=x;else if(src>=0) copyFill(d,f->index(src,y)); }
-        }
-        for(int x=0;x<r.width;++x) {
-            int src=-1;for(int y=0;y<r.height;++y) { const size_t d=f->index(x,y);if(f->displayQuality[d]!=static_cast<uint8_t>(DisplayQuality::Missing)) src=y;else if(src>=0) copyFill(d,f->index(x,src)); }
-        }
     }
 
     for(auto&s:stats) {
         f->stats.reused+=s.reused; f->stats.started+=s.started; f->stats.resumed+=s.resumed; f->stats.steps+=s.steps;
     }
-    for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x)
-        if(!f->counts[f->index(x,y)].known(r.settings.iterations)) ++f->stats.pending;
-    f->stats.complete=f->stats.pending==0;
+    uint64_t visualPending=0;
+    for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
+        const size_t i=f->index(x,y);
+        if(!f->counts[i].known(r.settings.iterations)) ++f->stats.pending;
+        const auto q=static_cast<DisplayQuality>(f->displayQuality[i]);
+        if(q==DisplayQuality::Missing || q==DisplayQuality::Fill) ++visualPending;
+    }
+    // Guessed samples are deliberately considered finished for an interactive
+    // frame, matching the classic zoomer. They remain non-resumable and will be
+    // recalculated if the iteration limit/formula/precision requires it later.
+    f->stats.complete=r.settings.sliceMilliseconds?visualPending==0:f->stats.pending==0;
     if(!f->previewXs.empty() || !f->previewYs.empty())
         f->stats.uniform=f->stats.uniform && f->previewXs==f->xs && f->previewYs==f->ys;
     f->stats.milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
