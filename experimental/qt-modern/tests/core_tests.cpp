@@ -56,6 +56,10 @@ void axisTests() {
         }
         CHECK(std::abs(cost-result.cost)<1.e-9);
     }
+    // Timeout fill in classic XaoS creates duplicate old coordinates. They are
+    // one reusable visual line, not several lines that may satisfy the DP.
+    auto duplicate=matchAxis(std::vector<double>{1.0,1.0,1.0},3,4.0);
+    CHECK(std::count_if(duplicate.source.begin(),duplicate.source.end(),[](int i){return i>=0;})==1);
     rejects([]{matchAxis(std::vector<double>{1,0},3);});
     rejects([]{matchAxis({},0);});
     rejects([]{matchAxis({},3,0);});
@@ -262,6 +266,36 @@ void previewTests() {
     CHECK(refined->stats.pending==0);
 }
 
+
+void resolutionFeedbackTests() {
+    ThreadExecutor pool(4); Renderer renderer; Cancellation go;
+    Request r; r.width=160; r.height=96; r.settings.iterations=900;
+    r.settings.analytic=false; r.settings.solidGuessRange=0;
+    auto base=renderer.render(r,pool,go); CHECK(base->stats.complete);
+    r.view.zoom(.43,.57,.965,r.width,r.height);
+    r.settings.sliceMilliseconds=10;
+    Cancellation interrupted; interrupted.cancelled.store(true);
+    auto coarse=renderer.render(r,pool,interrupted);
+    CHECK(!coarse->stats.complete); CHECK(coarse->stats.filled>0);
+    auto unique=[](const std::vector<Big>&axis) {
+        size_t n=axis.empty()?0:1;
+        for(size_t i=1;i<axis.size();++i) if(!(axis[i]==axis[i-1])) ++n;
+        return n;
+    };
+    const size_t coarseResolution=unique(coarse->previewXs)+unique(coarse->previewYs);
+    CHECK(coarseResolution<coarse->previewXs.size()+coarse->previewYs.size());
+    // The next same-view pass must see those collapsed presentation coordinates
+    // as missing DP lines and recover resolution; exact axes never collapsed.
+    auto finer=renderer.render(r,pool,go);
+    const size_t finerResolution=unique(finer->previewXs)+unique(finer->previewYs);
+    CHECK(finerResolution>coarseResolution);
+    CHECK(finer->xs==coarse->xs && finer->ys==coarse->ys);
+    r.settings.sliceMilliseconds=0;
+    auto exact=renderer.render(r,pool,go); CHECK(exact->stats.complete);
+    CHECK(exact->previewXs.empty());
+    CHECK(exact->previewYs.empty());
+}
+
 void failureTests() {
     ThreadExecutor pool(2);Renderer renderer;Request r;Cancellation stop;
     r.width=0;rejects([&]{renderer.render(r,pool,stop);});r.width=32;r.height=20;
@@ -280,7 +314,8 @@ int main() {
           {"axis optimizer vs independent dense DP",axisTests}, {"classic XaoS palette",paletteTests}, {"arbitrary-precision camera",numericTests},
           {"scalar/AVX2 bit identity",simdTests},{"counts/state/resume/limit decrease",resumeTests},
           {"zoom coordinates and exact refinement",zoomTests},{"deep zoom and cache invalidation",deepTests},
-          {"cancellation and resumption",cancellationTests},{"solid guessing and preview refinement",previewTests},{"validation and exception barriers",failureTests}}) {
+          {"cancellation and resumption",cancellationTests},{"solid guessing and preview refinement",previewTests},
+          {"timeout fill feeds next DP resolution pass",resolutionFeedbackTests},{"validation and exception barriers",failureTests}}) {
             test();std::cout<<"PASS "<<name<<'\n';
         }
         std::cout<<"PASS "<<checks<<" checks; AVX2 available="<<hasAVX2()<<'\n';

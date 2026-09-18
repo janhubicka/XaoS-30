@@ -6,7 +6,7 @@ and compile-time count-only / resumable-orbit storage policies.
 
 **Status (18 September 2026):** the headless engine builds and passes the supplied
 regression suite in Release, AddressSanitizer + UndefinedBehaviorSanitizer, and
-ThreadSanitizer builds. The current suite reports **326,616 checks**. The Qt frontend is implemented but **has not been compiled
+ThreadSanitizer builds. The current suite reports **326,626 checks**. The Qt frontend is implemented but **has not been compiled
 or run in the development container**, because its Qt 6 SDK is unavailable. An
 unexecuted GitHub Actions workflow includes an offscreen GUI smoke test. This is
 not an upstream XaoS release or a replacement for all its features.

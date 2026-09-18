@@ -50,6 +50,11 @@ struct FrameBase {
     Request request;
     int stride=0;
     std::vector<Big> xs,ys; // EXACT sample coordinates; ys run bottom -> top
+    // Presentation coordinates mirror classic XaoS's xpos/ypos tables. Timeout
+    // fill collapses an unresolved line onto the coordinate it copied. The next
+    // DP pass therefore sees the lost resolution and schedules it again, while
+    // xs/ys and resumable orbit state remain mathematically honest.
+    std::vector<Big> previewXs,previewYs;
     AlignedVector<Count> counts;
     // Preview pixels are deliberately separate from count/orbit state. A guessed
     // or timeout-filled colour must never become resumable mathematical state.

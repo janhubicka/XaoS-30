@@ -27,9 +27,9 @@
       "frames": [
         {
           "frame": 0,
-          "median_ms": 91.4038,
-          "min_ms": 87.7954,
-          "max_ms": 97.8193,
+          "median_ms": 92.3067,
+          "min_ms": 88.9005,
+          "max_ms": 99.449,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -43,7 +43,7 @@
           "simd": "0"
         }
       ],
-      "median_total_ms": 91.4038
+      "median_total_ms": 92.3067
     },
     "avx2_1_worker": {
       "command": [
@@ -67,9 +67,9 @@
       "frames": [
         {
           "frame": 0,
-          "median_ms": 28.3298,
-          "min_ms": 27.8153,
-          "max_ms": 29.0016,
+          "median_ms": 29.3134,
+          "min_ms": 28.1723,
+          "max_ms": 29.9218,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -83,7 +83,7 @@
           "simd": "1"
         }
       ],
-      "median_total_ms": 28.3298
+      "median_total_ms": 29.3134
     },
     "avx2_4_workers": {
       "command": [
@@ -107,9 +107,9 @@
       "frames": [
         {
           "frame": 0,
-          "median_ms": 12.0422,
-          "min_ms": 9.20375,
-          "max_ms": 13.9478,
+          "median_ms": 10.8188,
+          "min_ms": 9.52876,
+          "max_ms": 12.5852,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -123,7 +123,7 @@
           "simd": "1"
         }
       ],
-      "median_total_ms": 12.0422
+      "median_total_ms": 10.8188
     },
     "adaptive_zoom": {
       "command": [
@@ -151,9 +151,9 @@
       "frames": [
         {
           "frame": 0,
-          "median_ms": 10.1237,
-          "min_ms": 9.47091,
-          "max_ms": 11.7332,
+          "median_ms": 10.8021,
+          "min_ms": 10.0083,
+          "max_ms": 13.6858,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -168,9 +168,9 @@
         },
         {
           "frame": 1,
-          "median_ms": 3.14692,
-          "min_ms": 2.95674,
-          "max_ms": 3.2123,
+          "median_ms": 3.20156,
+          "min_ms": 3.04523,
+          "max_ms": 3.68676,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -185,9 +185,9 @@
         },
         {
           "frame": 2,
-          "median_ms": 2.90858,
-          "min_ms": 2.67224,
-          "max_ms": 2.97459,
+          "median_ms": 2.96688,
+          "min_ms": 2.87995,
+          "max_ms": 3.5876,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -202,9 +202,9 @@
         },
         {
           "frame": 3,
-          "median_ms": 2.39738,
-          "min_ms": 2.16265,
-          "max_ms": 2.57155,
+          "median_ms": 2.85914,
+          "min_ms": 2.73751,
+          "max_ms": 3.3892,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -219,9 +219,9 @@
         },
         {
           "frame": 4,
-          "median_ms": 2.34135,
-          "min_ms": 2.19165,
-          "max_ms": 2.43132,
+          "median_ms": 2.39935,
+          "min_ms": 2.31782,
+          "max_ms": 2.74344,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -236,9 +236,9 @@
         },
         {
           "frame": 5,
-          "median_ms": 2.7793,
-          "min_ms": 2.61625,
-          "max_ms": 3.05975,
+          "median_ms": 2.77064,
+          "min_ms": 2.67263,
+          "max_ms": 3.09832,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -253,9 +253,9 @@
         },
         {
           "frame": 6,
-          "median_ms": 2.31482,
-          "min_ms": 2.15576,
-          "max_ms": 2.55701,
+          "median_ms": 2.8987,
+          "min_ms": 2.74627,
+          "max_ms": 3.55185,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -270,9 +270,9 @@
         },
         {
           "frame": 7,
-          "median_ms": 2.23945,
-          "min_ms": 2.04029,
-          "max_ms": 3.46103,
+          "median_ms": 2.32258,
+          "min_ms": 2.17535,
+          "max_ms": 2.51877,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -287,9 +287,9 @@
         },
         {
           "frame": 8,
-          "median_ms": 2.47745,
-          "min_ms": 2.25316,
-          "max_ms": 2.52352,
+          "median_ms": 2.46104,
+          "min_ms": 2.2645,
+          "max_ms": 3.36016,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -304,9 +304,9 @@
         },
         {
           "frame": 9,
-          "median_ms": 2.52906,
-          "min_ms": 2.30119,
-          "max_ms": 3.11794,
+          "median_ms": 2.3921,
+          "min_ms": 2.29736,
+          "max_ms": 2.50638,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -321,9 +321,9 @@
         },
         {
           "frame": 10,
-          "median_ms": 2.30154,
-          "min_ms": 2.20444,
-          "max_ms": 2.54534,
+          "median_ms": 2.86238,
+          "min_ms": 2.68411,
+          "max_ms": 3.44548,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -338,9 +338,9 @@
         },
         {
           "frame": 11,
-          "median_ms": 2.70426,
-          "min_ms": 2.47978,
-          "max_ms": 2.82053,
+          "median_ms": 2.85799,
+          "min_ms": 2.60629,
+          "max_ms": 2.94655,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -355,9 +355,9 @@
         },
         {
           "frame": 12,
-          "median_ms": 2.39003,
-          "min_ms": 2.16084,
-          "max_ms": 2.52475,
+          "median_ms": 2.50833,
+          "min_ms": 2.32859,
+          "max_ms": 2.66217,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -372,9 +372,9 @@
         },
         {
           "frame": 13,
-          "median_ms": 2.58707,
-          "min_ms": 2.4587,
-          "max_ms": 2.77153,
+          "median_ms": 2.58903,
+          "min_ms": 2.4636,
+          "max_ms": 2.6999,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -389,9 +389,9 @@
         },
         {
           "frame": 14,
-          "median_ms": 2.34461,
-          "min_ms": 2.18101,
-          "max_ms": 2.4783,
+          "median_ms": 2.64182,
+          "min_ms": 2.54074,
+          "max_ms": 2.76574,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -406,9 +406,9 @@
         },
         {
           "frame": 15,
-          "median_ms": 2.46813,
-          "min_ms": 2.39794,
-          "max_ms": 2.55408,
+          "median_ms": 2.44041,
+          "min_ms": 2.28749,
+          "max_ms": 2.84116,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -423,9 +423,9 @@
         },
         {
           "frame": 16,
-          "median_ms": 2.60304,
-          "min_ms": 2.38989,
-          "max_ms": 2.81937,
+          "median_ms": 2.55044,
+          "min_ms": 2.44598,
+          "max_ms": 3.31563,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -440,9 +440,9 @@
         },
         {
           "frame": 17,
-          "median_ms": 2.35654,
-          "min_ms": 2.11557,
-          "max_ms": 2.70075,
+          "median_ms": 2.38831,
+          "min_ms": 2.28598,
+          "max_ms": 2.96269,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -457,9 +457,9 @@
         },
         {
           "frame": 18,
-          "median_ms": 2.3166,
-          "min_ms": 2.11746,
-          "max_ms": 3.88788,
+          "median_ms": 2.87498,
+          "min_ms": 2.81372,
+          "max_ms": 3.70864,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -474,9 +474,9 @@
         },
         {
           "frame": 19,
-          "median_ms": 2.47406,
-          "min_ms": 2.38189,
-          "max_ms": 2.71117,
+          "median_ms": 2.32327,
+          "min_ms": 2.23225,
+          "max_ms": 2.7653,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -490,7 +490,7 @@
           "simd": "1"
         }
       ],
-      "median_total_ms": 58.56069
+      "median_total_ms": 62.58898
     },
     "uniform_zoom": {
       "command": [
@@ -519,9 +519,9 @@
       "frames": [
         {
           "frame": 0,
-          "median_ms": 10.6932,
-          "min_ms": 10.2537,
-          "max_ms": 13.8016,
+          "median_ms": 12.7258,
+          "min_ms": 9.69368,
+          "max_ms": 17.1373,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -536,9 +536,9 @@
         },
         {
           "frame": 1,
-          "median_ms": 10.4373,
-          "min_ms": 9.69104,
-          "max_ms": 11.6826,
+          "median_ms": 12.6185,
+          "min_ms": 9.53727,
+          "max_ms": 15.8885,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -553,9 +553,9 @@
         },
         {
           "frame": 2,
-          "median_ms": 9.76659,
-          "min_ms": 9.01857,
-          "max_ms": 13.5327,
+          "median_ms": 10.907,
+          "min_ms": 9.26448,
+          "max_ms": 13.9101,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -570,9 +570,9 @@
         },
         {
           "frame": 3,
-          "median_ms": 9.70858,
-          "min_ms": 8.88943,
-          "max_ms": 11.0297,
+          "median_ms": 10.5533,
+          "min_ms": 9.00923,
+          "max_ms": 11.6327,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -587,9 +587,9 @@
         },
         {
           "frame": 4,
-          "median_ms": 11.1404,
-          "min_ms": 8.73973,
-          "max_ms": 13.1963,
+          "median_ms": 13.4101,
+          "min_ms": 8.94407,
+          "max_ms": 15.5633,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -604,9 +604,9 @@
         },
         {
           "frame": 5,
-          "median_ms": 9.68918,
-          "min_ms": 9.16121,
-          "max_ms": 11.0618,
+          "median_ms": 10.9228,
+          "min_ms": 9.52776,
+          "max_ms": 12.0823,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -621,9 +621,9 @@
         },
         {
           "frame": 6,
-          "median_ms": 10.4442,
-          "min_ms": 9.30257,
-          "max_ms": 12.499,
+          "median_ms": 11.7907,
+          "min_ms": 9.75939,
+          "max_ms": 13.1245,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -638,9 +638,9 @@
         },
         {
           "frame": 7,
-          "median_ms": 11.5233,
-          "min_ms": 9.51271,
-          "max_ms": 13.5548,
+          "median_ms": 12.5419,
+          "min_ms": 9.2612,
+          "max_ms": 14.7421,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -655,9 +655,9 @@
         },
         {
           "frame": 8,
-          "median_ms": 10.0238,
-          "min_ms": 9.75485,
-          "max_ms": 10.7976,
+          "median_ms": 10.628,
+          "min_ms": 9.56791,
+          "max_ms": 12.0794,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -672,9 +672,9 @@
         },
         {
           "frame": 9,
-          "median_ms": 11.3216,
-          "min_ms": 9.88132,
-          "max_ms": 13.1276,
+          "median_ms": 12.9111,
+          "min_ms": 9.24393,
+          "max_ms": 14.5446,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -689,9 +689,9 @@
         },
         {
           "frame": 10,
-          "median_ms": 9.60227,
-          "min_ms": 9.58185,
-          "max_ms": 10.7572,
+          "median_ms": 10.5782,
+          "min_ms": 8.71442,
+          "max_ms": 12.7329,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -706,9 +706,9 @@
         },
         {
           "frame": 11,
-          "median_ms": 9.78837,
-          "min_ms": 9.25384,
-          "max_ms": 11.249,
+          "median_ms": 11.0699,
+          "min_ms": 8.6422,
+          "max_ms": 12.2081,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -723,9 +723,9 @@
         },
         {
           "frame": 12,
-          "median_ms": 10.2868,
-          "min_ms": 9.19162,
-          "max_ms": 10.9799,
+          "median_ms": 10.9403,
+          "min_ms": 8.97907,
+          "max_ms": 12.2251,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -740,9 +740,9 @@
         },
         {
           "frame": 13,
-          "median_ms": 12.0339,
-          "min_ms": 8.73446,
-          "max_ms": 13.6949,
+          "median_ms": 13.6308,
+          "min_ms": 9.57706,
+          "max_ms": 15.1565,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -757,9 +757,9 @@
         },
         {
           "frame": 14,
-          "median_ms": 9.80793,
-          "min_ms": 8.81357,
-          "max_ms": 10.6478,
+          "median_ms": 12.0392,
+          "min_ms": 9.33227,
+          "max_ms": 12.4753,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -774,9 +774,9 @@
         },
         {
           "frame": 15,
-          "median_ms": 10.671,
-          "min_ms": 9.34463,
-          "max_ms": 37.3936,
+          "median_ms": 11.4159,
+          "min_ms": 10.046,
+          "max_ms": 13.1372,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -791,9 +791,9 @@
         },
         {
           "frame": 16,
-          "median_ms": 11.3087,
-          "min_ms": 9.48252,
-          "max_ms": 17.7466,
+          "median_ms": 11.9188,
+          "min_ms": 10.2282,
+          "max_ms": 13.1672,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -808,9 +808,9 @@
         },
         {
           "frame": 17,
-          "median_ms": 10.7451,
-          "min_ms": 9.53465,
-          "max_ms": 12.9465,
+          "median_ms": 11.5,
+          "min_ms": 9.44424,
+          "max_ms": 13.2478,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -825,9 +825,9 @@
         },
         {
           "frame": 18,
-          "median_ms": 10.5927,
-          "min_ms": 9.56128,
-          "max_ms": 11.2906,
+          "median_ms": 11.1933,
+          "min_ms": 9.12091,
+          "max_ms": 13.3349,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -842,9 +842,9 @@
         },
         {
           "frame": 19,
-          "median_ms": 11.2592,
-          "min_ms": 10.4562,
-          "max_ms": 12.2264,
+          "median_ms": 11.6862,
+          "min_ms": 9.68422,
+          "max_ms": 12.8881,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -858,7 +858,7 @@
           "simd": "1"
         }
       ],
-      "median_total_ms": 217.51401
+      "median_total_ms": 233.221
     },
     "interactive_zoom_guess": {
       "command": [
@@ -888,9 +888,9 @@
       "frames": [
         {
           "frame": 0,
-          "median_ms": 11.8978,
-          "min_ms": 11.328,
-          "max_ms": 13.7163,
+          "median_ms": 11.3215,
+          "min_ms": 10.7917,
+          "max_ms": 14.2334,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -905,9 +905,9 @@
         },
         {
           "frame": 1,
-          "median_ms": 5.93159,
-          "min_ms": 4.43148,
-          "max_ms": 8.2453,
+          "median_ms": 6.97409,
+          "min_ms": 5.95832,
+          "max_ms": 8.12904,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -921,7 +921,7 @@
           "simd": "1"
         }
       ],
-      "median_total_ms": 17.74578
+      "median_total_ms": 17.765790000000003
     },
     "interactive_zoom_no_guess": {
       "command": [
@@ -952,9 +952,9 @@
       "frames": [
         {
           "frame": 0,
-          "median_ms": 10.9523,
-          "min_ms": 10.5224,
-          "max_ms": 15.9787,
+          "median_ms": 12.2562,
+          "min_ms": 10.9772,
+          "max_ms": 13.6601,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -969,9 +969,9 @@
         },
         {
           "frame": 1,
-          "median_ms": 5.63184,
-          "min_ms": 5.20876,
-          "max_ms": 6.72641,
+          "median_ms": 6.10132,
+          "min_ms": 5.64708,
+          "max_ms": 6.68072,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -985,7 +985,7 @@
           "simd": "1"
         }
       ],
-      "median_total_ms": 16.60841
+      "median_total_ms": 18.21545
     },
     "raise_counts": {
       "command": [
@@ -1011,9 +1011,9 @@
       "frames": [
         {
           "frame": 0,
-          "median_ms": 10.3783,
-          "min_ms": 9.46257,
-          "max_ms": 10.8567,
+          "median_ms": 9.47696,
+          "min_ms": 9.23369,
+          "max_ms": 11.9223,
           "backend": "double",
           "bits": "53",
           "limit": "256",
@@ -1028,9 +1028,9 @@
         },
         {
           "frame": 1,
-          "median_ms": 4.03895,
-          "min_ms": 3.61996,
-          "max_ms": 4.72459,
+          "median_ms": 3.6065,
+          "min_ms": 3.08832,
+          "max_ms": 4.03332,
           "backend": "double",
           "bits": "53",
           "limit": "512",
@@ -1045,9 +1045,9 @@
         },
         {
           "frame": 2,
-          "median_ms": 2.89398,
-          "min_ms": 2.64286,
-          "max_ms": 3.46234,
+          "median_ms": 2.49673,
+          "min_ms": 2.40544,
+          "max_ms": 2.70736,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -1062,9 +1062,9 @@
         },
         {
           "frame": 3,
-          "median_ms": 2.33912,
-          "min_ms": 1.84233,
-          "max_ms": 3.06727,
+          "median_ms": 2.25737,
+          "min_ms": 2.17855,
+          "max_ms": 2.57402,
           "backend": "double",
           "bits": "53",
           "limit": "2048",
@@ -1078,7 +1078,7 @@
           "simd": "1"
         }
       ],
-      "median_total_ms": 19.68445
+      "median_total_ms": 17.70779
     },
     "raise_state": {
       "command": [
@@ -1104,9 +1104,9 @@
       "frames": [
         {
           "frame": 0,
-          "median_ms": 13.0532,
-          "min_ms": 11.3405,
-          "max_ms": 14.9297,
+          "median_ms": 10.8912,
+          "min_ms": 10.531,
+          "max_ms": 12.3332,
           "backend": "double",
           "bits": "53",
           "limit": "256",
@@ -1121,9 +1121,9 @@
         },
         {
           "frame": 1,
-          "median_ms": 5.33721,
-          "min_ms": 4.92745,
-          "max_ms": 5.60248,
+          "median_ms": 4.67344,
+          "min_ms": 4.30539,
+          "max_ms": 4.88265,
           "backend": "double",
           "bits": "53",
           "limit": "512",
@@ -1138,9 +1138,9 @@
         },
         {
           "frame": 2,
-          "median_ms": 5.40358,
-          "min_ms": 4.54577,
-          "max_ms": 6.47841,
+          "median_ms": 3.70933,
+          "min_ms": 3.38289,
+          "max_ms": 4.06759,
           "backend": "double",
           "bits": "53",
           "limit": "1024",
@@ -1155,9 +1155,9 @@
         },
         {
           "frame": 3,
-          "median_ms": 4.44029,
-          "min_ms": 3.25154,
-          "max_ms": 4.87924,
+          "median_ms": 2.26896,
+          "min_ms": 2.11651,
+          "max_ms": 3.30136,
           "backend": "double",
           "bits": "53",
           "limit": "2048",
@@ -1171,7 +1171,7 @@
           "simd": "1"
         }
       ],
-      "median_total_ms": 28.13643
+      "median_total_ms": 21.28924
     },
     "gmp_counts": {
       "command": [
@@ -1193,9 +1193,9 @@
       "frames": [
         {
           "frame": 0,
-          "median_ms": 14.2035,
-          "min_ms": 10.8421,
-          "max_ms": 15.6677,
+          "median_ms": 14.4685,
+          "min_ms": 10.7271,
+          "max_ms": 15.7498,
           "backend": "GMP",
           "bits": "256",
           "limit": "128",
@@ -1210,9 +1210,9 @@
         },
         {
           "frame": 1,
-          "median_ms": 11.9549,
-          "min_ms": 10.3242,
-          "max_ms": 12.5579,
+          "median_ms": 12.3157,
+          "min_ms": 10.1549,
+          "max_ms": 14.3191,
           "backend": "GMP",
           "bits": "256",
           "limit": "256",
@@ -1227,9 +1227,9 @@
         },
         {
           "frame": 2,
-          "median_ms": 10.684,
-          "min_ms": 9.61132,
-          "max_ms": 13.8805,
+          "median_ms": 8.12501,
+          "min_ms": 6.99984,
+          "max_ms": 10.2544,
           "backend": "GMP",
           "bits": "256",
           "limit": "512",
@@ -1243,7 +1243,7 @@
           "simd": "0"
         }
       ],
-      "median_total_ms": 36.7224
+      "median_total_ms": 34.88751
     },
     "gmp_state": {
       "command": [
@@ -1265,9 +1265,9 @@
       "frames": [
         {
           "frame": 0,
-          "median_ms": 13.2098,
-          "min_ms": 11.4108,
-          "max_ms": 16.0317,
+          "median_ms": 14.6562,
+          "min_ms": 12.4735,
+          "max_ms": 15.4499,
           "backend": "GMP",
           "bits": "256",
           "limit": "128",
@@ -1282,9 +1282,9 @@
         },
         {
           "frame": 1,
-          "median_ms": 6.1094,
-          "min_ms": 5.54835,
-          "max_ms": 7.38184,
+          "median_ms": 5.14087,
+          "min_ms": 4.56457,
+          "max_ms": 5.4263,
           "backend": "GMP",
           "bits": "256",
           "limit": "256",
@@ -1299,9 +1299,9 @@
         },
         {
           "frame": 2,
-          "median_ms": 3.10412,
-          "min_ms": 2.56728,
-          "max_ms": 4.73676,
+          "median_ms": 3.18875,
+          "min_ms": 2.88633,
+          "max_ms": 3.624,
           "backend": "GMP",
           "bits": "256",
           "limit": "512",
@@ -1315,7 +1315,7 @@
           "simd": "0"
         }
       ],
-      "median_total_ms": 22.47787
+      "median_total_ms": 22.84132
     }
   }
 }

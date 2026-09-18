@@ -7,5 +7,6 @@ PASS zoom coordinates and exact refinement
 PASS deep zoom and cache invalidation
 PASS cancellation and resumption
 PASS solid guessing and preview refinement
+PASS timeout fill feeds next DP resolution pass
 PASS validation and exception barriers
-PASS 326616 checks; AVX2 available=1
+PASS 326626 checks; AVX2 available=1

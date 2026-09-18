@@ -138,9 +138,19 @@ A guessed pixel is tagged `Guess`; a deadline substitute is tagged `Fill`.
 Neither changes `Count`, `z_n`, or the exact sample coordinate. When a slice
 expires, the display-only fill mirrors `mkfilltable`/`filly`: unresolved columns
 copy the closest completed column in coordinate space, then unresolved rows copy
-the closest completed row. The next same-view slice sees the underlying pending
-count and refines it. Thus aggressive previews cannot masquerade as resumable
-state or survive an iteration/precision change as if they were exact.
+the closest completed row.
+
+Classic XaoS then stores the copied source coordinate back into `xpos`/`ypos`.
+That detail is essential: it deliberately creates duplicate line coordinates, so
+the next DP pass recognizes that resolution was lost and recreates the missing
+lines. The modern renderer maintains an analogous **presentation-coordinate**
+table separate from the exact `xs`/`ys` table used by resumable orbit state. A
+timeout collapses only presentation coordinates; duplicate presentation lines
+are treated as one reusable line by the next DP. Thus later slices recover
+resolution with the classic line-priority queue while exact orbit coordinates
+remain valid. Once the line grid is resolved, any pending guessed pixels are
+refined in the original interlaced line order rather than a centre-out tile
+order. Aggressive previews therefore cannot masquerade as resumable state.
 
 The GUI time budget follows the policy in upstream `ui_helper.cpp` with a
 50-frame moving history: start from five times recent work; during interaction,

@@ -108,7 +108,6 @@ bool compatible(const FrameBase& old,const Request&r,mp_bitcnt_t bits) {
 }
 struct alignas(64) LocalStats { uint64_t reused=0,started=0,resumed=0,steps=0; };
 struct LineTask { bool row=false; int index=0; double priority=0; size_t serial=0; };
-struct Tile { int x=0,y=0; size_t order=0; };
 
 bool previewKnown(uint8_t q) noexcept { return q>=static_cast<uint8_t>(DisplayQuality::Guess); }
 
@@ -164,17 +163,25 @@ std::vector<double> linePriorities(const std::vector<Big>&now,const std::vector<
     return price;
 }
 
-std::vector<int> progressiveOrder(int n) {
-    std::vector<int> order;
-    order.reserve(static_cast<size_t>(n));
-    std::function<void(int,int)> add=[&](int first,int last) {
-        if(first>=last) return;
-        const int mid=first+(last-first)/2;
-        order.push_back(mid);
-        add(first,mid);
-        add(mid+1,last);
-    };
-    add(0,n);
+std::vector<int> interlacedOrder(int n,int range) {
+    range=std::clamp(range,1,16);
+    std::vector<int> offsets(static_cast<size_t>(range));
+    std::vector<uint8_t> used(static_cast<size_t>(range));
+    offsets[0]=0; used[0]=1;
+    int s=1;
+    // Exact ordering used by zoom.cpp:calculatenew(): repeatedly insert the
+    // midpoint of each not-yet-selected run inside one period.  Applying each
+    // offset to every period distributes refinement across the image rather than
+    // growing one centre-first rectangle.
+    while(s<range) {
+        for(int i=0;i<range && s<range;++i) if(!used[static_cast<size_t>(i)]) {
+            int y=i; while(y<range && !used[static_cast<size_t>(y)]) ++y;
+            const int mid=(y+i)/2;
+            used[static_cast<size_t>(mid)]=1; offsets[static_cast<size_t>(s++)]=mid;
+        }
+    }
+    std::vector<int> order; order.reserve(static_cast<size_t>(n));
+    for(int offset:offsets) for(int i=offset;i<n;i+=range) order.push_back(i);
     return order;
 }
 
@@ -192,8 +199,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     size_t bytes=estimate(pixels,bits,big,Save);
     if(previous) bytes=plusChecked(bytes,estimate(previous->counts.size(),previous->stats.bits,
                                                    previous->stats.backend=="GMP",previous->request.settings.saveState));
-    bytes=plusChecked(bytes,multiplyChecked(static_cast<size_t>(r.width)+static_cast<size_t>(r.height),
-                        sizeof(Big)+static_cast<size_t>(bits/8)+40));
+    const size_t axisEntries=multiplyChecked(2,plusChecked(static_cast<size_t>(r.width),static_cast<size_t>(r.height)));
+    bytes=plusChecked(bytes,multiplyChecked(axisEntries,sizeof(Big)+static_cast<size_t>(bits/8)+40));
     bytes=plusChecked(bytes,multiplyChecked(executor.concurrency(),multiplyChecked(12,static_cast<size_t>(bits/8)+64)));
     if(r.settings.memoryBudget && bytes>r.settings.memoryBudget)
         throw std::length_error("estimated renderer memory exceeds budget; use count-only mode, fewer pixels, or a larger budget");
@@ -204,8 +211,29 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     const bool same=old && old->request.view==r.view && old->request.width==r.width && old->request.height==r.height;
     auto ax=makeAxis<Real>(r.view.re,step,r.width,bits,old?&old->xs:nullptr,same,r.settings.uniform,r.settings.reuseRadius);
     auto ay=makeAxis<Real>(r.view.im,step,r.height,bits,old?&old->ys:nullptr,same,r.settings.uniform,r.settings.reuseRadius);
+    // Keep a second pair of axes for presentation resolution.  Classic XaoS
+    // writes timeout-filled lines back to xpos/ypos at the coordinate they copied;
+    // the next DP pass consequently creates those lines again.  We reproduce that
+    // feedback loop here without lying about the coordinates attached to saved
+    // orbit state.  Never take makeAxis's same-view identity shortcut for these
+    // tables: duplicate preview coordinates are precisely the signal to refine.
+    const auto*oldPreviewX=old?(old->previewXs.empty()?&old->xs:&old->previewXs):nullptr;
+    const auto*oldPreviewY=old?(old->previewYs.empty()?&old->ys:&old->previewYs):nullptr;
+    Axis pax,pay;
+    if(r.settings.sliceMilliseconds) {
+        pax=makeAxis<Real>(r.view.re,step,r.width,bits,oldPreviewX,false,r.settings.uniform,r.settings.reuseRadius);
+        pay=makeAxis<Real>(r.view.im,step,r.height,bits,oldPreviewY,false,r.settings.uniform,r.settings.reuseRadius);
+    } else {
+        // Exact/unbounded renders neither need a second DP nor a duplicate Big
+        // coordinate table. An empty preview axis means "identical to xs/ys".
+        pax.source=ax.source; pax.cost=ax.cost; pax.uniform=ax.uniform;
+        pay.source=ay.source; pay.cost=ay.cost; pay.uniform=ay.uniform;
+    }
     f->xs=std::move(ax.coordinates); f->ys=std::move(ay.coordinates);
-    f->stats.lineCost=ax.cost+ay.cost;
+    if(r.settings.sliceMilliseconds) {
+        f->previewXs=std::move(pax.coordinates); f->previewYs=std::move(pay.coordinates);
+    }
+    f->stats.lineCost=pax.cost+pay.cost;
     f->stats.uniform=ax.uniform && ay.uniform;
     f->stats.bits=bits; f->stats.backend=big?"GMP":"double";
     f->stats.simd=!big && r.settings.simd && hasAVX2();
@@ -230,22 +258,36 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 const int y=nextRow.fetch_add(1,std::memory_order_relaxed);
                 if(y>=r.height) break;
                 const int sy=ay.source[static_cast<size_t>(y)];
-                if(sy<0) continue;
+                const int psy=pay.source[static_cast<size_t>(y)];
                 for(int x=0;x<r.width;++x) {
                     const int sx=ax.source[static_cast<size_t>(x)];
-                    if(sx<0) continue;
+                    const int psx=pax.source[static_cast<size_t>(x)];
                     const size_t d=f->index(x,y);
-                    const size_t s=static_cast<size_t>(sy)*static_cast<size_t>(old->stride)+static_cast<size_t>(sx);
-                    f->counts[d]=old->counts[s];
-                    if constexpr(Save) f->state.copy(d,old->state,s);
+                    // Presentation reuse follows the collapsed preview coordinate
+                    // tables, as the old image mover did.  If that visual sample is
+                    // not also our true sample coordinate, downgrade it to Fill.
+                    if(r.settings.sliceMilliseconds && psx>=0 && psy>=0 && old->request.settings.iterations==r.settings.iterations) {
+                        const size_t ps=static_cast<size_t>(psy)*static_cast<size_t>(old->stride)+static_cast<size_t>(psx);
+                        if(old->displayQuality[ps]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
+                            f->displayPixels[d]=old->displayPixels[ps];
+                            const bool atTrueCoordinate=f->previewXs[static_cast<size_t>(x)]==f->xs[static_cast<size_t>(x)] &&
+                                                        f->previewYs[static_cast<size_t>(y)]==f->ys[static_cast<size_t>(y)];
+                            f->displayQuality[d]=atTrueCoordinate?old->displayQuality[ps]:static_cast<uint8_t>(DisplayQuality::Fill);
+                        }
+                    }
+                    if(sx<0 || sy<0) continue;
+                    const size_t ss=static_cast<size_t>(sy)*static_cast<size_t>(old->stride)+static_cast<size_t>(sx);
+                    f->counts[d]=old->counts[ss];
+                    if constexpr(Save) f->state.copy(d,old->state,ss);
                     if(f->counts[d].known(r.settings.iterations)) {
                         f->displayPixels[d]=pixelColor(f->counts[d],r.settings.iterations);
                         f->displayQuality[d]=static_cast<uint8_t>(DisplayQuality::Exact);
                         ++stat.reused;
                     } else if(old->request.settings.iterations==r.settings.iterations &&
-                              old->displayQuality[s]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
-                        f->displayPixels[d]=old->displayPixels[s];
-                        f->displayQuality[d]=old->displayQuality[s];
+                              f->displayQuality[d]==static_cast<uint8_t>(DisplayQuality::Missing) &&
+                              old->displayQuality[ss]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
+                        f->displayPixels[d]=old->displayPixels[ss];
+                        f->displayQuality[d]=old->displayQuality[ss];
                     }
                 }
             }
@@ -358,8 +400,11 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
 
     std::vector<uint8_t> rowReady(static_cast<size_t>(r.height),1),colReady(static_cast<size_t>(r.width),1);
     bool hasNewLines=false;
-    for(int y=0;y<r.height;++y) if(ay.source[static_cast<size_t>(y)]<0) rowReady[static_cast<size_t>(y)]=0,hasNewLines=true;
-    for(int x=0;x<r.width;++x) if(ax.source[static_cast<size_t>(x)]<0) colReady[static_cast<size_t>(x)]=0,hasNewLines=true;
+    // Resolution readiness is a presentation property.  A timeout-filled line
+    // deliberately has no DP source on the next pass even though its exact sample
+    // coordinate and perhaps some orbit state still exist.
+    for(int y=0;y<r.height;++y) if(pay.source[static_cast<size_t>(y)]<0) rowReady[static_cast<size_t>(y)]=0,hasNewLines=true;
+    for(int x=0;x<r.width;++x) if(pax.source[static_cast<size_t>(x)]<0) colReady[static_cast<size_t>(x)]=0,hasNewLines=true;
 
     auto colorAt=[&](int x,int y,uint32_t&color)->bool {
         const size_t i=f->index(x,y);
@@ -401,22 +446,16 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     // The initial image has no rows/columns to reuse; calculate it as a normal
     // parallel raster. Subsequent zoom frames use the original line scheduler.
     auto rasterRefine=[&]() {
-        std::vector<Tile> tiles;
-        const int blockRows=(r.height+7)/8;
-        auto rowOrder=progressiveOrder(blockRows);
-        size_t sequence=0;
-        for(int by:rowOrder) for(int x=0;x<r.width;x+=64) tiles.push_back({x,by*8,sequence++});
+        const int range=std::clamp(static_cast<int>(r.settings.solidGuessRange)*2,1,16);
+        const auto rowOrder=interlacedOrder(r.height,range);
         std::vector<size_t> list;
         list.reserve(static_cast<size_t>(r.width)*static_cast<size_t>(r.height));
-        for(const auto&t:tiles) {
-            const int xe=std::min(r.width,t.x+64),ye=std::min(r.height,t.y+8);
-            for(int y=t.y;y<ye;++y) for(int x=t.x;x<xe;++x) {
-                const size_t index=f->index(x,y);
-                if(!f->counts[index].known(r.settings.iterations)) list.push_back(index);
-                else if(f->displayQuality[index]!=static_cast<uint8_t>(DisplayQuality::Exact)) {
-                    f->displayPixels[index]=pixelColor(f->counts[index],r.settings.iterations);
-                    f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
-                }
+        for(int y:rowOrder) for(int x=0;x<r.width;++x) {
+            const size_t index=f->index(x,y);
+            if(!f->counts[index].known(r.settings.iterations)) list.push_back(index);
+            else if(f->displayQuality[index]!=static_cast<uint8_t>(DisplayQuality::Exact)) {
+                f->displayPixels[index]=pixelColor(f->counts[index],r.settings.iterations);
+                f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
             }
         }
         calculateList(list);
@@ -438,8 +477,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         std::vector<uint8_t> xDirty(colReady.size()),yDirty(rowReady.size());
         for(size_t i=0;i<colReady.size();++i) xDirty[i]=static_cast<uint8_t>(!colReady[i]);
         for(size_t i=0;i<rowReady.size();++i) yDirty[i]=static_cast<uint8_t>(!rowReady[i]);
-        const auto px=linePriorities(f->xs,&old->xs,xDirty,step);
-        const auto py=linePriorities(f->ys,&old->ys,yDirty,step);
+        const auto px=linePriorities(f->previewXs,oldPreviewX,xDirty,step);
+        const auto py=linePriorities(f->previewYs,oldPreviewY,yDirty,step);
         std::vector<LineTask> tasks;
         tasks.reserve(static_cast<size_t>(r.width+r.height));
         size_t serial=0;
@@ -549,7 +588,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
             else if(right>=r.width) src=left;
             else src=pixelDistance(f->xs[static_cast<size_t>(x)],f->xs[static_cast<size_t>(left)],step) <
                      pixelDistance(f->xs[static_cast<size_t>(right)],f->xs[static_cast<size_t>(x)],step)?left:right;
-            if(src>=0) for(int y=0;y<r.height;++y) copyFill(f->index(x,y),f->index(src,y));
+            if(src>=0) {
+                for(int y=0;y<r.height;++y) copyFill(f->index(x,y),f->index(src,y));
+                f->previewXs[static_cast<size_t>(x)]=f->previewXs[static_cast<size_t>(src)];
+            }
         }
         for(int y=0;y<r.height;++y) if(!rowReady[static_cast<size_t>(y)]) {
             int down=y-1,up=y+1;
@@ -560,7 +602,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
             else if(up>=r.height) src=down;
             else src=pixelDistance(f->ys[static_cast<size_t>(y)],f->ys[static_cast<size_t>(down)],step) <
                      pixelDistance(f->ys[static_cast<size_t>(up)],f->ys[static_cast<size_t>(y)],step)?down:up;
-            if(src>=0) for(int x=0;x<r.width;++x) copyFill(f->index(x,y),f->index(x,src));
+            if(src>=0) {
+                for(int x=0;x<r.width;++x) copyFill(f->index(x,y),f->index(x,src));
+                f->previewYs[static_cast<size_t>(y)]=f->previewYs[static_cast<size_t>(src)];
+            }
         }
         // Very early cancellation can leave no fully completed line. In that rare
         // case propagate whatever exact preview samples exist, without promoting them
@@ -579,6 +624,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x)
         if(!f->counts[f->index(x,y)].known(r.settings.iterations)) ++f->stats.pending;
     f->stats.complete=f->stats.pending==0;
+    if(!f->previewXs.empty() || !f->previewYs.empty())
+        f->stats.uniform=f->stats.uniform && f->previewXs==f->xs && f->previewYs==f->ys;
     f->stats.milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
     return f;
 }

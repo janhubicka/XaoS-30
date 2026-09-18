@@ -35,7 +35,7 @@ Replace `--state` with `--counts` to compare iteration-count-only storage.
 
 ## Status and verification
 
-The current core passes **326,616 checks** in fresh local Release,
+The current core passes **326,626 checks** in fresh local Release,
 ASan+UBSan, and TSan builds. The suite includes the sparse line-DP oracle,
 palette compatibility, resumable-state checks, deep coordinates, and
 solid-guess/refinement state separation. Qt 6 development files were unavailable in the import environment, so

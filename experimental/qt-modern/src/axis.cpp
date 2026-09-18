@@ -29,6 +29,12 @@ AxisMatch matchAxis(std::span<const double> pos,int n,double radius) {
         double p=pos[i];
         if(!std::isfinite(p)) continue;
         if(p<previous) throw std::invalid_argument("old axis is not ordered");
+        // Classic XaoS deliberately collapses timeout-filled lines onto the
+        // coordinate of their nearest completed neighbour.  On the next pass
+        // duplicate old coordinates represent one reusable sample, not several
+        // independent lines; this is what makes missing resolution reappear as
+        // new DP work instead of being frozen permanently.
+        if(p==previous) continue;
         previous=p;
         if(p<-.5 || p>=static_cast<double>(n)-.5) continue;
         const int lo=std::max(0,static_cast<int>(std::ceil(p-radius)));

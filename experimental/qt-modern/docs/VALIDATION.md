@@ -2,7 +2,7 @@
 
 ## Executed successfully on the final source
 
-The regression binary reports **326,616 checks** in each of these configurations:
+The regression binary reports **326,626 checks** in each of these configurations:
 
 | Configuration | Result | Evidence |
 |---|---|---|
@@ -49,7 +49,10 @@ input checks remain included.
    escape-time index convention.
 9. Interactive solid guessing is exercised on a monochromatic region: guessed
    display pixels remain pending counts, then a later slice resolves them exactly.
-10. Validation failures, memory-estimate rejection, exception barriers, and worker
+10. A deterministic interrupted zoom verifies classic resolution feedback: timeout
+   fill collapses presentation-axis coordinates, exact sample axes do not move, and
+   the next same-view DP pass increases the number of distinct presentation lines.
+11. Validation failures, memory-estimate rejection, exception barriers, and worker
    recovery after an exception are tested.
 
 These establish equivalence under the chosen finite-precision arithmetic
