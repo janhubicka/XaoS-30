@@ -27,6 +27,9 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QWheelEvent>
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <charconv>
 #include <condition_variable>
 #include <functional>
@@ -48,14 +51,13 @@ QImage makeImage(const FrameBase&f) {
         auto*data=reinterpret_cast<QRgb*>(image.scanLine(row));
         const int y=f.request.height-1-row;
         for(int x=0;x<f.request.width;++x) {
-            Count c=f.at(x,y);
-            data[x]=c.known(f.request.settings.iterations)?pixelColor(c,f.request.settings.iterations):0;
+            data[x]=f.displayAt(x,y);
         }
     }
     return image;
 }
 class Canvas final:public QWidget {
-    struct Job { Request request; size_t threads; uint64_t serial; };
+    struct Job { Request request; size_t threads; uint64_t serial; bool interactive; };
     std::mutex mutex_;
     std::condition_variable_any wake_;
     std::optional<Job> pending_;
@@ -71,6 +73,33 @@ class Canvas final:public QWidget {
     bool dragging_=false;
     size_t threads_=defaultWorkerCount();
     void coordinator(std::stop_token shutdown) {
+        struct DynamicBudget {
+            std::array<double,50> calculation{},overhead{};
+            size_t pos=0,count=0;
+            double average(const std::array<double,50>&a,double fallback) const {
+                if(!count) return fallback;
+                double sum=0; for(size_t i=0;i<count;++i) sum+=a[i]; return sum/static_cast<double>(count);
+            }
+            unsigned next(bool interactive) const {
+                const double calc=average(calculation,40.0),other=average(overhead,2.0);
+                // ui_helper.cpp's classic dynamic-resolution policy: start from
+                // five times recent work; under animation tighten to 3x above
+                // 25 FPS, clamp animation to >=15 FPS, idle to about 3 FPS,
+                // never request faster than 30 FPS, and subtract UI overhead.
+                double ms=calc*5.0;
+                if(interactive) {
+                    if(ms>1000.0/25.0) ms=calc*3.0;
+                    ms=std::min(ms,1000.0/15.0);
+                } else ms=1000.0/3.0;
+                ms=std::max(ms,1000.0/30.0);
+                ms-=other;
+                ms=std::max(ms,10.0);
+                return static_cast<unsigned>(std::lround(ms));
+            }
+            void observe(double calc,double other) {
+                calculation[pos]=calc;overhead[pos]=other;pos=(pos+1)%calculation.size();count=std::min(calculation.size(),count+1);
+            }
+        } budget;
         Renderer renderer;
         std::unique_ptr<QtExecutor> executor;
         while(!shutdown.stop_requested()) {
@@ -81,13 +110,16 @@ class Canvas final:public QWidget {
                 if(!wake_.wait(lock,shutdown,[&]{return pending_.has_value();})) return;
                 job=std::move(*pending_);pending_.reset();
                 token=std::make_shared<Cancellation>();
-                job.request.settings.sliceMilliseconds=job.request.settings.uniform?100:40;
+                job.request.settings.sliceMilliseconds=budget.next(job.interactive);
                 active_=token;
             }
             try {
                 if(!executor || executor->concurrency()!=job.threads) executor=std::make_unique<QtExecutor>(job.threads);
                 auto frame=renderer.render(job.request,*executor,*token);
-                auto image=makeImage(*frame); const auto stats=frame->stats;
+                QElapsedTimer imageTimer;imageTimer.start();
+                auto image=makeImage(*frame); const auto imageMs=static_cast<double>(imageTimer.nsecsElapsed())/1.0e6;
+                const auto stats=frame->stats;
+                budget.observe(stats.milliseconds,imageMs);
                 const auto view=frame->request.view;
                 // No QWidget access on this thread. QObject drops queued calls on
                 // destruction; our destructor also joins this coordinator first.
@@ -102,7 +134,8 @@ class Canvas final:public QWidget {
                         .arg(static_cast<qulonglong>(stats.bits)).arg(stats.milliseconds,0,'f',1)
                         .arg(static_cast<qulonglong>(stats.reused)).arg(static_cast<qulonglong>(stats.resumed))
                         .arg(stats.uniform?"uniform samples":"adaptive preview")
-                        .arg(stats.complete?"":" / refining"));
+                        .arg(stats.complete?QString{}:QString(" / refining (guess %1, fill %2)")
+                            .arg(static_cast<qulonglong>(stats.solidGuessed)).arg(static_cast<qulonglong>(stats.filled))));
                     update();
                 },Qt::QueuedConnection);
                 std::lock_guard lock(mutex_);
@@ -204,7 +237,7 @@ public:
         {
             std::lock_guard lock(mutex_);
             if(active_) active_->cancelled.store(true,std::memory_order_relaxed);
-            pending_=Job{std::move(request),threads_,++serial_};
+            pending_=Job{std::move(request),threads_,++serial_,!uniform};
         }
         wake_.notify_one();update();
         if(!uniform) idle_.start();

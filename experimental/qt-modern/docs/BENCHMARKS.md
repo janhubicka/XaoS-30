@@ -1,70 +1,68 @@
 # CPU benchmark record — 18 September 2026
 
 These measurements concern this implementation, **not upstream XaoS**. They do
-not include Qt painting, preview transformation, image conversion, event-loop
-latency, or process startup. Renderer timings include frame planning, allocation,
-cache remapping, and orbit computation. Each figure is the median total renderer
-time over seven independent process runs; individual frame medians and observed
-ranges are in `benchmark-results.json`. The median of a sum need not equal the
-sum of its individual medians.
+not include Qt painting, image conversion, event-loop latency, or process
+startup. Renderer timings include planning, allocation, cache remapping, preview
+bookkeeping, and orbit computation. Each figure below is the median total time
+over seven independent process runs; per-frame medians/ranges and exact commands
+are in `benchmark-results.json`.
 
 Environment: Linux x86-64 container, AMD EPYC 9V74 host, five affinity-visible
-virtual CPUs and cgroup CPU quota equivalent to four cores; GCC 14.2, Release
-build, runtime AVX2, no `-march=native`, no fast-math, FMA contraction disabled.
-Container scheduling noise is present. Do not generalize these as hardware-wide
-speedups or guaranteed GUI frame rates.
+virtual CPUs and cgroup quota equivalent to four cores; GCC 14.2, Release,
+runtime AVX2, no `-march=native`, no fast-math, FMA contraction disabled.
 
 | Experiment | Median total renderer time (ms) |
 |---|---:|
-| Scalar double, one worker | 97.931 |
-| AVX2 double, one worker | 28.272 |
-| AVX2 double, four workers | 9.680 |
-| Twenty adaptive zoom frames | 53.197 |
-| Twenty uniform-grid zoom frames | 204.926 |
-| Native cap increases, counts only | 13.925 |
-| Native cap increases, saved state | 17.446 |
-| 256-bit cap increases, counts only | 34.748 |
-| 256-bit cap increases, saved state | 22.189 |
+| Scalar double, one worker | 91.404 |
+| AVX2 double, one worker | 28.330 |
+| AVX2 double, four workers | 12.042 |
+| Twenty adaptive exact zoom frames | 58.561 |
+| Twenty uniform-grid zoom frames | 217.514 |
+| Native cap increases, counts only | 19.684 |
+| Native cap increases, saved state | 28.136 |
+| 256-bit cap increases, counts only | 36.722 |
+| 256-bit cap increases, saved state | 22.478 |
 
-## Native arithmetic and scheduling
+The fixed native scene is 640×400, center `(-0.7435,0.1314)`, horizontal span
+`0.005`, and cap 1024. One-worker AVX2 is **3.23×** faster than scalar; four
+workers are **7.59×** faster than the one-worker scalar baseline and **2.35×**
+faster than one-worker AVX2. The adaptive 20-frame exact sequence is **3.71×**
+faster than repeatedly forcing a uniform grid. The final adaptive frame retains
+roughly 96% of its samples.
 
-The fixed scene is 640 by 400, center `(-0.7435,0.1314)`, horizontal span `0.005`,
-and cap 1024. The scalar and SIMD comparisons use count-only storage and perform
-16,121,185 actual orbit steps each. One-worker AVX2 is **3.46×** faster than
-the scalar implementation. Four-worker AVX2 is **10.12×** faster than
-that same one-worker scalar baseline and **2.92×** faster than one-worker AVX2.
+## Interactive XaoS-style preview
 
-## Reuse while zooming
+Two additional cases render the same initial frame, zoom once by 0.98, and give
+the moving frame a 60 ms soft slice. They isolate the classic solid-guessing
+heuristic:
 
-Both zoom experiments use the same scene, four workers, twenty completed frames,
-and a factor of 0.98 between frames. The adaptive sequence takes
-**3.85× less renderer time** than repeatedly sampling the uniform grid.
-The final adaptive frame reuses
-246,176 of 256,000 samples
-(96.16%).
+| Moving frame | Median ms | Fresh orbit starts | Orbit steps | Guessed pixels | Pending exact state |
+|---|---:|---:|---:|---:|---:|
+| Solid guessing on | 5.932 | 4,738 | 410,579 | 5,086 | 5,086 |
+| Solid guessing off | 5.632 | 9,824 | 629,823 | 0 | 0 |
 
-**This is not a comparison of identical per-frame images:** the adaptive engine
-keeps a nonuniform grid of nearby previously calculated coordinates. Tests check
-those samples against fresh evaluation at their actual coordinates. Exact
-uniform refinement is a separate step, tested for equivalence to fresh output;
-its additional cost is not included in the twenty adaptive moving frames.
+On this relatively cheap native scene, neighbour tests cost slightly more wall
+clock than simply finishing all remaining AVX2 points, despite avoiding **51.8%**
+of fresh orbit starts and **34.8%** of iteration steps. That is why the heuristic
+is exposed (`--no-guess`, `--solid-guess N`) rather than claimed to be universally
+faster. It is intended for interactive/deep or expensive formulas where avoided
+orbits dominate. Crucially, the 5,086 guesses are presentation-only: a subsequent
+same-view slice computes their true count/orbit state.
 
-## Saved orbits are a tradeoff, not universally faster
+With a deliberately tiny 1 ms slice, the renderer may overrun while finishing a
+safe line/orbit boundary; unresolved areas are then copied from the nearest
+completed row/column and tagged `Fill`. Such pixels remain pending internally.
+The deadline is therefore a responsiveness target, not a hard real-time bound.
 
-The native cap sequence is 256, 512, 1024, 2048. Counts-only rendering is faster
-on this relatively cheap scene, even though stateful resumption performs fewer
-iteration steps. Saved-state copying and memory traffic cost more than the work
-saved. This is why both storage policies are provided rather than treating
-stateful mode as an unconditional performance win.
+## Saved orbits
 
-The 256-bit example uses Julia, 128 by 80, four workers, default parameter
-`(-0.8,0.156)`, and caps 128, 256, 512. Saved-state rendering is
-**1.57× faster** across the whole sequence. Looking only at the two cap
-increases, the sum of the per-frame medians is 21.453 ms counts-only versus
-8.142 ms stateful, or **2.63×** faster; this derived comparison excludes the
-common initial rendering work. The 256-to-512 increase performs
-143,525 orbit steps in count-only mode but only
-46,245 in saved-state mode.
+The native cap sequence is 256, 512, 1024, 2048. Here count-only mode is faster
+because saved-state copying/memory traffic costs more than the native arithmetic
+it saves, even though state mode performs far fewer steps on cap increases.
+
+At 256-bit GMP (Julia, 128×80, caps 128, 256, 512), saved state is **1.63×**
+faster over the whole sequence. On the 256→512 increase, count-only mode performs
+143,525 steps versus 46,245 with saved state.
 
 ## Reproduction
 
@@ -72,12 +70,14 @@ common initial rendering work. The 256-to-512 increase performs
 python3 tests/benchmark.py build/xaos-bench my-results.json --repeats 7
 ```
 
-The JSON records the exact CLI options for every case. `--scalar` disables AVX2;
-`--threads 1` isolates SIMD from multicore gains. `--uniform` disables
-approximate line reuse except for exactly coincident coordinates. `--counts`
-and `--state` isolate storage policy. Run against the same Release binary and
-avoid competing CPU/memory-intensive jobs when comparing your own results.
+Useful interactive switches are:
 
-No GPU, perturbation/series, AVX-512, upstream-XaoS, Qt-throughput, or cross-platform
-comparison was made. The separate 3392-bit deep-zoom execution is documented in
-`VALIDATION.md`; it does not demonstrate interactive large-image performance.
+```sh
+./build/xaos-bench ... --frames 2 --zoom 0.98 --slice 60
+./build/xaos-bench ... --frames 2 --zoom 0.98 --slice 60 --no-guess
+```
+
+`--uniform` disables nonuniform approximate line reuse except for exactly
+coincident coordinates. `--counts` and `--state` select storage policy. No GPU,
+perturbation/series, AVX-512, upstream-XaoS, Qt-throughput, or cross-platform
+comparison is claimed.

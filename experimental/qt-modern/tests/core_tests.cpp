@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "xaos/axis.hpp"
 #include "xaos/renderer.hpp"
+#include "xaos/palette.hpp"
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -211,6 +212,48 @@ void cancellationTests() {
         hard.settings.iterations=2000000000u;
     }
 }
+
+void paletteTests() {
+    const auto p=classicDefaultPalette();
+    CHECK(p.size()==65534);
+    const std::array<uint32_t,17> expected{{
+        0xff000000u,0xff0f0e1du,0xff1e1d3bu,0xff2d2c59u,0xff3c3b77u,
+        0xff4b4a94u,0xff5a59b2u,0xff6968d0u,0xff7877eeu,0xff6c69d3u,
+        0xff605bb8u,0xff544d9eu,0xff483f83u,0xff3c3168u,0xff30234eu,
+        0xff241533u,0xff180719u}};
+    for(size_t i=0;i<expected.size();++i) CHECK(p[i]==expected[i]);
+    CHECK(pixelColor(Count{0,Status::Escaped},100)==p[1]);
+    CHECK(pixelColor(Count{1,Status::Escaped},100)==p[2]);
+    CHECK(pixelColor(Count{99,Status::Interior},100)==0xff000000u);
+}
+
+void previewTests() {
+    ThreadExecutor pool(4);Cancellation stop;
+    Request r;r.width=160;r.height=96;r.settings.iterations=1000;r.settings.analytic=true;
+    r.view=View::parse("0","0","0.02",r.width);
+    Renderer renderer;
+    auto exact=renderer.render(r,pool,stop);
+    CHECK(exact->stats.complete);
+    r.view.zoom(.37,.61,.985,r.width,r.height);
+    r.settings.sliceMilliseconds=250;
+    auto preview=renderer.render(r,pool,stop);
+    CHECK(preview->stats.solidGuessed>0);
+    CHECK(preview->stats.pending>0);
+    CHECK(!preview->stats.complete);
+    uint64_t guesses=0;
+    for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
+        CHECK(preview->displayAt(x,y)==0xff000000u);
+        if(preview->qualityAt(x,y)==DisplayQuality::Guess) {
+            ++guesses;
+            CHECK(!preview->at(x,y).known(r.settings.iterations));
+        }
+    }
+    CHECK(guesses==preview->stats.solidGuessed);
+    auto refined=renderer.render(r,pool,stop);
+    CHECK(refined->stats.complete);
+    CHECK(refined->stats.pending==0);
+}
+
 void failureTests() {
     ThreadExecutor pool(2);Renderer renderer;Request r;Cancellation stop;
     r.width=0;rejects([&]{renderer.render(r,pool,stop);});r.width=32;r.height=20;
@@ -226,10 +269,10 @@ void failureTests() {
 int main() {
     try {
         for(auto [name,test]:std::vector<std::pair<const char*,std::function<void()>>>{
-          {"axis optimizer vs independent dense DP",axisTests}, {"arbitrary-precision camera",numericTests},
+          {"axis optimizer vs independent dense DP",axisTests}, {"classic XaoS palette",paletteTests}, {"arbitrary-precision camera",numericTests},
           {"scalar/AVX2 bit identity",simdTests},{"counts/state/resume/limit decrease",resumeTests},
           {"zoom coordinates and exact refinement",zoomTests},{"deep zoom and cache invalidation",deepTests},
-          {"cancellation and resumption",cancellationTests},{"validation and exception barriers",failureTests}}) {
+          {"cancellation and resumption",cancellationTests},{"solid guessing and preview refinement",previewTests},{"validation and exception barriers",failureTests}}) {
             test();std::cout<<"PASS "<<name<<'\n';
         }
         std::cout<<"PASS "<<checks<<" checks; AVX2 available="<<hasAVX2()<<'\n';

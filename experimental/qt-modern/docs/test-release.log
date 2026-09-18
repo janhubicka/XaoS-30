@@ -1,9 +1,11 @@
 PASS axis optimizer vs independent dense DP
+PASS classic XaoS palette
 PASS arbitrary-precision camera
 PASS scalar/AVX2 bit identity
 PASS counts/state/resume/limit decrease
 PASS zoom coordinates and exact refinement
 PASS deep zoom and cache invalidation
 PASS cancellation and resumption
+PASS solid guessing and preview refinement
 PASS validation and exception barriers
-PASS 310755 checks; AVX2 available=1
+PASS 326615 checks; AVX2 available=1
