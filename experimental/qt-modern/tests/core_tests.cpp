@@ -222,6 +222,14 @@ void paletteTests() {
         0xff605bb8u,0xff544d9eu,0xff483f83u,0xff3c3168u,0xff30234eu,
         0xff241533u,0xff180719u}};
     for(size_t i=0;i<expected.size();++i) CHECK(p[i]==expected[i]);
+    uint64_t fingerprint=1469598103934665603ull;
+    for(const uint32_t c:p) for(unsigned byte=0;byte<4;++byte) {
+        fingerprint^=(c>>(8*byte))&0xffu;
+        fingerprint*=1099511628211ull;
+    }
+    // Whole-palette fingerprint from an independent mechanical reproduction of the
+    // original palette.cpp mkdefaultpalette()/mksmooth() floating-point loop.
+    CHECK(fingerprint==0xfb6a357de706d459ull);
     CHECK(pixelColor(Count{0,Status::Escaped},100)==p[1]);
     CHECK(pixelColor(Count{1,Status::Escaped},100)==p[2]);
     CHECK(pixelColor(Count{99,Status::Interior},100)==0xff000000u);

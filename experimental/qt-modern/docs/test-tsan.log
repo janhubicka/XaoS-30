@@ -8,4 +8,4 @@ PASS deep zoom and cache invalidation
 PASS cancellation and resumption
 PASS solid guessing and preview refinement
 PASS validation and exception barriers
-PASS 326615 checks; AVX2 available=1
+PASS 326616 checks; AVX2 available=1

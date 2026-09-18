@@ -1,10 +1,7 @@
-[1/10] Building CXX object CMakeFiles/xaos_core.dir/src/palette.cpp.o
-[2/10] Building CXX object CMakeFiles/xaos_core.dir/src/axis.cpp.o
-[3/10] Building CXX object CMakeFiles/xaos_core.dir/src/executor.cpp.o
-[4/10] Building CXX object CMakeFiles/xaos-bench.dir/app/bench.cpp.o
-[5/10] Building CXX object CMakeFiles/xaos_core.dir/src/simd.cpp.o
-[6/10] Building CXX object CMakeFiles/xaos-tests.dir/tests/core_tests.cpp.o
-[7/10] Building CXX object CMakeFiles/xaos_core.dir/src/renderer.cpp.o
-[8/10] Linking CXX static library libxaos_core.a
-[9/10] Linking CXX executable xaos-bench
-[10/10] Linking CXX executable xaos-tests
+[1/7] Building CXX object CMakeFiles/xaos_core.dir/src/palette.cpp.o
+[2/7] Building CXX object CMakeFiles/xaos-bench.dir/app/bench.cpp.o
+[3/7] Building CXX object CMakeFiles/xaos-tests.dir/tests/core_tests.cpp.o
+[4/7] Building CXX object CMakeFiles/xaos_core.dir/src/renderer.cpp.o
+[5/7] Linking CXX static library libxaos_core.a
+[6/7] Linking CXX executable xaos-bench
+[7/7] Linking CXX executable xaos-tests
