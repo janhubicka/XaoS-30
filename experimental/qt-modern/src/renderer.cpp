@@ -109,7 +109,13 @@ bool compatible(const FrameBase& old,const Request&r,mp_bitcnt_t bits) {
 struct alignas(64) LocalStats { uint64_t reused=0,started=0,resumed=0,steps=0; };
 struct LineTask { bool row=false; int index=0; double priority=0; size_t serial=0; };
 
-bool previewKnown(uint8_t q) noexcept { return q>=static_cast<uint8_t>(DisplayQuality::Guess); }
+bool previewKnown(uint8_t q) noexcept {
+    // Classic XaoS treats timeout-filled pixels as ordinary samples on the next
+    // low-resolution pass. Their collapsed presentation coordinates make that
+    // legitimate for solid guessing even though they remain ineligible as saved
+    // mathematical orbit state.
+    return q!=static_cast<uint8_t>(DisplayQuality::Missing);
+}
 
 double pixelDistance(const Big&a,const Big&b,const Big&step) {
     const double d=div(sub(a,b),step).toDouble();
