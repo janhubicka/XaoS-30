@@ -5,9 +5,11 @@ arbitrary precision, adaptive row/column reuse, and templated count-only or
 resumable-orbit storage.
 
 The implementation is in [`experimental/qt-modern`](experimental/qt-modern/).
-This import preserves the previously supplied additive patch byte-for-byte,
-including its source checksums, benchmark data, and validation records. It is
-an experimental renderer, not a replacement for every existing XaoS feature.
+The first import came from the additive prototype patch; the branch now evolves
+that prototype directly. The moving renderer reproduces the classic XaoS default
+palette and its DP-driven row/column zoom policy, including solid guessing and
+time-budgeted progressive resolution. It remains experimental, not a replacement
+for every existing XaoS feature.
 
 ## Build
 
@@ -33,9 +35,10 @@ Replace `--state` with `--counts` to compare iteration-count-only storage.
 
 ## Status and verification
 
-The imported core passes 310,755 checks in a fresh local Release build.
-The archived validation records also contain the earlier ASan/UBSan and TSan
-runs. Qt 6 development files were unavailable in the import environment, so
+The current core passes **326,626 checks** in fresh local Release,
+ASan+UBSan, and TSan builds. The suite includes the sparse line-DP oracle,
+palette compatibility, resumable-state checks, deep coordinates, and
+solid-guess/refinement state separation. Qt 6 development files were unavailable in the import environment, so
 the GUI has not been locally compiled or exercised. The root GitHub Actions
 workflow builds Qt, runs the core tests, and performs an offscreen GUI smoke
 test; a separate job tests the headless core with TSan. Those CI results are

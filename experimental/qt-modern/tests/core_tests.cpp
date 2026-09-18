@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "xaos/axis.hpp"
 #include "xaos/renderer.hpp"
+#include "xaos/palette.hpp"
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -55,6 +56,10 @@ void axisTests() {
         }
         CHECK(std::abs(cost-result.cost)<1.e-9);
     }
+    // Timeout fill in classic XaoS creates duplicate old coordinates. They are
+    // one reusable visual line, not several lines that may satisfy the DP.
+    auto duplicate=matchAxis(std::vector<double>{1.0,1.0,1.0},3,4.0);
+    CHECK(std::count_if(duplicate.source.begin(),duplicate.source.end(),[](int i){return i>=0;})==1);
     rejects([]{matchAxis(std::vector<double>{1,0},3);});
     rejects([]{matchAxis({},0);});
     rejects([]{matchAxis({},3,0);});
@@ -211,6 +216,86 @@ void cancellationTests() {
         hard.settings.iterations=2000000000u;
     }
 }
+
+void paletteTests() {
+    const auto p=classicDefaultPalette();
+    CHECK(p.size()==65534);
+    const std::array<uint32_t,17> expected{{
+        0xff000000u,0xff0f0e1du,0xff1e1d3bu,0xff2d2c59u,0xff3c3b77u,
+        0xff4b4a94u,0xff5a59b2u,0xff6968d0u,0xff7877eeu,0xff6c69d3u,
+        0xff605bb8u,0xff544d9eu,0xff483f83u,0xff3c3168u,0xff30234eu,
+        0xff241533u,0xff180719u}};
+    for(size_t i=0;i<expected.size();++i) CHECK(p[i]==expected[i]);
+    uint64_t fingerprint=1469598103934665603ull;
+    for(const uint32_t c:p) for(unsigned byte=0;byte<4;++byte) {
+        fingerprint^=(c>>(8*byte))&0xffu;
+        fingerprint*=1099511628211ull;
+    }
+    // Whole-palette fingerprint from an independent mechanical reproduction of the
+    // original palette.cpp mkdefaultpalette()/mksmooth() floating-point loop.
+    CHECK(fingerprint==0xfb6a357de706d459ull);
+    CHECK(pixelColor(Count{0,Status::Escaped},100)==p[1]);
+    CHECK(pixelColor(Count{1,Status::Escaped},100)==p[2]);
+    CHECK(pixelColor(Count{99,Status::Interior},100)==0xff000000u);
+}
+
+void previewTests() {
+    ThreadExecutor pool(4);Cancellation stop;
+    Request r;r.width=160;r.height=96;r.settings.iterations=1000;r.settings.analytic=true;
+    r.view=View::parse("0","0","0.02",r.width);
+    Renderer renderer;
+    auto exact=renderer.render(r,pool,stop);
+    CHECK(exact->stats.complete);
+    r.view.zoom(.37,.61,.985,r.width,r.height);
+    r.settings.sliceMilliseconds=250;
+    auto preview=renderer.render(r,pool,stop);
+    CHECK(preview->stats.solidGuessed>0);
+    CHECK(preview->stats.pending>0);
+    CHECK(!preview->stats.complete);
+    uint64_t guesses=0;
+    for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
+        CHECK(preview->displayAt(x,y)==0xff000000u);
+        if(preview->qualityAt(x,y)==DisplayQuality::Guess) {
+            ++guesses;
+            CHECK(!preview->at(x,y).known(r.settings.iterations));
+        }
+    }
+    CHECK(guesses==preview->stats.solidGuessed);
+    auto refined=renderer.render(r,pool,stop);
+    CHECK(refined->stats.complete);
+    CHECK(refined->stats.pending==0);
+}
+
+
+void resolutionFeedbackTests() {
+    ThreadExecutor pool(4); Renderer renderer; Cancellation go;
+    Request r; r.width=160; r.height=96; r.settings.iterations=900;
+    r.settings.analytic=false; r.settings.solidGuessRange=0;
+    auto base=renderer.render(r,pool,go); CHECK(base->stats.complete);
+    r.view.zoom(.43,.57,.965,r.width,r.height);
+    r.settings.sliceMilliseconds=10;
+    Cancellation interrupted; interrupted.cancelled.store(true);
+    auto coarse=renderer.render(r,pool,interrupted);
+    CHECK(!coarse->stats.complete); CHECK(coarse->stats.filled>0);
+    auto unique=[](const std::vector<Big>&axis) {
+        size_t n=axis.empty()?0:1;
+        for(size_t i=1;i<axis.size();++i) if(!(axis[i]==axis[i-1])) ++n;
+        return n;
+    };
+    const size_t coarseResolution=unique(coarse->previewXs)+unique(coarse->previewYs);
+    CHECK(coarseResolution<coarse->previewXs.size()+coarse->previewYs.size());
+    // The next same-view pass must see those collapsed presentation coordinates
+    // as missing DP lines and recover resolution; exact axes never collapsed.
+    auto finer=renderer.render(r,pool,go);
+    const size_t finerResolution=unique(finer->previewXs)+unique(finer->previewYs);
+    CHECK(finerResolution>coarseResolution);
+    CHECK(finer->xs==coarse->xs && finer->ys==coarse->ys);
+    r.settings.sliceMilliseconds=0;
+    auto exact=renderer.render(r,pool,go); CHECK(exact->stats.complete);
+    CHECK(exact->previewXs.empty());
+    CHECK(exact->previewYs.empty());
+}
+
 void failureTests() {
     ThreadExecutor pool(2);Renderer renderer;Request r;Cancellation stop;
     r.width=0;rejects([&]{renderer.render(r,pool,stop);});r.width=32;r.height=20;
@@ -226,10 +311,11 @@ void failureTests() {
 int main() {
     try {
         for(auto [name,test]:std::vector<std::pair<const char*,std::function<void()>>>{
-          {"axis optimizer vs independent dense DP",axisTests}, {"arbitrary-precision camera",numericTests},
+          {"axis optimizer vs independent dense DP",axisTests}, {"classic XaoS palette",paletteTests}, {"arbitrary-precision camera",numericTests},
           {"scalar/AVX2 bit identity",simdTests},{"counts/state/resume/limit decrease",resumeTests},
           {"zoom coordinates and exact refinement",zoomTests},{"deep zoom and cache invalidation",deepTests},
-          {"cancellation and resumption",cancellationTests},{"validation and exception barriers",failureTests}}) {
+          {"cancellation and resumption",cancellationTests},{"solid guessing and preview refinement",previewTests},
+          {"timeout fill feeds next DP resolution pass",resolutionFeedbackTests},{"validation and exception barriers",failureTests}}) {
             test();std::cout<<"PASS "<<name<<'\n';
         }
         std::cout<<"PASS "<<checks<<" checks; AVX2 available="<<hasAVX2()<<'\n';

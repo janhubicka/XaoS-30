@@ -12,9 +12,12 @@ gaps between retained lines. The original implementation specializes pixel
 formats by preprocessor inclusion. Existing XaoS already has Qt support: the
 point here is a new engine/data model, not simply attaching Qt to a scalar loop.
 
-This implementation is an independent formulation of that idea, not a literal
-port of upstream's fixed-point/cache-optimized DP. It retains count/orbit data
-instead of final pixel colors. Consequently palettes are downstream of the cache.
+The line matcher is an independent sparse formulation of the same optimization,
+not a literal transcription of upstream's fixed-point/cache-optimized DP. The
+rest of the moving-frame policy now deliberately mirrors the original engine:
+`newpositions`-style movement weights, recursive midpoint priorities,
+`calcline`/`calccolumn` solid guessing, and nearest-line timeout filling. It
+retains count/orbit data in addition to a separate display buffer.
 
 ## Sparse monotone line matching
 
@@ -100,39 +103,82 @@ to a new frame; it never modifies an object the GUI or old frame can read.
 Changing a palette need only recolor counts, although the current GUI provides
 only the built-in palette rather than a palette editor.
 
+## Classic XaoS palette and interactive scheduling
+
+The default escape-time palette is generated from the 31 control RGB triples in
+upstream `src/util/palette.cpp`. Like `mkdefaultpalette`, it uses eight samples
+per segment, `float` interpolation followed by integer truncation, repeats the
+31-segment control cycle through the true-colour table, and preserves the final
+short segment that leaves two allocator entries unused. The resulting table has
+65,534 generated entries. Escape-time colouring follows upstream
+`formulas.cpp`: `(iteration % (palette.size()-1)) + 1`; palette entry zero is the
+inside colour. Palette lookup remains downstream of orbit state.
+
+For a moving frame, the sparse row/column DP first chooses which old sample
+coordinates survive. A new line receives a movement weight equivalent to
+upstream `newpositions`: on zoom-in, slowly moving lines are preferred by
+`1/(1+movement_in_pixels)`; zoom-out reverses that preference and strongly
+weights the boundary. Within every contiguous block of new lines, the recursive
+midpoint rule from `addprices` promotes the line that most reduces the largest
+unresolved interval, then recursively treats the two halves. Row and column
+work is interleaved by these priorities. This replaces the earlier
+pointer-distance tile ordering, which visibly repainted deep zooms from the
+pointer/centre outward.
+
+Solid guessing follows the neighbourhood used in `zoomd.h`. When calculating a
+new row, the renderer finds calculated rows above/below within the configured
+range and calculated columns on both sides. If the seven already-available
+border/reference pixels agree, the current pixel gets that colour without an
+orbit calculation; the column case is transposed. Small exact anchors are
+calculated in parallel before each line scan so the sequential left/up reference
+used by the original heuristic remains available while expensive anchors still
+use all workers.
+
+A guessed pixel is tagged `Guess`; a deadline substitute is tagged `Fill`.
+Neither changes `Count`, `z_n`, or the exact sample coordinate. When a slice
+expires, the display-only fill mirrors `mkfilltable`/`filly`: unresolved columns
+copy the closest completed column in coordinate space, then unresolved rows copy
+the closest completed row.
+
+Classic XaoS then stores the copied source coordinate back into `xpos`/`ypos`.
+That detail is essential: it deliberately creates duplicate line coordinates, so
+the next DP pass recognizes that resolution was lost and recreates the missing
+lines. The modern renderer maintains an analogous **presentation-coordinate**
+table separate from the exact `xs`/`ys` table used by resumable orbit state. A
+timeout collapses only presentation coordinates; duplicate presentation lines
+are treated as one reusable line by the next DP. Thus later slices recover
+resolution with the classic line-priority queue while exact orbit coordinates
+remain valid. Once the line grid is resolved, any pending guessed pixels are
+refined in the original interlaced line order rather than a centre-out tile
+order. Aggressive previews therefore cannot masquerade as resumable state.
+
+The GUI time budget follows the policy in upstream `ui_helper.cpp` with a
+50-frame moving history: start from five times recent work; during interaction,
+tighten to three times when above the 25-FPS threshold and clamp to about 15 FPS;
+at idle use about 1/3 second; never request a slice shorter than about 1/30
+second, subtract measured image/UI overhead, and retain a 10 ms floor. The
+budget is soft: an individual orbit or line can overrun it, exactly as the old
+engine only reaches interrupt points at safe boundaries.
+
 ## Scheduling and GUI lifetime
 
 The portable executor uses persistent `std::jthread` workers and a per-batch
 barrier. The Qt executor uses a dedicated persistent `QThreadPool`. A separate
-render coordinator owns the renderer and submits pixel jobs; it never waits for
-the same pool from one of that pool's workers. Exception barriers wait for all
-workers before unwinding.
+render coordinator owns the renderer and never waits recursively from a pool
+worker. Exact raster work is chunked in cache-friendly 64-sample groups; moving
+zoom previews instead follow the row/column priority queue above. Runtime AVX2
+still processes four native orbits per inner batch, while GMP scratch objects
+are retained per worker.
 
-Tiles are 64 by 8 samples, prioritized near the focal point and assigned with an
-atomic work index. Rows have 64-sample padding and independent tiles do not write
-the same cache line. Statistics are also cache-line aligned. Default worker
-selection is affinity-aware on Linux, but does not interpret all cgroup quota
-hierarchies; an explicit worker count remains appropriate in containers.
+The GUI maintains one pending request rather than accumulating obsolete zooms.
+Superseding a request cancels current work cooperatively. Incomplete views keep
+refining while no newer request exists; after input settles the UI requests a
+uniform-grid pass. Only the coordinator creates QImages, and display fallback,
+solid guesses, and timeout fills are never read back as mathematical state.
 
-The GUI maintains one pending request, not an accumulating queue of obsolete
-zooms. Superseding a request cancels current computation cooperatively. A saved
-orbit can yield mid-loop; each batch publishes only after its workers finish.
-Count-only mode observes external cancellation in-loop but does not stop an
-individual orbit just because its soft time slice expires: otherwise a hard
-point could repeatedly restart without ever completing. A single long GMP step,
-axis planning, allocation, remapping, or a count-only orbit can exceed the nominal
-slice. This is not a hard real-time deadline guarantee.
-
-A job's slice starts after planning/allocation, avoiding starvation when metadata
-alone takes longer than the requested budget. Cancelled tiles still remap already
-valid samples. Incomplete views continue refining when there is no newer request.
-
-Only the coordinator creates the image; pixel workers do not paint QImages or
-touch QWidgets. A queued callback transfers an immutable image to the GUI. On
-shutdown the GUI cancels and joins the coordinator, and pixel pools drain before
-the objects they access disappear. Image fallback scaling is a display operation,
-never a source of orbit state. These GUI paths have been statically reviewed but
-not compiled or dynamically tested in the present environment.
+Qt-specific paths have been statically reviewed but could not be compiled in the
+local container because Qt 6 development files are unavailable; repository CI
+provides the Qt build and offscreen smoke test.
 
 ## Numerical and performance limits
 
@@ -152,7 +198,9 @@ Qt painting/event-loop overhead.
 
 ### Primary documentation
 
-- [XaoS upstream engine](https://github.com/xaos-project/XaoS/blob/51fd5e2ba052246c6ef44c556e906aac9c822378/src/engine/zoom.cpp)
+- [XaoS zoom engine](https://github.com/xaos-project/XaoS/blob/51fd5e2ba052246c6ef44c556e906aac9c822378/src/engine/zoom.cpp)
+- [XaoS solid guessing](https://github.com/xaos-project/XaoS/blob/51fd5e2ba052246c6ef44c556e906aac9c822378/src/engine/zoomd.h)
+- [XaoS palette generator](https://github.com/xaos-project/XaoS/blob/51fd5e2ba052246c6ef44c556e906aac9c822378/src/util/palette.cpp)
 - [GMP floating-point semantics](https://gmplib.org/manual/Floating_002dpoint-Functions)
 - [GMP reentrancy](https://gmplib.org/manual/Reentrancy)
 - [Qt thread pool](https://doc.qt.io/qt-6/qthreadpool.html)

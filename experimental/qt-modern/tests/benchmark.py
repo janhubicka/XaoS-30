@@ -27,6 +27,8 @@ cases = {
     "avx2_4_workers": base + ["--threads", "4", "--counts"],
     "adaptive_zoom": base + ["--threads", "4", "--counts", "--frames", "20", "--zoom", "0.98"],
     "uniform_zoom": base + ["--threads", "4", "--counts", "--frames", "20", "--zoom", "0.98", "--uniform"],
+    "interactive_zoom_guess": base + ["--threads", "4", "--counts", "--frames", "2", "--zoom", "0.98", "--slice", "60"],
+    "interactive_zoom_no_guess": base + ["--threads", "4", "--counts", "--frames", "2", "--zoom", "0.98", "--slice", "60", "--no-guess"],
     "raise_counts": base + ["--threads", "4", "--counts", "--limits", "256,512,1024,2048"],
     "raise_state": base + ["--threads", "4", "--state", "--limits", "256,512,1024,2048"],
     "gmp_counts": ["--width", "128", "--height", "80", "--precision", "256", "--threads", "4",
@@ -40,7 +42,7 @@ for name, args in cases.items():
     for _ in range(result["repeats"]):
         completed = subprocess.run([binary, *args], check=True, text=True, capture_output=True, timeout=90)
         rows = list(csv.DictReader(io.StringIO(completed.stdout)))
-        if not rows or any(int(row["pending"]) for row in rows):
+        if not rows or (not name.startswith("interactive_") and any(int(row["pending"]) for row in rows)):
             raise RuntimeError(f"Incomplete benchmark frame: {name}")
         runs.append(rows)
     frames = []
@@ -49,7 +51,7 @@ for name, args in cases.items():
         frames.append({"frame": i, "median_ms": statistics.median(float(row["ms"]) for row in rows),
                        "min_ms": min(float(row["ms"]) for row in rows),
                        "max_ms": max(float(row["ms"]) for row in rows),
-                       **{key: rows[0][key] for key in ["backend", "bits", "limit", "reused", "started", "resumed", "steps", "simd"]}})
+                       **{key: rows[0][key] for key in ["backend", "bits", "limit", "reused", "started", "resumed", "steps", "pending", "guessed", "filled", "simd"]}})
     result["cases"][name] = {"command": [binary, *args], "frames": frames,
                               "median_total_ms": statistics.median(sum(float(row["ms"]) for row in run) for run in runs)}
     print(name, result["cases"][name]["median_total_ms"], flush=True)

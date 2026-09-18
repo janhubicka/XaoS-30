@@ -6,7 +6,7 @@ and compile-time count-only / resumable-orbit storage policies.
 
 **Status (18 September 2026):** the headless engine builds and passes the supplied
 regression suite in Release, AddressSanitizer + UndefinedBehaviorSanitizer, and
-ThreadSanitizer builds. The Qt frontend is implemented but **has not been compiled
+ThreadSanitizer builds. The current suite reports **326,626 checks**. The Qt frontend is implemented but **has not been compiled
 or run in the development container**, because its Qt 6 SDK is unavailable. An
 unexecuted GitHub Actions workflow includes an offscreen GUI smoke test. This is
 not an upstream XaoS release or a replacement for all its features.
@@ -53,11 +53,21 @@ currently displayed frame, which can still be an adaptive or incomplete preview.
 There is no separate guaranteed-complete export action yet; use the headless
 `--uniform --output` path for a completed uniform sample grid.
 
+Moving frames now follow the classic XaoS progressive zoom policy rather than a
+pointer-centred tile sweep. Reusable rows and columns are selected by the
+monotone dynamic program; new lines are prioritized recursively by unresolved
+block size and by how far the line moved. The classic seven-neighbour **solid
+guessing** rule can paint a point without iterating it when its surrounding
+calculated samples are monochromatic. If a frame reaches its dynamic time
+budget, remaining gaps are filled from the nearest completed row/column for
+display and refined on later slices.
+
 After movement stops, the GUI requests uniform-grid refinement. A moving frame
-can have nonuniform sample positions; these are explicit, not silently treated
-as exact values on the ideal pixel grid. The status bar says whether the frame
-is complete and uniform. Paint interpolation/fallback images are never copied
-back into the iteration cache.
+can therefore have nonuniform sample positions and guessed/fill pixels; both are
+explicit. Guessed or timeout-filled pixels live only in a display buffer and
+**never become count/orbit state**, so increasing the iteration limit still
+resumes/recomputes the true sample. The status bar reports guesses, fills,
+completion and uniformity.
 
 ## Headless examples
 
@@ -99,7 +109,9 @@ python3 tests/benchmark.py build-headless/xaos-bench local-benchmarks.json
 ```
 
 CSV output reports elapsed renderer time, precision, reused/started/resumed
-samples, actual iteration steps, unresolved samples, and estimated memory. See
+samples, actual iteration steps, unresolved samples, solid guesses, timeout
+fills, and estimated memory. `--slice MS`, `--no-guess`, `--solid-guess N`, and
+`--no-fill` expose the interactive policy for measurement. See
 [the benchmark report](docs/BENCHMARKS.md) before interpreting speedup numbers.
 
 ## Precision and memory contract
@@ -136,7 +148,9 @@ states read-only. Large high-precision interior areas remain expensive.
 Implemented formulas are Mandelbrot, Julia, and Burning Ship. There are no
 reference-orbit perturbation, series approximation, GPU, AVX-512, ARM NEON,
 periodicity-detection, certified interval, deep-reference glitch-repair, or
-full upstream palette/filter/animation compatibility implementations here.
+full upstream filter/animation compatibility implementations here. The default
+escape-time colours do use the original XaoS `mkdefaultpalette` control colours,
+8-entry interpolation, palette size quirk, and `(iter % (size-1))+1` indexing.
 The only interior shortcuts are conservative floating-point tests for the main
 Mandelbrot cardioid and period-two bulb; `--no-interior` disables them.
 
