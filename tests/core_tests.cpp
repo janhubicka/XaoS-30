@@ -394,6 +394,58 @@ template<class F> void verifyKnownCoordinates(const FrameBase&frame) {
         CHECK(actual==expected);
     }
 }
+/// Compares specialized quadratic precision backends against the GMP reference
+/// on an exactly representable grid and verifies resumable state.
+void fastPrecisionTests() {
+    ThreadExecutor one(1),many(4);Cancellation stop;
+    for(auto formula:{Formula::Mandelbrot,Formula::Julia,Formula::BurningShip}) {
+        for(mp_bitcnt_t precision:{80ul,112ul,150ul,210ul}) {
+            Request r;
+            r.width=16;r.height=8;
+            r.view=View::parse("-0.5","0","4",r.width);
+            r.settings.formula=formula;
+            r.settings.minimumPrecision=precision;
+            r.settings.iterations=24;
+            r.settings.analytic=false;
+            r.settings.uniform=true;
+            r.settings.solidGuessRange=0;
+            r.settings.saveState=true;
+
+            Renderer fast;
+            auto first=fast.render(r,many,stop);
+            CHECK(first->stats.backend!="double");
+
+            r.settings.iterations=80;
+            auto resumed=fast.render(r,many,stop);
+            CHECK(resumed->stats.resumed>0 || resumed->stats.pending==0);
+
+            Renderer fresh;
+            auto baseline=fresh.render(r,one,stop);
+            sameCounts(*resumed,*baseline);
+
+            Request gmpRequest=r;
+            gmpRequest.settings.fastPrecision=false;
+            Renderer gmp;
+            auto reference=gmp.render(gmpRequest,one,stop);
+            CHECK(reference->stats.backend=="GMP");
+            sameCounts(*resumed,*reference);
+        }
+    }
+
+    // Precision above the fixed-size range must transparently fall back to GMP.
+    Request deep;
+    deep.width=16;deep.height=8;
+    deep.view=View::parse("-0.5","0","4",deep.width);
+    deep.settings.minimumPrecision=300;
+    deep.settings.iterations=40;
+    deep.settings.analytic=false;
+    deep.settings.uniform=true;
+    deep.settings.solidGuessRange=0;
+    Renderer renderer;
+    auto frame=renderer.render(deep,one,stop);
+    CHECK(frame->stats.backend=="GMP");
+}
+
 /// Runs regression checks for zoom.
 void zoomTests() {
     ThreadExecutor pool(3); Cancellation stop;
@@ -839,7 +891,8 @@ int main() {
     try {
         for(auto [name,test]:std::vector<std::pair<const char*,std::function<void()>>>{
           {"axis optimizer vs independent dense DP",axisTests}, {"XaoS autopilot",autopilotTests}, {"XaoS fixed formulas",formulaTests}, {"classic XaoS palette",paletteTests}, {"arbitrary-precision camera",numericTests},
-          {"scalar/AVX2 bit identity",simdTests},{"counts/state/resume/limit decrease",resumeTests},
+          {"scalar/native SIMD bit identity",simdTests},{"counts/state/resume/limit decrease",resumeTests},
+          {"fast quadratic precision vs GMP",fastPrecisionTests},
           {"zoom coordinates and exact refinement",zoomTests},{"rotated view rendering and reuse",rotationTests},
           {"deep zoom and cache invalidation",deepTests},
           {"cancellation and resumption",cancellationTests},{"solid guessing and preview refinement",previewTests},
