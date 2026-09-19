@@ -201,7 +201,7 @@ struct View {
     /// Maps a mathematical complex coordinate to normalized screen coordinates.
     std::pair<double,double> complexToScreen(const Big&real,const Big&imag,int width,int height) const {
         if(width<1||height<1) throw std::invalid_argument("invalid screen size");
-        const Big dr=sub(real,re),di=sub(im,im);
+        const Big dr=sub(real,re),di=sub(imag,im);
         const auto [horizontal,vertical]=axesFromComplex(dr,di);
         const double u=.5+div(horizontal,span).toDouble();
         const double v=.5-div(vertical,span).toDouble()*static_cast<double>(width)/height;
