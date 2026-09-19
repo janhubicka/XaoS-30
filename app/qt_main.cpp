@@ -428,13 +428,21 @@ protected:
                 if(pinch->state()==Qt::GestureStarted) {
                     gestureChanged_=false;idle_.stop();
                 }
-                const QPointF center=pinch->centerPoint();
+                // The generic Qt pinch recognizer stores center points in global
+                // coordinates; macOS uses its specialized native recognizer and
+                // reports them in widget coordinates.
+                QPointF center=pinch->centerPoint();
+                QPointF lastCenter=pinch->lastCenterPoint();
+#ifndef Q_OS_MACOS
+                center=QPointF(mapFromGlobal(center.toPoint()));
+                lastCenter=QPointF(mapFromGlobal(lastCenter.toPoint()));
+#endif
                 const double u=center.x()/std::max(1,width());
                 const double v=center.y()/std::max(1,height());
                 try {
                     const auto flags=pinch->changeFlags();
                     if(flags.testFlag(QPinchGesture::CenterPointChanged)) {
-                        const QPointF delta=center-pinch->lastCenterPoint();
+                        const QPointF delta=center-lastCenter;
                         view.pan(delta.x(),delta.y(),std::max(1,width()));
                         gestureChanged_=true;
                     }
