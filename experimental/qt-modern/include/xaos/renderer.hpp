@@ -40,9 +40,10 @@ struct Settings {
 struct Request { View view; int width=1024,height=768; Settings settings; };
 struct Statistics {
     uint64_t reused=0,started=0,resumed=0,steps=0,pending=0,solidGuessed=0,filled=0;
+    uint32_t gridRows=0,gridColumns=0;
     double milliseconds=0,lineCost=0;
     size_t estimatedBytes=0;
-    bool complete=false,uniform=false,simd=false;
+    bool complete=false,uniform=false,simd=false,reusableGrid=false;
     mp_bitcnt_t bits=0;
     std::string backend;
 };
@@ -88,11 +89,14 @@ template<> struct Storage<true,Big> {
 };
 template<class Real,bool Save> struct Frame final:FrameBase { Storage<Save,Real> state; };
 class Renderer {
-    std::shared_ptr<const FrameBase> previous_;
+    // Mathematical state and display-grid state have different lifetimes. A
+    // cancelled frame can contain resumable z_n values while still lacking the
+    // minimum row/column support required to serve as the next XaoS DP image.
+    std::shared_ptr<const FrameBase> statePrevious_,gridPrevious_;
 public:
     // One coordinator at a time. Worker scheduling is supplied by the host.
     std::shared_ptr<const FrameBase> render(const Request&,Executor&,const Cancellation&);
-    void clear() { previous_.reset(); }
+    void clear() { statePrevious_.reset(); gridPrevious_.reset(); }
 };
 // Palette is separate from iteration storage. Changing a palette does not require
 // recalculating orbits. Output is packed 0xFFRRGGBB; unresolved/inside is black.

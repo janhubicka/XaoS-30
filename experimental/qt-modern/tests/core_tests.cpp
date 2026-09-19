@@ -384,6 +384,109 @@ void reconstructionTests() {
     CHECK(linearVsCubic);
 }
 
+
+
+void splitCacheTests() {
+    ThreadExecutor pool(4); Cancellation go; Renderer renderer;
+    Request r; r.width=120; r.height=80; r.settings.iterations=300;
+    r.settings.analytic=false; r.settings.solidGuessRange=0;
+    const View baseView=r.view;
+    auto base=renderer.render(r,pool,go);
+    CHECK(base->stats.complete);
+    CHECK(base->stats.reusableGrid);
+
+    // Jump far enough that the old image has no geometric overlap and cancel
+    // immediately. The partial mathematical state is allowed to become the state
+    // cache, but it must not replace the valid DP/display grid.
+    r.view=View::parse("12","9","1.0",r.width);
+    r.settings.sliceMilliseconds=2;
+    Cancellation cancelled; cancelled.cancelled.store(true);
+    auto invalid=renderer.render(r,pool,cancelled);
+    CHECK(!invalid->stats.reusableGrid);
+
+    // Return near the original view. If the invalid frame poisoned the grid cache,
+    // this pass would bootstrap from only a few freshly calculated lines. With the
+    // split cache it can move a large fraction of the original exact grid directly.
+    r.view=baseView;
+    r.view.zoom(.51,.47,.985,r.width,r.height);
+    auto recovered=renderer.render(r,pool,go);
+    CHECK(recovered->stats.reusableGrid);
+    CHECK(recovered->stats.reused>static_cast<uint64_t>(r.width*r.height)/4);
+    uint64_t exactSamples=0;
+    for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x)
+        exactSamples+=recovered->qualityAt(x,y)==DisplayQuality::Exact;
+    CHECK(exactSamples>static_cast<uint64_t>(r.width*r.height)/4);
+}
+
+void rapidZoomDisplayTests() {
+    ThreadExecutor pool(4); Cancellation go; Renderer renderer;
+    Request r; r.width=192; r.height=120; r.settings.iterations=1400;
+    r.settings.analytic=false; r.settings.solidGuessRange=0;
+    auto frame=renderer.render(r,pool,go); CHECK(frame->stats.complete);
+
+    auto fullyVisible=[](const FrameBase&f) {
+        for(int y=0;y<f.request.height;++y) for(int x=0;x<f.request.width;++x)
+            if((f.displayAt(x,y)>>24)!=0xffu) return false;
+        return true;
+    };
+    auto uniqueAxis=[](const std::vector<Big>&axis) {
+        if(axis.empty()) return size_t{0};
+        size_t n=1;
+        for(size_t i=1;i<axis.size();++i) if(!(axis[i]==axis[i-1])) ++n;
+        return n;
+    };
+    bool sawSparse=false,sawReuse=false;
+    r.settings.sliceMilliseconds=2;
+    for(int k=0;k<8;++k) {
+        r.view.zoom(.37,.61,.975,r.width,r.height);
+        frame=renderer.render(r,pool,go);
+        CHECK(fullyVisible(*frame));
+        CHECK(uniqueAxis(frame->previewXs)>=static_cast<size_t>(std::min(3,r.width)));
+        CHECK(uniqueAxis(frame->previewYs)>=static_cast<size_t>(std::min(3,r.height)));
+        if(frame->stats.reused>0)
+            CHECK(frame->stats.started<static_cast<uint64_t>(r.width*r.height)/2);
+        sawReuse|=frame->stats.reused>0;
+        uint64_t missing=0;
+        for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x)
+            missing+=frame->qualityAt(x,y)==DisplayQuality::Missing;
+        sawSparse|=missing>0 || frame->stats.filled>0;
+    }
+    CHECK(sawReuse);
+    CHECK(sawSparse);
+
+    // Zooming out exposes area outside the previous viewport. It must be
+    // reconstructed/clamped immediately rather than appearing as a black/empty
+    // square around the old frame while the new boundary lines are calculated.
+    for(int k=0;k<8;++k) {
+        r.view.zoom(.63,.39,1.028,r.width,r.height);
+        frame=renderer.render(r,pool,go);
+        CHECK(fullyVisible(*frame));
+        CHECK(uniqueAxis(frame->previewXs)>=static_cast<size_t>(std::min(3,r.width)));
+        CHECK(uniqueAxis(frame->previewYs)>=static_cast<size_t>(std::min(3,r.height)));
+        if(frame->stats.reused>0)
+            CHECK(frame->stats.started<static_cast<uint64_t>(r.width*r.height)/2);
+    }
+    CHECK(frame->displayAt(0,0)!=0u);
+    CHECK(frame->displayAt(r.width-1,r.height-1)!=0u);
+
+    // With motion stopped, repeated bounded passes must refine the existing grid
+    // rather than replace it with a fresh raster. Reuse should persist and the
+    // number of timeout-filled samples should not increase indefinitely.
+    const auto beforeFilled=frame->stats.filled;
+    uint64_t bestFilled=beforeFilled;
+    bool idleReuse=false;
+    for(int k=0;k<5;++k) {
+        frame=renderer.render(r,pool,go);
+        CHECK(fullyVisible(*frame));
+        if(frame->stats.reused>0)
+            CHECK(frame->stats.started<static_cast<uint64_t>(r.width*r.height)/2);
+        idleReuse|=frame->stats.reused>0;
+        bestFilled=std::min(bestFilled,frame->stats.filled);
+    }
+    CHECK(idleReuse);
+    CHECK(bestFilled<=beforeFilled);
+}
+
 void failureTests() {
     ThreadExecutor pool(2);Renderer renderer;Request r;Cancellation stop;
     r.width=0;rejects([&]{renderer.render(r,pool,stop);});r.width=32;r.height=20;
@@ -404,6 +507,8 @@ int main() {
           {"zoom coordinates and exact refinement",zoomTests},{"deep zoom and cache invalidation",deepTests},
           {"cancellation and resumption",cancellationTests},{"solid guessing and preview refinement",previewTests},
           {"timeout fill feeds next DP resolution pass",resolutionFeedbackTests},{"grid reconstruction modes",reconstructionTests},
+          {"split orbit/grid cache lifetime",splitCacheTests},
+          {"rapid zoom display and idle refinement",rapidZoomDisplayTests},
           {"validation and exception barriers",failureTests}}) {
             test();std::cout<<"PASS "<<name<<'\n';
         }
