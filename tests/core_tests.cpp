@@ -773,10 +773,11 @@ void memoryBudgetTests() {
         Renderer renderer;
         auto frame=renderer.render(r,one,stop);
         using F=FormulaTag<Formula::Mandelbrot>;
-        auto*typed=dynamic_cast<const Frame<double,true,F>*>(frame.get());
+        auto*typed=dynamic_cast<const Frame<double,true>*>(frame.get());
         CHECK(typed);
-        CHECK(typed->state.x.size()==frame->counts.size());
-        CHECK(typed->state.y.size()==frame->counts.size());
+        const auto&state=typed->state.template get<F>();
+        CHECK(state.x.size()==frame->counts.size());
+        CHECK(state.y.size()==frame->counts.size());
         CHECK(F::stateScalars==2);
     }
     {
@@ -785,12 +786,13 @@ void memoryBudgetTests() {
         Renderer renderer;
         auto frame=renderer.render(r,one,stop);
         using F=FormulaTag<Formula::Phoenix>;
-        auto*typed=dynamic_cast<const Frame<double,true,F>*>(frame.get());
+        auto*typed=dynamic_cast<const Frame<double,true>*>(frame.get());
         CHECK(typed);
-        CHECK(typed->state.x.size()==frame->counts.size());
-        CHECK(typed->state.y.size()==frame->counts.size());
-        CHECK(typed->state.a.size()==frame->counts.size());
-        CHECK(typed->state.b.size()==frame->counts.size());
+        const auto&state=typed->state.template get<F>();
+        CHECK(state.x.size()==frame->counts.size());
+        CHECK(state.y.size()==frame->counts.size());
+        CHECK(state.a.size()==frame->counts.size());
+        CHECK(state.b.size()==frame->counts.size());
         CHECK(F::stateScalars==4);
     }
     {
