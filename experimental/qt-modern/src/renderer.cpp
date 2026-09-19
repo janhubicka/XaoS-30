@@ -765,13 +765,13 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         const auto rowOrder=interlacedOrder(r.height,range);
         std::vector<size_t> row;
         row.reserve(static_cast<size_t>(r.width));
-        int completedRows=0;
+        int availableRows=static_cast<int>(std::count(rowReady.begin(),rowReady.end(),uint8_t{1}));
         const int minimumRows=std::min(3,r.height);
         for(int y:rowOrder) {
             // processqueue() in classic XaoS does not make the calculation
             // interruptible until enough support exists to produce a reduced-
             // resolution image. Preserve that invariant for fresh/raster work too.
-            if(workStop.requested() && completedRows>=minimumRows) break;
+            if(workStop.requested() && availableRows>=minimumRows) break;
             row.clear();
             for(int x=0;x<r.width;++x) {
                 const size_t index=f->index(x,y);
@@ -788,7 +788,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     ready=false;break;
                 }
             if(ready) {
-                if(!rowReady[static_cast<size_t>(y)]) ++completedRows;
+                if(!rowReady[static_cast<size_t>(y)]) ++availableRows;
                 rowReady[static_cast<size_t>(y)]=1;
             }
         }
