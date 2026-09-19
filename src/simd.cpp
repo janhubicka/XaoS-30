@@ -88,6 +88,9 @@ static void avx(std::array<Lane,4>&l,size_t valid,uint32_t limit,const Cancellat
 
 #endif
 #ifdef XAOS_ARM_NEON
+static bool anyMask(uint64x2_t mask) {
+    return (vgetq_lane_u64(mask,0)|vgetq_lane_u64(mask,1))!=0;
+}
 template<bool Ship>
 static void neonPair(Lane* lanes,size_t valid,uint32_t limit,const Cancellation&stop,bool budget) {
     alignas(16) double xs[2]{},ys[2]{},crs[2]{},cis[2]{},ns[2]{};
@@ -108,7 +111,7 @@ static void neonPair(Lane* lanes,size_t valid,uint32_t limit,const Cancellation&
     auto escaped=vdupq_n_u64(0);
     auto xx=vmulq_f64(x,x),yy=vmulq_f64(y,y);
     unsigned poll=0;
-    while(vmaxvq_u64(active)) {
+    while(anyMask(active)) {
         if(!poll) { if(stop.requested(budget)) break; poll=64; }
         --poll;
         auto xy=vmulq_f64(x,y);
