@@ -211,8 +211,25 @@ jobs:
       - name: Build GMP for Android arm64
         run: |
           set -euo pipefail
-          curl -L --retry 3 https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz -o gmp.tar.xz
-          tar -xf gmp.tar.xz
+          gmp_archive=gmp-6.3.0.tar.xz
+          gmp_sha256=a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898
+          for url in \
+            "https://ftp.gnu.org/gnu/gmp/$gmp_archive" \
+            "https://ftpmirror.gnu.org/gmp/$gmp_archive" \
+            "https://gmplib.org/download/gmp/$gmp_archive"
+          do
+            echo "Downloading GMP from $url"
+            if curl --fail --location --show-error \
+                    --connect-timeout 20 --max-time 180 \
+                    --retry 2 --retry-all-errors \
+                    "$url" -o "$gmp_archive"; then
+              break
+            fi
+            rm -f "$gmp_archive"
+          done
+          test -s "$gmp_archive"
+          echo "$gmp_sha256  $gmp_archive" | sha256sum --check -
+          tar -xf "$gmp_archive"
           toolchain="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64"
           prefix="$GITHUB_WORKSPACE/gmp-android"
           cd gmp-6.3.0
