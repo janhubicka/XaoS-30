@@ -68,7 +68,7 @@ if(XAOS_BUILD_GUI)
       QT_ANDROID_VERSION_NAME "${PROJECT_VERSION}"
       QT_ANDROID_VERSION_CODE 1)
   endif()
-  qt_finalize_executable(xaos-modern)
+  qt_finalize_target(xaos-modern)
   if(NOT ANDROID)
     install(TARGETS xaos-modern RUNTIME DESTINATION bin BUNDLE DESTINATION .)
   endif()
