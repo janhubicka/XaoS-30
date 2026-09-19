@@ -87,198 +87,166 @@ template<class R> bool cdiv(const R&ar,const R&ai,const R&br,const R&bi,R&rr,R&r
     rr=NumberOps<R>::div(nr,den);ri=NumberOps<R>::div(ni,den);
     return true;
 }
-template<class R> void cpow(R x,R y,unsigned power,R&rr,R&ri) {
-    R pr=NumberOps<R>::value(1,x),pi=NumberOps<R>::value(0,x);
-    while(power) {
-        if(power&1u) { R nr=x,ni=y; cmul(pr,pi,x,y,nr,ni); pr=std::move(nr);pi=std::move(ni); }
-        power>>=1u;
-        if(power) { R nr=x,ni=y; cmul(x,y,x,y,nr,ni); x=std::move(nr);y=std::move(ni); }
+template<unsigned Power,class R> void cpowFixed(const R&x,const R&y,R&rr,R&ri) {
+    static_assert(Power>=1);
+    if constexpr(Power==1) {
+        rr=x;ri=y;
+    } else if constexpr((Power&1u)==0) {
+        R sr=x,si=y;
+        cmul(x,y,x,y,sr,si);
+        cpowFixed<Power/2>(sr,si,rr,ri);
+    } else {
+        R pr=x,pi=y;
+        cpowFixed<Power-1>(x,y,pr,pi);
+        cmul(pr,pi,x,y,rr,ri);
     }
-    rr=std::move(pr);ri=std::move(pi);
 }
 
-template<class R> struct GenericFormulaKernel {
+template<class R,class F> struct FixedFormulaKernel {
+    static_assert(F::generic,"fixed scalar kernel is only used for non-quadratic formulas");
     R x,y,a,b;
 
-    /// Constructs a generic formula kernel at native precision.
-    GenericFormulaKernel() requires std::is_same_v<R,double> = default;
-    /// Constructs a generic formula kernel at arbitrary precision.
-    explicit GenericFormulaKernel(mp_bitcnt_t bits) requires std::is_same_v<R,Big>
+    /// Constructs a formula-specialized kernel at native precision.
+    FixedFormulaKernel() requires std::is_same_v<R,double> = default;
+    /// Constructs a formula-specialized kernel at arbitrary precision.
+    explicit FixedFormulaKernel(mp_bitcnt_t bits) requires std::is_same_v<R,Big>
         :x(bits),y(bits),a(bits),b(bits) {}
 
 private:
-    /// Initializes formula parameters and fresh orbit state using XaoS's STARTZERO rules.
-    void initialize(Formula formula,const R&cx,const R&cy,R&cr,R&ci) {
+    /// Initializes compile-time formula parameters and fresh orbit state.
+    void initialize(const R&cx,const R&cy,R&cr,R&ci) {
         using O=NumberOps<R>;
         cr=cx;ci=cy;
         x=cx;y=cy;a=O::value(0,cx);b=O::value(0,cx);
-        switch(formula) {
-        case Formula::Newton:
-        case Formula::Newton4:
+        if constexpr(F::formula==Formula::Newton || F::formula==Formula::Newton4) {
             cr=O::value(0,cx);ci=O::value(0,cx);
             a=O::value(1,cx);
-            break;
-        case Formula::Barnsley1:
-        case Formula::Barnsley2:
+        } else if constexpr(F::formula==Formula::Barnsley1 || F::formula==Formula::Barnsley2) {
             cr=O::value(-.6,cx);ci=O::value(1.1,cx);
-            break;
-        case Formula::Barnsley3:
+        } else if constexpr(F::formula==Formula::Barnsley3) {
             cr=O::value(0,cx);ci=O::value(.4,cx);
-            break;
-        case Formula::Octo:
+        } else if constexpr(F::formula==Formula::Octo) {
             cr=O::value(0,cx);ci=O::value(0,cx);
-            a=O::value(0,cx);b=O::value(0,cx);
-            break;
-        case Formula::Phoenix:
+        } else if constexpr(F::formula==Formula::Phoenix) {
             cr=O::value(.56667,cx);ci=O::value(-.5,cx);
-            break;
-        case Formula::Magnet:
-        case Formula::Magnet2:
+        } else if constexpr(F::formula==Formula::Magnet || F::formula==Formula::Magnet2) {
             x=O::value(0,cx);y=O::value(0,cx);
-            break;
-        case Formula::Lambda:
-            // Default XaoS Lambda mode starts z at 0.5 and uses the pixel as lambda.
+        } else if constexpr(F::formula==Formula::Lambda) {
             x=O::value(.5,cx);y=O::value(0,cx);
-            cr=cx;ci=cy;
-            break;
-        case Formula::Manowar:
+        } else if constexpr(F::formula==Formula::Manowar) {
             a=x;b=y;
-            break;
-        case Formula::Spider:
+        } else if constexpr(F::formula==Formula::Spider) {
             a=cr;b=ci;
-            break;
-        case Formula::Sierpinski:
-        case Formula::GoldenSierpinski:
+        } else if constexpr(F::formula==Formula::Sierpinski ||
+                            F::formula==Formula::GoldenSierpinski) {
             cr=O::value(.5,cx);ci=O::value(.8660254,cx);
             if(O::lt(O::add(O::mul(ci,x),O::mul(O::sub(O::value(1,cx),cr),y)),O::value(0,cx)) ||
                O::lt(y,O::value(0,cx))) {
                 x=O::add(O::scale(cr,2),O::value(2,cx));
                 y=O::scale(ci,2);
             }
-            break;
-        case Formula::SierpinskiCarpet:
+        } else if constexpr(F::formula==Formula::SierpinskiCarpet) {
             cr=O::value(1,cx);ci=O::value(1,cx);
             if(O::lt(x,O::value(0,cx))||O::gt(x,cr)||O::lt(y,O::value(0,cx))||O::gt(y,ci)) {
                 x=O::scale(cr,.5);y=O::scale(ci,.5);
             }
-            break;
-        case Formula::SierpinskiCarpet4:
+        } else if constexpr(F::formula==Formula::SierpinskiCarpet4) {
             cr=O::value(1,cx);ci=O::value(1,cx);
             if(O::lt(x,O::value(0,cx))||O::gt(x,cr)||O::lt(y,O::value(0,cx))||O::gt(y,ci)) {
                 x=O::scale(cr,.25);y=O::scale(ci,.25);
             }
-            break;
-        case Formula::SpidronHornflake:
+        } else if constexpr(F::formula==Formula::SpidronHornflake) {
             y=O::abs(cy);
-            break;
-        case Formula::Beryl:
+        } else if constexpr(F::formula==Formula::Beryl) {
             cr=O::value(1,cx);ci=O::value(0,cx);
             a=cr;b=ci;
-            break;
-        case Formula::SymmetricBarnsley:
+        } else if constexpr(F::formula==Formula::SymmetricBarnsley) {
             cr=O::value(1.3,cx);ci=O::value(1.3,cx);
-            break;
-        default:
-            break;
         }
     }
 
-    /// Rebuilds deterministic formula parameters while restoring a saved orbit.
-    void parameters(Formula formula,const R&cx,const R&cy,R&cr,R&ci) {
+    /// Rebuilds deterministic parameters while restoring a saved orbit.
+    void parameters(const R&cx,const R&cy,R&cr,R&ci) {
         using O=NumberOps<R>;
         cr=cx;ci=cy;
-        switch(formula) {
-        case Formula::Newton:
-        case Formula::Newton4:
-        case Formula::Octo:
-            cr=O::value(0,cx);ci=O::value(0,cx);break;
-        case Formula::Barnsley1:
-        case Formula::Barnsley2:
-            cr=O::value(-.6,cx);ci=O::value(1.1,cx);break;
-        case Formula::Barnsley3:
-            cr=O::value(0,cx);ci=O::value(.4,cx);break;
-        case Formula::Phoenix:
-            cr=O::value(.56667,cx);ci=O::value(-.5,cx);break;
-        case Formula::Lambda:
-            cr=cx;ci=cy;break;
-        case Formula::Beryl:
-            cr=O::value(1,cx);ci=O::value(0,cx);break;
-        case Formula::SymmetricBarnsley:
-            cr=O::value(1.3,cx);ci=O::value(1.3,cx);break;
-        case Formula::Sierpinski:
-        case Formula::GoldenSierpinski:
-            cr=O::value(.5,cx);ci=O::value(.8660254,cx);break;
-        case Formula::SierpinskiCarpet:
-        case Formula::SierpinskiCarpet4:
-            cr=O::value(1,cx);ci=O::value(1,cx);break;
-        default: break;
+        if constexpr(F::formula==Formula::Newton || F::formula==Formula::Newton4 ||
+                     F::formula==Formula::Octo) {
+            cr=O::value(0,cx);ci=O::value(0,cx);
+        } else if constexpr(F::formula==Formula::Barnsley1 || F::formula==Formula::Barnsley2) {
+            cr=O::value(-.6,cx);ci=O::value(1.1,cx);
+        } else if constexpr(F::formula==Formula::Barnsley3) {
+            cr=O::value(0,cx);ci=O::value(.4,cx);
+        } else if constexpr(F::formula==Formula::Phoenix) {
+            cr=O::value(.56667,cx);ci=O::value(-.5,cx);
+        } else if constexpr(F::formula==Formula::Beryl) {
+            cr=O::value(1,cx);ci=O::value(0,cx);
+        } else if constexpr(F::formula==Formula::SymmetricBarnsley) {
+            cr=O::value(1.3,cx);ci=O::value(1.3,cx);
+        } else if constexpr(F::formula==Formula::Sierpinski ||
+                            F::formula==Formula::GoldenSierpinski) {
+            cr=O::value(.5,cx);ci=O::value(.8660254,cx);
+        } else if constexpr(F::formula==Formula::SierpinskiCarpet ||
+                            F::formula==Formula::SierpinskiCarpet4) {
+            cr=O::value(1,cx);ci=O::value(1,cx);
         }
     }
 
-    /// Tests the original XaoS formula-specific continuation/bailout predicate.
-    bool running(Formula formula,const R&cr,const R&ci) const {
+    /// Tests the compile-time formula continuation/bailout predicate.
+    bool running(const R&cr,const R&ci) const {
         using O=NumberOps<R>;
-        const auto m=mag2(x,y);
-        switch(formula) {
-        case Formula::Newton:
-        case Formula::Newton4:
+        if constexpr(F::formula==Formula::Newton || F::formula==Formula::Newton4) {
             return greater(a,1.e-6);
-        case Formula::Octo:
+        } else if constexpr(F::formula==Formula::Octo) {
             return less(mag2(a,b),4.0);
-        case Formula::Magnet:
-        case Formula::Magnet2: {
+        } else if constexpr(F::formula==Formula::Magnet || F::formula==Formula::Magnet2) {
+            const auto m=mag2(x,y);
             auto dx=O::sub(x,O::value(1,x));
             return less(m,10000.0) && greater(mag2(dx,y),.01);
-        }
-        case Formula::Catseye:
-            return less(m,4.00000001);
-        case Formula::SymmetricBarnsley:
-            return less(m,16.0);
-        case Formula::Sierpinski:
-        case Formula::GoldenSierpinski:
+        } else if constexpr(F::formula==Formula::Catseye) {
+            return less(mag2(x,y),4.00000001);
+        } else if constexpr(F::formula==Formula::SymmetricBarnsley) {
+            return less(mag2(x,y),16.0);
+        } else if constexpr(F::formula==Formula::Sierpinski ||
+                            F::formula==Formula::GoldenSierpinski) {
             return O::lt(O::add(O::mul(ci,x),O::mul(O::sub(O::value(1,x),cr),y)),ci);
-        case Formula::SierpinskiCarpet:
+        } else if constexpr(F::formula==Formula::SierpinskiCarpet) {
             return O::lt(x,O::scale(cr,1.0/3)) || O::gt(x,O::scale(cr,2.0/3)) ||
                    O::lt(y,O::scale(ci,1.0/3)) || O::gt(y,O::scale(ci,2.0/3));
-        case Formula::SierpinskiCarpet4:
+        } else if constexpr(F::formula==Formula::SierpinskiCarpet4) {
             return O::lt(x,O::scale(cr,.25)) || O::gt(x,O::scale(cr,.75)) ||
                    O::lt(y,O::scale(ci,.25)) || O::gt(y,O::scale(ci,.75));
-        case Formula::KochSnowflake: {
+        } else if constexpr(F::formula==Formula::KochSnowflake) {
             auto p=O::add(O::scale(x,1.5),O::scale(y,.8660254038));
             auto q=O::sub(O::scale(y,.8660254038),O::scale(x,1.5));
             return (greater(p,.8660254038)||greater(q,.8660254038)||less(y,-.5)) &&
                    (less(p,-.8660254038)||less(q,-.8660254038)||greater(y,.5));
-        }
-        case Formula::SpidronHornflake:
+        } else if constexpr(F::formula==Formula::SpidronHornflake) {
             return !(less(x,0.0)&&greater(y,0.0)&&
                      less(O::add(O::scale(x,-1),O::scale(y,1.732050808)),1.732050808));
-        case Formula::Beryl:
+        } else if constexpr(F::formula==Formula::Beryl) {
+            const auto m=mag2(x,y);
             return less(m,9.0) || O::lt(mag2(a,b),O::scale(m,4));
-        case Formula::Circle7:
-            return less(m,1.0);
-        case Formula::Clock:
-            return less(m,.6944444444444445);
-        default:
-            return less(m,4.0);
+        } else if constexpr(F::formula==Formula::Circle7) {
+            return less(mag2(x,y),1.0);
+        } else if constexpr(F::formula==Formula::Clock) {
+            return less(mag2(x,y),.6944444444444445);
+        } else {
+            return less(mag2(x,y),4.0);
         }
     }
 
-    /// Executes one iteration of a fixed XaoS formula.
-    bool step(Formula formula,const R&cr,const R&ci) {
+    /// Executes one iteration with no runtime formula dispatch.
+    bool step(const R&cr,const R&ci) {
         using O=NumberOps<R>;
-        const auto zero=O::value(0,x);
-        switch(formula) {
-        case Formula::Mandelbrot3:
-        case Formula::Mandelbrot4:
-        case Formula::Mandelbrot5:
-        case Formula::Mandelbrot6:
-        case Formula::Mandelbrot9: {
-            unsigned p=formula==Formula::Mandelbrot3?3u:formula==Formula::Mandelbrot4?4u:
-                       formula==Formula::Mandelbrot5?5u:formula==Formula::Mandelbrot6?6u:9u;
-            R nr=x,ni=y;cpow(x,y,p,nr,ni);
+        if constexpr(F::formula==Formula::Mandelbrot3 || F::formula==Formula::Mandelbrot4 ||
+                     F::formula==Formula::Mandelbrot5 || F::formula==Formula::Mandelbrot6 ||
+                     F::formula==Formula::Mandelbrot9) {
+            constexpr unsigned power=
+                F::formula==Formula::Mandelbrot3?3u:F::formula==Formula::Mandelbrot4?4u:
+                F::formula==Formula::Mandelbrot5?5u:F::formula==Formula::Mandelbrot6?6u:9u;
+            R nr=x,ni=y;cpowFixed<power>(x,y,nr,ni);
             x=O::add(nr,cr);y=O::add(ni,ci);return true;
-        }
-        case Formula::Newton: {
+        } else if constexpr(F::formula==Formula::Newton) {
             R oldx=x,oldy=y;
             auto yy=sq(y),xx=sq(x),sum=O::add(xx,yy);
             auto den=sq(sum); if(O::zero(den)) return false;
@@ -286,8 +254,7 @@ private:
             y=O::add(O::sub(O::scale(oldy,.66666666),O::mul(O::scale(O::mul(oldx,oldy),2),n)),ci);
             x=O::add(O::add(O::scale(oldx,.66666666),O::mul(O::sub(xx,yy),n)),cr);
             a=mag2(O::sub(oldx,x),O::sub(oldy,y));return true;
-        }
-        case Formula::Newton4: {
+        } else if constexpr(F::formula==Formula::Newton4) {
             R oldx=x,oldy=y;
             auto xx=sq(x),yy=sq(y),sum=O::add(xx,yy);
             auto den=O::mul(O::mul(sum,sum),sum); if(O::zero(den)) return false;
@@ -295,17 +262,14 @@ private:
             y=O::add(O::scale(O::mul(oldy,O::add(O::value(3,x),O::mul(O::sub(yy,O::scale(xx,3)),n))),.25),ci);
             x=O::add(O::scale(O::mul(oldx,O::add(O::value(3,x),O::mul(O::sub(xx,O::scale(yy,3)),n))),.25),cr);
             a=mag2(O::sub(oldx,x),O::sub(oldy,y));return true;
-        }
-        case Formula::Barnsley1: {
+        } else if constexpr(F::formula==Formula::Barnsley1) {
             R t=less(x,0.0)?O::add(x,O::value(1,x)):O::sub(x,O::value(1,x));
             R nr=x,ni=y;cmul(t,y,cr,ci,nr,ni);x=std::move(nr);y=std::move(ni);return true;
-        }
-        case Formula::Barnsley2: {
+        } else if constexpr(F::formula==Formula::Barnsley2) {
             auto sign=O::add(O::mul(x,ci),O::mul(y,cr));
-            R t=O::lt(sign,zero)?O::add(x,O::value(1,x)):O::sub(x,O::value(1,x));
+            R t=O::lt(sign,O::value(0,x))?O::add(x,O::value(1,x)):O::sub(x,O::value(1,x));
             R nr=x,ni=y;cmul(t,y,cr,ci,nr,ni);x=std::move(nr);y=std::move(ni);return true;
-        }
-        case Formula::Barnsley3: {
+        } else if constexpr(F::formula==Formula::Barnsley3) {
             R ox=x,oy=y;
             if(!less(O::scale(ox,-1),0.0)) {
                 y=O::add(O::scale(O::mul(ox,oy),2),O::mul(ci,ox));
@@ -315,18 +279,15 @@ private:
                 x=O::sub(O::sub(sq(ox),sq(oy)),O::value(1,x));
             }
             return true;
-        }
-        case Formula::Octo: {
-            R ox=x,oy=y,nr=x,ni=y;cpow(ox,oy,3,nr,ni);
+        } else if constexpr(F::formula==Formula::Octo) {
+            R ox=x,oy=y,nr=x,ni=y;cpowFixed<3>(ox,oy,nr,ni);
             x=O::add(nr,a);y=O::add(ni,b);a=O::add(ox,cr);b=O::add(oy,ci);return true;
-        }
-        case Formula::Phoenix: {
+        } else if constexpr(F::formula==Formula::Phoenix) {
             R ox=x,oy=y;
             x=O::add(O::add(O::sub(sq(ox),sq(oy)),cr),O::mul(ci,a));
             y=O::add(O::scale(O::mul(ox,oy),2),O::mul(ci,b));
             a=std::move(ox);b=std::move(oy);return true;
-        }
-        case Formula::Magnet: {
+        } else if constexpr(F::formula==Formula::Magnet) {
             R ox=x,oy=y;
             auto br=O::add(O::add(O::scale(ox,2),cr),O::value(-2,x));
             auto di=O::add(O::scale(oy,2),ci);
@@ -334,8 +295,7 @@ private:
             auto ni=O::add(O::scale(O::mul(ox,oy),2),ci);
             R qr=x,qi=y;if(!cdiv(nr,ni,br,di,qr,qi)) return false;
             cmul(qr,qi,qr,qi,x,y);return true;
-        }
-        case Formula::Magnet2: {
+        } else if constexpr(F::formula==Formula::Magnet2) {
             R ox=x,oy=y;
             auto inre=O::sub(O::sub(sq(cr),sq(ci)),O::scale(cr,3));
             auto inim=O::sub(O::scale(O::mul(cr,ci),2),O::scale(ci,3));
@@ -348,62 +308,52 @@ private:
             auto nmim=O::add(O::add(O::sub(O::scale(O::mul(oy,sq(ox)),3),O::mul(oy,sq(oy))),O::scale(tmp2,3)),inim);
             R qr=x,qi=y;if(!cdiv(nmre,nmim,dnre,dnim,qr,qi)) return false;
             cmul(qr,qi,qr,qi,x,y);return true;
-        }
-        case Formula::Triceratops: {
+        } else if constexpr(F::formula==Formula::Triceratops) {
             R ox=x,oy=y;
             y=O::add(O::add(O::mul(ox,oy),O::scale(oy,.5)),ci);
             x=O::add(O::scale(O::add(O::sub(sq(ox),sq(oy)),ox),.5),cr);return true;
-        }
-        case Formula::Catseye: {
+        } else if constexpr(F::formula==Formula::Catseye) {
             R r1=x,i1=y,r2=x,i2=y;
             if(!cdiv(cr,ci,x,y,r1,i1) || !cdiv(x,y,cr,ci,r2,i2)) return false;
             x=O::add(r1,r2);y=O::add(i1,i2);return true;
-        }
-        case Formula::Mandelbar: {
+        } else if constexpr(F::formula==Formula::Mandelbar) {
             R ox=x,oy=y;
             y=O::add(O::scale(O::mul(ox,oy),-2),ci);
             x=O::add(O::sub(sq(ox),sq(oy)),cr);return true;
-        }
-        case Formula::Lambda: {
+        } else if constexpr(F::formula==Formula::Lambda) {
             R ox=x,oy=y;
             auto nr=O::add(O::sub(sq(oy),sq(ox)),ox);
             auto ni=O::sub(oy,O::scale(O::mul(ox,oy),2));
             cmul(nr,ni,cr,ci,x,y);return true;
-        }
-        case Formula::Manowar: {
+        } else if constexpr(F::formula==Formula::Manowar) {
             R ox=x,oy=y;
             x=O::add(O::add(O::sub(sq(ox),sq(oy)),cr),a);
             y=O::add(O::add(O::scale(O::mul(ox,oy),2),ci),b);
             a=std::move(ox);b=std::move(oy);return true;
-        }
-        case Formula::Spider: {
+        } else if constexpr(F::formula==Formula::Spider) {
             R ox=x,oy=y;
             x=O::add(O::sub(sq(ox),sq(oy)),a);
             y=O::add(O::scale(O::mul(ox,oy),2),b);
             a=O::add(O::scale(a,.5),x);b=O::add(O::scale(b,.5),y);return true;
-        }
-        case Formula::Sierpinski: {
+        } else if constexpr(F::formula==Formula::Sierpinski) {
             x=O::scale(x,2);y=O::scale(y,2);
             if(O::gt(O::sub(O::mul(ci,x),O::mul(cr,y)),ci)) x=O::sub(x,O::value(1,x));
             if(O::gt(y,ci)) {y=O::sub(y,ci);x=O::sub(x,cr);} return true;
-        }
-        case Formula::GoldenSierpinski: {
+        } else if constexpr(F::formula==Formula::GoldenSierpinski) {
             constexpr double phi=1.6180339,inv=.6180339;
             x=O::scale(x,phi);y=O::scale(y,phi);
             if(O::gt(O::sub(O::mul(ci,x),O::mul(cr,y)),O::scale(ci,inv))) x=O::sub(x,O::value(inv,x));
             if(O::gt(y,O::scale(ci,inv))) {y=O::sub(y,O::scale(ci,inv));x=O::sub(x,O::scale(cr,inv));}
             return true;
-        }
-        case Formula::SierpinskiCarpet:
-        case Formula::SierpinskiCarpet4: {
-            const double k=formula==Formula::SierpinskiCarpet?3.0:4.0;
+        } else if constexpr(F::formula==Formula::SierpinskiCarpet ||
+                            F::formula==Formula::SierpinskiCarpet4) {
+            constexpr double k=F::formula==Formula::SierpinskiCarpet?3.0:4.0;
+            constexpr int top=F::formula==Formula::SierpinskiCarpet?2:3;
             x=O::scale(x,k);y=O::scale(y,k);
-            const int top=formula==Formula::SierpinskiCarpet?2:3;
             for(int n=top;n>=1;--n) if(O::gt(x,O::scale(cr,n))) {x=O::sub(x,O::scale(cr,n));break;}
             for(int n=top;n>=1;--n) if(O::gt(y,O::scale(ci,n))) {y=O::sub(y,O::scale(ci,n));break;}
             return true;
-        }
-        case Formula::KochSnowflake: {
+        } else if constexpr(F::formula==Formula::KochSnowflake) {
             x=O::scale(x,3);y=O::scale(y,3);
             auto q=O::sub(O::scale(y,.2886751346),O::scale(x,.5));
             auto p=O::add(O::scale(y,.2886751346),O::scale(x,.5));
@@ -415,18 +365,15 @@ private:
                 else {x=O::sub(x,O::value(1.732050808,x));y=O::add(y,O::value(greater(y,0.0)?-1.0:1.0,y));}
             }
             return true;
-        }
-        case Formula::SpidronHornflake: {
+        } else if constexpr(F::formula==Formula::SpidronHornflake) {
             R ox=x,oy=y;
             x=O::add(O::sub(O::scale(ox,1.5),O::value(.866,x)),O::scale(oy,.866));
             y=O::sub(O::sub(O::scale(oy,1.5),O::value(1.5,y)),O::scale(ox,.866));return true;
-        }
-        case Formula::Beryl: {
+        } else if constexpr(F::formula==Formula::Beryl) {
             R ox=x,oy=y,oa=a,ob=b;
             x=O::add(ox,oa);y=O::add(oy,ob);
             cmul(ox,oy,oa,ob,a,b);return true;
-        }
-        case Formula::Circle7: {
+        } else if constexpr(F::formula==Formula::Circle7) {
             x=O::scale(x,3);y=O::scale(y,3);
             auto shift=[&](double dx,double dy) {
                 auto xx=O::sub(x,O::value(dx,x)),yy=O::sub(y,O::value(dy,y));
@@ -434,8 +381,7 @@ private:
             };
             shift(0,2);shift(0,-2);shift(1.7320508,1);shift(1.7320508,-1);
             shift(-1.7320508,1);shift(-1.7320508,-1);return true;
-        }
-        case Formula::Clock: {
+        } else if constexpr(F::formula==Formula::Clock) {
             x=O::scale(x,3);y=O::scale(y,3);
             constexpr double s=1.7320508075688772,rd=.25;
             auto shift=[&](double dx,double dy) {
@@ -444,46 +390,47 @@ private:
             };
             shift(0,-2);shift(-1,-s);shift(-s,-1);shift(-2,0);shift(-s,1);shift(-1,s);
             shift(0,2);shift(1,s);shift(s,1);shift(2,0);shift(s,-1);shift(1,-s);return true;
-        }
-        case Formula::SymmetricBarnsley: {
+        } else if constexpr(F::formula==Formula::SymmetricBarnsley) {
             R xr=less(x,0.0)?O::add(x,O::value(1,x)):O::sub(x,O::value(1,x));
             R yi=less(y,0.0)?O::add(y,O::value(1,y)):O::sub(y,O::value(1,y));
             cmul(xr,yi,cr,ci,x,y);return true;
-        }
-        default:
-            return false;
+        } else {
+            static_assert(F::formula!=F::formula,"unsupported fixed formula");
         }
     }
 
 public:
-    /// Iterates one of XaoS's fixed scalar formulas with resumable auxiliary state.
-    Count run(Formula formula,const R&cx,const R&cy,const Count&previous,const Orbit<R>*saved,
+    /// Iterates one fixed formula. The compiler sees a unique loop for every F.
+    Count run(const R&cx,const R&cy,const Count&previous,const FormulaOrbit<R,F>*saved,
               uint32_t limit,const Cancellation&stop,bool allowTimeBudget) {
-        using O=NumberOps<R>;
         R cr=cx,ci=cy;
         Count result;
         if(saved) {
-            x=saved->x;y=saved->y;a=saved->a;b=saved->b;result=previous;
-            parameters(formula,cx,cy,cr,ci);
+            x=saved->x;y=saved->y;
+            if constexpr(F::stateScalars>=3) a=saved->a;
+            else a=NumberOps<R>::value(0,cx);
+            if constexpr(F::stateScalars>=4) b=saved->b;
+            else b=NumberOps<R>::value(0,cx);
+            result=previous;
+            parameters(cx,cy,cr,ci);
         } else {
-            initialize(formula,cx,cy,cr,ci);
+            initialize(cx,cy,cr,ci);
         }
 
         unsigned untilPoll=0;
-        while(result.iterations<limit && running(formula,cr,ci)) {
+        while(result.iterations<limit && running(cr,ci)) {
             if(untilPoll==0) {
                 if(stop.requested(allowTimeBudget)) break;
                 untilPoll=64;
             }
             --untilPoll;
-            if(!step(formula,cr,ci)) {result.status=Status::Escaped;break;}
+            if(!step(cr,ci)) {result.status=Status::Escaped;break;}
             ++result.iterations;
         }
-        if(result.status==Status::Pending && !running(formula,cr,ci))
+        if(result.status==Status::Pending && !running(cr,ci))
             result.status=Status::Escaped;
         return result;
     }
 };
-
 } // namespace detail
 } // namespace xaos
