@@ -6,11 +6,13 @@
 #include <string>
 #include <vector>
 using namespace xaos;
+/// Parses a complete integer command-line argument and rejects malformed input.
 template<class T> T integer(const std::string&s) {
     T value{}; auto [p,ec]=std::from_chars(s.data(),s.data()+s.size(),value);
     if(ec!=std::errc{}||p!=s.data()+s.size()) throw std::invalid_argument("invalid integer: "+s);
     return value;
 }
+/// Runs the headless benchmark and rendering command-line interface.
 int main(int argc,char**argv) {
     try {
         Request r; r.width=800; r.height=600;

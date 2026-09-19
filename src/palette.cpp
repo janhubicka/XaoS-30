@@ -16,6 +16,7 @@ constexpr std::array<std::array<unsigned char,3>,31> controls{{
     {{8,3,12}}, {{247,92,235}}, {{31,32,16}}
 }};
 
+/// Generates the classic XaoS palette with the original interpolation rule.
 std::vector<uint32_t> makeClassic() {
     // The old TRUECOLOR palette has 65536 available entries. mkdefaultpalette
     // calls mksmooth() with segment size 8 and (maxentries+3)/8 segments.
@@ -49,10 +50,12 @@ std::vector<uint32_t> makeClassic() {
     return out;
 }
 }
+/// Returns the lazily generated classic XaoS default palette.
 std::span<const uint32_t> classicDefaultPalette() noexcept {
     static const std::vector<uint32_t> palette=makeClassic();
     return palette;
 }
+/// Maps an escape iteration to the classic XaoS palette entry.
 uint32_t classicIterationColor(uint32_t iteration) noexcept {
     const auto palette=classicDefaultPalette();
     if(palette.size()<2) return 0xff000000u;

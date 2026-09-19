@@ -1,28 +1,65 @@
 name: XaoS-30 build and test
-on: [push, pull_request, workflow_dispatch]
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
 permissions:
   contents: read
+
+concurrency:
+  group: xaos-30-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
+
 jobs:
-  linux:
+  qt-linux:
+    name: Qt Linux (${{ matrix.sanitizer }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         sanitizer: [none, address]
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y ninja-build qt6-base-dev libgmp-dev
-      - run: >-
-          cmake -S experimental/qt-modern -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build qt6-base-dev libgmp-dev
+      - name: Configure
+        run: >-
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DXAOS_SANITIZE=${{ matrix.sanitizer == 'address' && 'ON' || 'OFF' }}
-      - run: cmake --build build -j 2
-      - run: ctest --test-dir build --output-on-failure
-      - name: Qt offscreen render/resize/cancel/shutdown smoke test
-        run: QT_QPA_PLATFORM=offscreen ASAN_OPTIONS=detect_leaks=0 ./build/xaos-modern --smoke-test
+      - name: Build
+        run: cmake --build build
+      - name: Core tests
+        env:
+          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build --output-on-failure
+      - name: Qt offscreen smoke test
+        env:
+          QT_QPA_PLATFORM: offscreen
+          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ./build/xaos-modern --smoke-test
+
   thread-sanitizer:
+    name: ThreadSanitizer
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y ninja-build libgmp-dev
-      - run: cmake -S experimental/qt-modern -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DXAOS_BUILD_GUI=OFF -DXAOS_TSAN=ON
-      - run: cmake --build build -j 2
-      - run: ctest --test-dir build --output-on-failure
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libgmp-dev
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DXAOS_BUILD_GUI=OFF -DXAOS_TSAN=ON
+      - name: Build
+        run: cmake --build build
+      - name: Core tests
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir build --output-on-failure

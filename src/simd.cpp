@@ -5,6 +5,7 @@
 #include <immintrin.h>
 #endif
 namespace xaos {
+/// Reports whether the runtime CPU supports the AVX2 kernel.
 bool hasAVX2() noexcept {
 #ifdef XAOS_X86_AVX2
     static const bool value=__builtin_cpu_supports("avx2");
@@ -13,6 +14,7 @@ bool hasAVX2() noexcept {
     return false;
 #endif
 }
+/// Advances four lanes with the portable scalar kernel.
 template<bool Ship> static void portable(std::array<Lane,4>&l,size_t valid,uint32_t limit,
                                          const Cancellation&stop,bool budget) {
     for(size_t i=0;i<valid;++i) {
@@ -33,6 +35,7 @@ template<bool Ship> static void portable(std::array<Lane,4>&l,size_t valid,uint3
 }
 #ifdef XAOS_X86_AVX2
 template<bool Ship> __attribute__((target("avx2")))
+/// Advances four lanes with the AVX2 kernel while preserving scalar operation order.
 static void avx(std::array<Lane,4>&l,size_t valid,uint32_t limit,const Cancellation&stop,bool budget) {
     alignas(32) double xs[4],ys[4],crs[4],cis[4],ns[4],activeValues[4];
     for(size_t i=0;i<4;++i) {
@@ -70,6 +73,7 @@ static void avx(std::array<Lane,4>&l,size_t valid,uint32_t limit,const Cancellat
     }
 }
 #endif
+/// Advances up to four independent double-precision fractal orbits.
 void iterateFour(std::array<Lane,4>&l,size_t valid,uint32_t cap,const Cancellation&s,bool budget,bool ship,bool simd) {
 #ifdef XAOS_X86_AVX2
     if(simd && hasAVX2()) {

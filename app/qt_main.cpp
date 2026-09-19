@@ -38,12 +38,14 @@
 
 using namespace xaos;
 namespace {
+/// Parses a complete integer value from a Qt string.
 template<class T> T readInteger(const QString&text) {
     const auto s=text.trimmed().toStdString(); T n{};
     auto [p,e]=std::from_chars(s.data(),s.data()+s.size(),n);
     if(e!=std::errc{} || p!=s.data()+s.size()) throw std::invalid_argument("invalid integer");
     return n;
 }
+/// Converts a rendered frame into a Qt image for publication on the UI thread.
 QImage makeImage(const FrameBase&f) {
     QImage image(f.request.width,f.request.height,QImage::Format_ARGB32_Premultiplied);
     if(image.isNull()) throw std::bad_alloc();
@@ -72,6 +74,7 @@ class Canvas final:public QWidget {
     int direction_=0;
     bool dragging_=false;
     size_t threads_=defaultWorkerCount();
+    /// Runs the render-coordination loop, coalescing requests and publishing completed frames.
     void coordinator(std::stop_token shutdown) {
         struct DynamicBudget {
             std::array<double,50> calculation{},overhead{};
@@ -160,6 +163,7 @@ class Canvas final:public QWidget {
             }
         }
     }
+    /// Draws a cached image transformed into the current viewport, including zoom-out edge extension.
     void drawView(QPainter&p,const QImage&image,const View&source) {
         if(image.isNull() || width()<1||height()<1) return;
         const Big oldLeft=sub(source.re,scale(source.span,.5));
@@ -200,6 +204,7 @@ class Canvas final:public QWidget {
         }
     }
 protected:
+    /// Paints the current and fallback fractal images plus the interaction hint.
     void paintEvent(QPaintEvent*) override {
         QPainter p(this);
         // QPainter backends differ in their default image-scaling behavior. XaoS
@@ -211,7 +216,9 @@ protected:
         p.setPen(Qt::white);
         p.drawText(12,22,"Hold left/right: zoom   |   Middle drag: pan   |   Wheel: zoom   |   I: more iterations");
     }
+    /// Submits a new render request after the canvas size changes.
     void resizeEvent(QResizeEvent*e) override { QWidget::resizeEvent(e); submit(false); }
+    /// Starts zooming or panning in response to a mouse press.
     void mousePressEvent(QMouseEvent*e) override {
         pointer_=e->position();
         if(e->button()==Qt::MiddleButton) {dragging_=true;lastDrag_=pointer_;}
@@ -219,10 +226,12 @@ protected:
             direction_=e->button()==Qt::LeftButton?1:-1;motionClock_.restart();motion_.start();
         }
     }
+    /// Stops the active mouse interaction and schedules idle refinement.
     void mouseReleaseEvent(QMouseEvent*e) override {
         if(e->button()==Qt::MiddleButton) dragging_=false;
         if(e->button()==Qt::LeftButton || e->button()==Qt::RightButton) {direction_=0;motion_.stop();idle_.start();}
     }
+    /// Updates the zoom focus or pans while the middle button is held.
     void mouseMoveEvent(QMouseEvent*e) override {
         pointer_=e->position();
         if(dragging_) {
@@ -230,6 +239,7 @@ protected:
             try {view.pan(d.x(),d.y(),std::max(1,width()));submit(true);} catch(const std::exception&ex){if(onStatus)onStatus(ex.what());}
         }
     }
+    /// Applies a stepped pointer-centred zoom from the mouse wheel.
     void wheelEvent(QWheelEvent*e) override {
         const double steps=e->angleDelta().y()/120.;
         try {
@@ -243,6 +253,7 @@ public:
     Settings settings;
     int completedFrames=0;
     std::function<void(QString)> onStatus;
+    /// Constructs a Canvas instance.
     explicit Canvas(QWidget*parent=nullptr):QWidget(parent) {
         setMouseTracking(true);setFocusPolicy(Qt::StrongFocus);
         motion_.setInterval(16);idle_.setSingleShot(true);idle_.setInterval(180);
@@ -257,6 +268,7 @@ public:
         connect(&idle_,&QTimer::timeout,this,[this]{submit(false);});
         coordinator_=std::jthread([this](std::stop_token s){coordinator(s);});
     }
+    /// Releases resources owned by the Canvas instance.
     ~Canvas() override {
         motion_.stop();idle_.stop();
         coordinator_.request_stop();
@@ -264,6 +276,7 @@ public:
         wake_.notify_all();
         if(coordinator_.joinable()) coordinator_.join();
     }
+    /// Queues the newest render request and cancels obsolete work.
     void submit(bool interactive=false) {
         if(width()<1||height()<1) return;
         const double dpr=devicePixelRatioF();
@@ -283,14 +296,19 @@ public:
         wake_.notify_one();update();
         if(interactive) idle_.start();
     }
+    /// Changes the worker count and requests a new render.
     void setThreads(size_t n) {threads_=n;submit();}
+    /// Restores the default fractal view and requests a render.
     void reset() {view=View{};submit();}
+    /// Stops continuous zooming and requests refinement of the current view.
     void stopZoom() {direction_=0;motion_.stop();submit();}
+    /// Writes the currently displayed Qt image to a user-selected PNG file.
     void saveImage() {
         if(image_.isNull()) return;
         const auto path=QFileDialog::getSaveFileName(this,"Save displayed frame",{},"PNG (*.png)");
         if(!path.isEmpty() && !image_.save(path)) QMessageBox::warning(this,"Save failed","Could not write the image.");
     }
+    /// Edits arbitrary-precision view and Julia parameters in a dialog.
     void coordinates() {
         QDialog d(this);d.setWindowTitle("Arbitrary-precision view");
         QFormLayout form(&d);
@@ -323,6 +341,7 @@ class Window final:public QMainWindow {
 public:
     Canvas*canvas;
     QSpinBox*iterations;
+    /// Constructs a Window instance.
     Window() {
         canvas=new Canvas(this);setCentralWidget(canvas);
         setWindowTitle("XaoS Modern — reusable orbits / arbitrary precision");
@@ -357,6 +376,7 @@ public:
     }
 };
 }
+/// Starts the Qt desktop application and optional smoke test.
 int main(int argc,char**argv) {
     QApplication app(argc,argv);QApplication::setApplicationName("XaoS Modern");
     Window window;
