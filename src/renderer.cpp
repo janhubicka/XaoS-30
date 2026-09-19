@@ -1039,21 +1039,129 @@ std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,con
     return result;
 }
 
+/// Reconstructs an immutable grid frame into a visible raster using a separate executor.
+std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&executor,
+                                                 const Cancellation&stop,
+                                                 const DisplayFrame*previous) {
+    if(frame.request.width<1 || frame.request.height<1 || !executor.concurrency())
+        throw std::invalid_argument("invalid presentation frame or executor");
+    const auto begin=std::chrono::steady_clock::now();
+    auto out=std::make_shared<DisplayFrame>();
+    out->request=frame.request;
+    const size_t width=static_cast<size_t>(frame.request.width);
+    const size_t height=static_cast<size_t>(frame.request.height);
+    out->pixels.assign(multiplyChecked(width,height),0xff000000u);
+
+    std::vector<uint8_t> colReady(width),rowReady(height);
+    for(int x=0;x<frame.request.width;++x)
+        colReady[static_cast<size_t>(x)]=
+            frame.displayXSource.size()==width &&
+            frame.displayXSource[static_cast<size_t>(x)]==x;
+    for(int y=0;y<frame.request.height;++y)
+        rowReady[static_cast<size_t>(y)]=
+            frame.displayYSource.size()==height &&
+            frame.displayYSource[static_cast<size_t>(y)]==y;
+
+    const Big step=divide(frame.request.view.span.atPrecision(
+        std::max(frame.stats.bits,frame.request.view.span.precision())),
+        static_cast<unsigned long>(frame.request.width));
+    const AxisSupport xaxis=buildAxisSupport(frame.xs,colReady,step);
+    const AxisSupport yaxis=buildAxisSupport(frame.ys,rowReady,step);
+
+    std::vector<int> nearestX(width,-1),nearestY(height,-1);
+    if(frame.displayXSource.size()==width) nearestX=frame.displayXSource;
+    if(frame.displayYSource.size()==height) nearestY=frame.displayYSource;
+
+    std::vector<LinearPoint> linearX,linearY;
+    std::vector<CubicPoint> cubicX,cubicY;
+    if(frame.request.settings.reconstruction!=Reconstruction::Nearest) {
+        linearX.resize(width); linearY.resize(height);
+        for(int x=0;x<frame.request.width;++x)
+            linearX[static_cast<size_t>(x)]=linearPoint(xaxis,xaxis.target.empty()?0.0:xaxis.target[static_cast<size_t>(x)]);
+        for(int y=0;y<frame.request.height;++y)
+            linearY[static_cast<size_t>(y)]=linearPoint(yaxis,yaxis.target.empty()?0.0:yaxis.target[static_cast<size_t>(y)]);
+    }
+    if(frame.request.settings.reconstruction==Reconstruction::Bicubic) {
+        cubicX.resize(width); cubicY.resize(height);
+        for(int x=0;x<frame.request.width;++x)
+            cubicX[static_cast<size_t>(x)]=cubicPoint(xaxis,xaxis.target.empty()?0.0:xaxis.target[static_cast<size_t>(x)]);
+        for(int y=0;y<frame.request.height;++y)
+            cubicY[static_cast<size_t>(y)]=cubicPoint(yaxis,yaxis.target.empty()?0.0:yaxis.target[static_cast<size_t>(y)]);
+    }
+
+    std::vector<int> fallbackX,fallbackY;
+    if(previous && displayCompatible(previous->request,frame.request) &&
+       previous->request.width>0 && previous->request.height>0 &&
+       previous->pixels.size()==static_cast<size_t>(previous->request.width)*
+                                static_cast<size_t>(previous->request.height)) {
+        const Big oldStep=divide(previous->request.view.span.atPrecision(
+            std::max(frame.stats.bits,previous->request.view.span.precision())),
+            static_cast<unsigned long>(previous->request.width));
+        fallbackX=reprojectAxis(frame.request.view.re,step,frame.request.width,
+                                previous->request.view.re,oldStep,previous->request.width);
+        fallbackY=reprojectAxis(frame.request.view.im,step,frame.request.height,
+                                previous->request.view.im,oldStep,previous->request.height);
+    }
+
+    std::atomic<int> nextRow{0};
+    executor.run([&](size_t) {
+        while(!stop.requested(false)) {
+            const int y=nextRow.fetch_add(1,std::memory_order_relaxed);
+            if(y>=frame.request.height) break;
+            const size_t outputRow=static_cast<size_t>(y)*width;
+            for(int x=0;x<frame.request.width;++x) {
+                uint32_t color=0;
+                bool ok=false;
+                const int nx=nearestX[static_cast<size_t>(x)];
+                const int ny=nearestY[static_cast<size_t>(y)];
+                switch(frame.request.settings.reconstruction) {
+                case Reconstruction::Nearest:
+                    ok=gridColor(frame,nx,ny,color);
+                    break;
+                case Reconstruction::Bilinear:
+                    if(!linearX.empty() && !linearY.empty())
+                        ok=bilinearColor(frame,linearX[static_cast<size_t>(x)],
+                                        linearY[static_cast<size_t>(y)],color);
+                    if(!ok) ok=gridColor(frame,nx,ny,color);
+                    break;
+                case Reconstruction::Bicubic:
+                    if(!cubicX.empty() && !cubicY.empty())
+                        ok=bicubicColor(frame,cubicX[static_cast<size_t>(x)],
+                                       cubicY[static_cast<size_t>(y)],color);
+                    if(!ok && !linearX.empty() && !linearY.empty())
+                        ok=bilinearColor(frame,linearX[static_cast<size_t>(x)],
+                                        linearY[static_cast<size_t>(y)],color);
+                    if(!ok) ok=gridColor(frame,nx,ny,color);
+                    break;
+                }
+                if(!ok && !fallbackX.empty() && !fallbackY.empty())
+                    color=previous->at(fallbackX[static_cast<size_t>(x)],
+                                       fallbackY[static_cast<size_t>(y)]),ok=true;
+                out->pixels[outputRow+static_cast<size_t>(x)]=
+                    ok?color:0xff000000u;
+            }
+        }
+    });
+    out->milliseconds=std::chrono::duration<double,std::milli>(
+        std::chrono::steady_clock::now()-begin).count();
+    return out;
+}
+
 /// Maps a completed iteration count to its visible colour.
 uint32_t pixelColor(Count c,uint32_t limit) noexcept {
     if(c.status!=Status::Escaped || c.iterations>limit) return 0xff000000u;
     return classicIterationColor(c.iterations);
 }
 
-/// Writes the reconstructed frame to a binary PPM image.
-void writePPM(const FrameBase&f,const std::string&path) {
+/// Writes a reconstructed frame to a binary PPM image.
+void writePPM(const DisplayFrame&f,const std::string&path) {
     std::ofstream out(path,std::ios::binary);
     if(!out) throw std::runtime_error("cannot open output: "+path);
     out<<"P6\n"<<f.request.width<<' '<<f.request.height<<"\n255\n";
     std::vector<char> row(static_cast<size_t>(f.request.width)*3);
     for(int y=f.request.height-1;y>=0;--y) {
         for(int x=0;x<f.request.width;++x) {
-            const auto color=f.displayAt(x,y);
+            const auto color=f.at(x,y);
             row[static_cast<size_t>(x)*3]=static_cast<char>((color>>16)&255);
             row[static_cast<size_t>(x)*3+1]=static_cast<char>((color>>8)&255);
             row[static_cast<size_t>(x)*3+2]=static_cast<char>(color&255);
@@ -1061,5 +1169,13 @@ void writePPM(const FrameBase&f,const std::string&path) {
         out.write(row.data(),static_cast<std::streamsize>(row.size()));
     }
     if(!out) throw std::runtime_error("failed writing output: "+path);
+}
+
+/// Reconstructs and writes a grid frame using a temporary presentation executor.
+void writePPM(const FrameBase&f,const std::string&path) {
+    ThreadExecutor executor(std::min<size_t>(4,defaultWorkerCount()));
+    Cancellation stop;
+    auto display=presentFrame(f,executor,stop);
+    writePPM(*display,path);
 }
 }
