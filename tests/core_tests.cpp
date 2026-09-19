@@ -851,7 +851,7 @@ int main() {
           {"validation and exception barriers",failureTests}}) {
             test();std::cout<<"PASS "<<name<<'\n';
         }
-        std::cout<<"PASS "<<checks<<" checks; AVX2 available="<<hasAVX2()<<'\n';
+        std::cout<<"PASS "<<checks<<" checks; native SIMD available="<<hasNativeSIMD()<<'\n';
         return 0;
     }catch(const std::exception&e) {std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
 }
