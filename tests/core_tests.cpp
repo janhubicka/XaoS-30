@@ -220,13 +220,20 @@ void formulaTests() {
         sameCounts(*native,*nativeCounts);
         CHECK(native->stats.complete);
 
-        r.settings.minimumPrecision=128;r.settings.saveState=true;
+        // Every native formula must resume correctly from its formula-sized
+        // structure-of-arrays checkpoint.
+        r.settings.saveState=true;r.settings.iterations=52;
+        auto nativeResumed=saved.render(r,many,stop);
+        Renderer nativeFresh;auto nativeBaseline=nativeFresh.render(r,one,stop);
+        sameCounts(*nativeResumed,*nativeBaseline);
+
+        r.settings.minimumPrecision=128;r.settings.iterations=36;
         Renderer precise;auto big=precise.render(r,one,stop);
         CHECK(big->stats.bits>=128);
         CHECK(big->stats.complete);
 
-        // Raising the limit must preserve correctness for formulas with auxiliary
-        // state such as Phoenix, Manowar, Spider, Octo, and Beryl.
+        // Raising the limit must also preserve correctness for the formula-sized
+        // arbitrary-precision checkpoint objects.
         r.settings.iterations=52;
         auto resumed=precise.render(r,one,stop);
         Renderer fresh;auto baseline=fresh.render(r,one,stop);
