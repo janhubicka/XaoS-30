@@ -49,6 +49,7 @@ jobs:
           ./build/xaos-modern --smoke-test
           ./build/xaos-modern --smoke-test --mobile-ui
 
+
   thread-sanitizer:
     name: ThreadSanitizer
     runs-on: ubuntu-24.04

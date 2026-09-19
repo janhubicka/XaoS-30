@@ -1,0 +1,62 @@
+name: XaoS kernel microbenchmarks
+
+on:
+  pull_request:
+    paths:
+      - app/kernel_bench.cpp
+      - .github/workflows/kernel-benchmark.yml
+      - CMakeLists.txt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xaos-kernel-bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kernel-benchmark:
+    name: Kernel benchmark (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+            setup: linux
+          - runner: macos-15
+            arch: arm64
+            setup: macos
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        if: matrix.setup == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libgmp-dev
+      - name: Install macOS dependencies
+        if: matrix.setup == 'macos'
+        run: brew install ninja gmp
+      - name: Configure Linux
+        if: matrix.setup == 'linux'
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DXAOS_BUILD_GUI=OFF
+      - name: Configure macOS
+        if: matrix.setup == 'macos'
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="-fexperimental-library" \
+            -DXAOS_BUILD_GUI=OFF \
+            -DGMP_INCLUDE_DIR="$(brew --prefix gmp)/include" \
+            -DGMP_LIBRARY="$(brew --prefix gmp)/lib/libgmp.dylib"
+      - name: Build benchmark
+        run: cmake --build build --target xaos-kernel-bench
+      - name: Run kernel benchmark
+        run: ./build/xaos-kernel-bench 4096 512 | tee "kernel-benchmark-${{ matrix.arch }}.csv"
+      - name: Upload benchmark
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-benchmark-${{ matrix.arch }}
+          path: kernel-benchmark-${{ matrix.arch }}.csv
+          if-no-files-found: error

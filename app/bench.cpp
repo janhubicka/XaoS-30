@@ -45,6 +45,7 @@ int main(int argc,char**argv) {
             else if(a=="--counts") r.settings.saveState=false;
             else if(a=="--state") r.settings.saveState=true;
             else if(a=="--scalar") r.settings.simd=false;
+            else if(a=="--gmp") r.settings.fastPrecision=false;
             else if(a=="--no-interior") r.settings.analytic=false;
             else if(a=="--uniform") r.settings.uniform=true;
             else if(a=="--slice") r.settings.sliceMilliseconds=integer<unsigned>(next());
@@ -72,7 +73,7 @@ int main(int argc,char**argv) {
             } else if(a=="--help") {
                 std::cout<<"XaoS Modern headless renderer/benchmark\n"
                 "--width N --height N --iterations N --precision BITS (0=adaptive)\n"
-                "--threads N --counts | --state --scalar --no-interior --uniform\n"
+                "--threads N --counts | --state --scalar --gmp --no-interior --uniform\n"
                 "--slice MS --solid-guess N | --no-guess --no-fill --reconstruct MODE\n"
                 "--center-re DECIMAL --center-im DECIMAL --span DECIMAL --rotation DEGREES\n"
                 "--formula NAME --list-formulas --julia-re DECIMAL --julia-im DECIMAL\n"

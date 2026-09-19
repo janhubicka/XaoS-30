@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "xaos/kernel.hpp"
+#include "xaos/fast_mandel.hpp"
 #include <memory>
 #include <new>
 #include <string>
@@ -29,9 +30,10 @@ template<class T> using AlignedVector=std::vector<T,AlignedAllocator<T>>;
 enum class Reconstruction : uint8_t { Nearest=0, Bilinear=1, Bicubic=2 };
 struct Settings {
     uint32_t iterations=512;
-    mp_bitcnt_t minimumPrecision=0; // 0 = adaptive; >53 forces the GMP backend
+    mp_bitcnt_t minimumPrecision=0; // 0 = adaptive
     unsigned guardBits=16;
     bool saveState=true, analytic=true, simd=true, uniform=false;
+    bool fastPrecision=true; // specialized DD/fixed-point quadratic kernels before GMP
     Formula formula=Formula::Mandelbrot;
     Big juliaRe=Big::parse("-0.8"),juliaIm=Big::parse("0.156");
     double reuseRadius=4,focusX=.5,focusY=.5;
@@ -91,7 +93,7 @@ template<bool Save,class Real> struct Storage;
 
 template<class Real> struct Storage<false,Real> {
     /// Resizes the count-only policy. It intentionally stores no orbit fields.
-    void resize(size_t,unsigned=2) {}
+    void resize(size_t,unsigned=2,QuadraticBackend=QuadraticBackend::GMP) {}
     /// Count-only frames never copy resumable orbit state.
     void copy(size_t,const Storage&,size_t) {}
 };
@@ -129,7 +131,7 @@ template<> struct DoubleStateStorage<4> {
 template<> struct Storage<true,double> {
     using Variant=std::variant<DoubleStateStorage<2>,DoubleStateStorage<3>,DoubleStateStorage<4>>;
     Variant data;
-    void resize(size_t n,unsigned scalars) {
+    void resize(size_t n,unsigned scalars,QuadraticBackend=QuadraticBackend::GMP) {
         switch(scalars) {
         case 2:data.emplace<DoubleStateStorage<2>>();break;
         case 3:data.emplace<DoubleStateStorage<3>>();break;
@@ -156,21 +158,64 @@ template<> struct Storage<true,double> {
 
 template<unsigned Scalars> struct BigStateStorage {
     using State=OrbitScalars<Big,Scalars>;
-    // Only unfinished orbits allocate limbs. The checkpoint object contains
-    // exactly the scalar fields required by the selected formula.
+    // Only unfinished GMP orbits allocate limbs. Reused states are shared read-only.
     std::vector<std::shared_ptr<const State>> orbit;
     void resize(size_t n) { orbit.resize(n); }
     void copy(size_t d,const BigStateStorage&s,size_t i) { orbit[d]=s.orbit[i]; }
 };
+
+struct DoubleDoubleStateStorage {
+    using State=OrbitScalars<DoubleDouble,2>;
+    AlignedVector<double> xhi,xlo,yhi,ylo;
+    void resize(size_t n) {xhi.resize(n);xlo.resize(n);yhi.resize(n);ylo.resize(n);}
+    void copy(size_t d,const DoubleDoubleStateStorage&s,size_t i) {
+        xhi[d]=s.xhi[i];xlo[d]=s.xlo[i];yhi[d]=s.yhi[i];ylo[d]=s.ylo[i];
+    }
+    State load(size_t i) const {
+        State s;s.x={xhi[i],xlo[i]};s.y={yhi[i],ylo[i]};return s;
+    }
+    template<class Kernel> void store(size_t i,const Kernel&k) {
+        xhi[i]=k.x.hi;xlo[i]=k.x.lo;yhi[i]=k.y.hi;ylo[i]=k.y.lo;
+    }
+};
+
+template<size_t N> struct FixedStateStorage {
+    using Real=Fixed<N>;
+    using State=OrbitScalars<Real,2>;
+    std::array<AlignedVector<uint64_t>,N> x,y;
+    void resize(size_t n) {for(auto&v:x)v.resize(n);for(auto&v:y)v.resize(n);}
+    void copy(size_t d,const FixedStateStorage&s,size_t i) {
+        for(size_t limb=0;limb<N;++limb) {x[limb][d]=s.x[limb][i];y[limb][d]=s.y[limb][i];}
+    }
+    State load(size_t i) const {
+        State s;
+        for(size_t limb=0;limb<N;++limb) {s.x.limb[limb]=x[limb][i];s.y.limb[limb]=y[limb][i];}
+        return s;
+    }
+    template<class Kernel> void store(size_t i,const Kernel&k) {
+        for(size_t limb=0;limb<N;++limb) {x[limb][i]=k.x.limb[limb];y[limb][i]=k.y.limb[limb];}
+    }
+};
+
 template<> struct Storage<true,Big> {
-    using Variant=std::variant<BigStateStorage<2>,BigStateStorage<3>,BigStateStorage<4>>;
+    using Variant=std::variant<BigStateStorage<2>,BigStateStorage<3>,BigStateStorage<4>,
+                               DoubleDoubleStateStorage,FixedStateStorage<2>,
+                               FixedStateStorage<3>,FixedStateStorage<4>>;
     Variant data;
-    void resize(size_t n,unsigned scalars) {
-        switch(scalars) {
-        case 2:data.emplace<BigStateStorage<2>>();break;
-        case 3:data.emplace<BigStateStorage<3>>();break;
-        case 4:data.emplace<BigStateStorage<4>>();break;
-        default:throw std::logic_error("invalid formula state width");
+    void resize(size_t n,unsigned scalars,QuadraticBackend backend=QuadraticBackend::GMP) {
+        switch(backend) {
+        case QuadraticBackend::DoubleDouble:data.emplace<DoubleDoubleStateStorage>();break;
+        case QuadraticBackend::Fixed128:data.emplace<FixedStateStorage<2>>();break;
+        case QuadraticBackend::Fixed192:data.emplace<FixedStateStorage<3>>();break;
+        case QuadraticBackend::Fixed256:data.emplace<FixedStateStorage<4>>();break;
+        case QuadraticBackend::GMP:
+            switch(scalars) {
+            case 2:data.emplace<BigStateStorage<2>>();break;
+            case 3:data.emplace<BigStateStorage<3>>();break;
+            case 4:data.emplace<BigStateStorage<4>>();break;
+            default:throw std::logic_error("invalid formula state width");
+            }
+            break;
         }
         std::visit([&](auto&state){state.resize(n);},data);
     }
@@ -178,7 +223,7 @@ template<> struct Storage<true,Big> {
         std::visit([&](auto&dst) {
             using T=std::decay_t<decltype(dst)>;
             const auto*src=std::get_if<T>(&s.data);
-            if(!src) throw std::logic_error("incompatible formula state storage");
+            if(!src) throw std::logic_error("incompatible precision state storage");
             dst.copy(d,*src,i);
         },data);
     }
@@ -188,6 +233,10 @@ template<> struct Storage<true,Big> {
     template<class F> const BigStateStorage<F::stateScalars>& get() const {
         return std::get<BigStateStorage<F::stateScalars>>(data);
     }
+    DoubleDoubleStateStorage& getDoubleDouble() {return std::get<DoubleDoubleStateStorage>(data);}
+    const DoubleDoubleStateStorage& getDoubleDouble() const {return std::get<DoubleDoubleStateStorage>(data);}
+    template<size_t N> FixedStateStorage<N>& getFixed() {return std::get<FixedStateStorage<N>>(data);}
+    template<size_t N> const FixedStateStorage<N>& getFixed() const {return std::get<FixedStateStorage<N>>(data);}
 };
 
 template<class Real,bool Save> struct Frame final:FrameBase {

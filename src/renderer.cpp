@@ -29,11 +29,37 @@ public:
     /// Distinguishes a renderer-budget refusal from arithmetic overflow.
     MemoryBudgetExceeded():std::length_error("estimated renderer memory exceeds budget") {}
 };
+const char* backendName(QuadraticBackend backend) noexcept {
+    switch(backend) {
+    case QuadraticBackend::DoubleDouble:return "double-double";
+    case QuadraticBackend::Fixed128:return "fixed128";
+    case QuadraticBackend::Fixed192:return "fixed192";
+    case QuadraticBackend::Fixed256:return "fixed256";
+    case QuadraticBackend::GMP:return "GMP";
+    }
+    return "GMP";
+}
+QuadraticBackend backendFromName(std::string_view name) noexcept {
+    if(name=="double-double") return QuadraticBackend::DoubleDouble;
+    if(name=="fixed128") return QuadraticBackend::Fixed128;
+    if(name=="fixed192") return QuadraticBackend::Fixed192;
+    if(name=="fixed256") return QuadraticBackend::Fixed256;
+    return QuadraticBackend::GMP;
+}
 /// Estimates memory consumed by one frame and optional saved orbit state.
-size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state,unsigned stateScalars) {
+size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state,unsigned stateScalars,
+                QuadraticBackend backend=QuadraticBackend::GMP) {
     size_t each=sizeof(Count)+sizeof(uint32_t)+sizeof(uint8_t);
     if(state) {
-        if(big) {
+        if(big && backend!=QuadraticBackend::GMP) {
+            switch(backend) {
+            case QuadraticBackend::DoubleDouble: each=plusChecked(each,4*sizeof(double));break;
+            case QuadraticBackend::Fixed128: each=plusChecked(each,4*sizeof(uint64_t));break;
+            case QuadraticBackend::Fixed192: each=plusChecked(each,6*sizeof(uint64_t));break;
+            case QuadraticBackend::Fixed256: each=plusChecked(each,8*sizeof(uint64_t));break;
+            case QuadraticBackend::GMP:break;
+            }
+        } else if(big) {
             const size_t scalarBytes=plusChecked(sizeof(Big),
                 plusChecked(static_cast<size_t>(bits/8),3*sizeof(mp_limb_t)));
             each=plusChecked(each,plusChecked(sizeof(std::shared_ptr<const void>)+32,
@@ -145,7 +171,46 @@ bool compatible(const FrameBase& old,const Request&r,mp_bitcnt_t bits) {
     // basis. A different angle therefore denotes a different coordinate system:
     // visual fallback is still valid, but DP/orbit state is not.
     return displayCompatible(old,r) && old.request.view.rotation==r.view.rotation &&
-           old.stats.bits==bits && old.request.settings.analytic==r.settings.analytic;
+           old.stats.bits==bits && old.request.settings.analytic==r.settings.analytic &&
+           old.request.settings.fastPrecision==r.settings.fastPrecision;
+}
+bool quadraticFormula(Formula formula) noexcept {
+    return formula==Formula::Mandelbrot || formula==Formula::Julia ||
+           formula==Formula::BurningShip;
+}
+bool fixedRangeSafe(const Request&r) {
+    auto safe=[](const Big&v) {
+        const double d=v.toDouble();
+        return std::isfinite(d) && std::abs(d)<=2.9;
+    };
+    for(double u:{0.0,1.0}) for(double v:{0.0,1.0}) {
+        const auto point=r.view.screenToComplex(u,v,r.width,r.height);
+        if(!safe(point.first) || !safe(point.second)) return false;
+    }
+    if(r.settings.formula==Formula::Julia &&
+       (!safe(r.settings.juliaRe) || !safe(r.settings.juliaIm))) return false;
+    return true;
+}
+QuadraticBackend chooseQuadraticBackend(const Request&r,mp_bitcnt_t requestedBits) {
+    if(!r.settings.fastPrecision || !quadraticFormula(r.settings.formula))
+        return QuadraticBackend::GMP;
+    if(requestedBits<=100 && preferDoubleDoubleBackend())
+        return QuadraticBackend::DoubleDouble;
+    if(!fixedBackendAvailable || !fixedRangeSafe(r)) return QuadraticBackend::GMP;
+    if(requestedBits<=120) return QuadraticBackend::Fixed128;
+    if(requestedBits<=184) return QuadraticBackend::Fixed192;
+    if(requestedBits<=248) return QuadraticBackend::Fixed256;
+    return QuadraticBackend::GMP;
+}
+mp_bitcnt_t backendBits(QuadraticBackend backend) noexcept {
+    switch(backend) {
+    case QuadraticBackend::DoubleDouble:return 106;
+    case QuadraticBackend::Fixed128:return Fixed<2>::precision;
+    case QuadraticBackend::Fixed192:return Fixed<3>::precision;
+    case QuadraticBackend::Fixed256:return Fixed<4>::precision;
+    case QuadraticBackend::GMP:return 0;
+    }
+    return 0;
 }
 struct alignas(64) LocalStats { uint64_t reused=0,started=0,resumed=0,steps=0; };
 struct LineTask { bool row=false; int index=0; double priority=0; size_t serial=0; };
@@ -422,7 +487,8 @@ template<class Real,bool Save>
 std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const Cancellation&stop,
                                          const std::shared_ptr<const FrameBase>&statePrevious,
                                          const std::shared_ptr<const FrameBase>&gridPrevious,
-                                         mp_bitcnt_t bits) {
+                                         mp_bitcnt_t bits,
+                                         QuadraticBackend quadraticBackend=QuadraticBackend::GMP) {
     const auto begin=std::chrono::steady_clock::now();
     const auto*stateOld=dynamic_cast<const Frame<Real,Save>*>(statePrevious.get());
     const FrameBase*gridOld=gridPrevious.get();
@@ -434,12 +500,13 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     const size_t pixels=multiplyChecked(static_cast<size_t>(f->stride),static_cast<size_t>(r.height));
     const bool big=std::is_same_v<Real,Big>;
     const unsigned stateScalars=formulaStateScalars(r.settings.formula);
-    size_t bytes=estimate(pixels,bits,big,Save,stateScalars);
+    size_t bytes=estimate(pixels,bits,big,Save,stateScalars,quadraticBackend);
     auto addPreviousBytes=[&](const std::shared_ptr<const FrameBase>&previous) {
         if(previous) bytes=plusChecked(bytes,estimate(
             previous->counts.size(),previous->stats.bits,
-            previous->stats.backend=="GMP",previous->request.settings.saveState,
-            formulaStateScalars(previous->request.settings.formula)));
+            previous->stats.backend!="double",previous->request.settings.saveState,
+            formulaStateScalars(previous->request.settings.formula),
+            backendFromName(previous->stats.backend)));
     };
     addPreviousBytes(statePrevious);
     if(gridPrevious && gridPrevious!=statePrevious) addPreviousBytes(gridPrevious);
@@ -486,12 +553,15 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     }
     f->stats.lineCost=ax.cost+ay.cost;
     f->stats.uniform=ax.uniform && ay.uniform;
-    f->stats.bits=bits; f->stats.backend=big?"GMP":"double";
+    f->stats.bits=bits;
+    f->stats.backend=big?backendName(quadraticBackend):"double";
     const bool quadratic=r.settings.formula==Formula::Mandelbrot ||
                          r.settings.formula==Formula::Julia ||
                          r.settings.formula==Formula::BurningShip;
-    f->stats.simd=!big && quadratic && r.settings.simd && hasAVX2();
-    f->counts.resize(pixels); f->state.resize(pixels,stateScalars);
+    f->stats.simd=quadratic && r.settings.simd &&
+        ((!big && hasNativeSIMD()) ||
+         (big && quadraticBackend==QuadraticBackend::DoubleDouble && hasDoubleDoubleSIMD()));
+    f->counts.resize(pixels); f->state.resize(pixels,stateScalars,quadraticBackend);
     f->samplePixels.assign(pixels,0xff000000u);
     f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
 
@@ -614,7 +684,203 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     const double juliaReal=r.settings.juliaRe.toDouble(),juliaImag=r.settings.juliaIm.toDouble();
 
     using CalculateList=std::function<void(const std::vector<size_t>&,const Cancellation&)>;
+
+    auto makeFastCoordinates=[&]<class Fast>() {
+        auto coordinates=std::make_shared<std::array<std::vector<Fast>,4>>();
+        auto&xr=(*coordinates)[0];auto&xi=(*coordinates)[1];
+        auto&yr=(*coordinates)[2];auto&yi=(*coordinates)[3];
+        xr.reserve(f->xs.size());yi.reserve(f->ys.size());
+        if(r.view.rotation==0) {
+            for(const auto&x:f->xs) xr.push_back(Fast::fromBig(x));
+            for(const auto&y:f->ys) yi.push_back(Fast::fromBig(y));
+        } else {
+            xi.reserve(f->xs.size());yr.reserve(f->ys.size());
+            for(size_t i=0;i<f->xs.size();++i) {
+                xr.push_back(Fast::fromBig(bxReal[i]));
+                xi.push_back(Fast::fromBig(bxImag[i]));
+            }
+            for(size_t i=0;i<f->ys.size();++i) {
+                yr.push_back(Fast::fromBig(byReal[i]));
+                yi.push_back(Fast::fromBig(byImag[i]));
+            }
+        }
+        return coordinates;
+    };
+
+    auto makeDoubleDoubleList=[&]<class F>() -> CalculateList {
+        static_assert(F::quadratic);
+        auto coordinates=makeFastCoordinates.template operator()<DoubleDouble>();
+        DoubleDoubleStateStorage* state=nullptr;
+        if constexpr(Save && big) state=&f->state.getDoubleDouble();
+        const DoubleDouble jr=[](const Settings&s) {
+            if constexpr(F::julia) return DoubleDouble::fromBig(s.juliaRe);
+            else return DoubleDouble{};
+        }(r.settings);
+        const DoubleDouble ji=[](const Settings&s) {
+            if constexpr(F::julia) return DoubleDouble::fromBig(s.juliaIm);
+            else return DoubleDouble{};
+        }(r.settings);
+        return [&,coordinates,state,jr,ji](const std::vector<size_t>&list,
+                                           const Cancellation&calculationStop) {
+            if(list.empty()) return;
+            std::atomic<size_t> next{0};
+            executor.run([&](size_t worker) {
+                auto&stat=stats.at(worker);
+                std::array<DoubleDoubleLane,4> lanes{};
+                std::array<size_t,4> indexes{};
+                std::array<uint32_t,4> starts{};
+                const size_t chunk=list.size()>512?64:4;
+                while(!calculationStop.requested()) {
+                    const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
+                    if(first>=list.size()) break;
+                    const size_t last=std::min(first+chunk,list.size());
+                    size_t k=first;
+                    while(k<last && !calculationStop.requested()) {
+                        size_t used=0;
+                        while(used<4 && k<last) {
+                            const size_t index=list[k++];
+                            Count before=f->counts[index];
+                            if(before.known(r.settings.iterations)) {
+                                f->samplePixels[index]=pixelColor(before,r.settings.iterations);
+                                f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                                continue;
+                            }
+                            const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
+                            const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
+                            const auto&xr=(*coordinates)[0];const auto&xi=(*coordinates)[1];
+                            const auto&yr=(*coordinates)[2];const auto&yi=(*coordinates)[3];
+                            const DoubleDouble real=r.view.rotation==0?xr[static_cast<size_t>(x)]:
+                                xr[static_cast<size_t>(x)]+yr[static_cast<size_t>(y)];
+                            const DoubleDouble imag=r.view.rotation==0?yi[static_cast<size_t>(y)]:
+                                xi[static_cast<size_t>(x)]+yi[static_cast<size_t>(y)];
+                            auto&lane=lanes[used];lane={};
+                            if constexpr(F::julia) {
+                                lane.cr=jr;lane.ci=ji;lane.x=real;lane.y=imag;
+                            } else {
+                                lane.cr=real;lane.ci=imag;
+                            }
+                            bool saved=false;
+                            if constexpr(Save) {
+                                if(before.iterations) {
+                                    const auto orbit=state->load(index);
+                                    lane.x=orbit.x;lane.y=orbit.y;lane.count=before;saved=true;
+                                }
+                            }
+                            if(!saved) {
+                                if constexpr(F::interior) {
+                                    if(r.settings.analytic && mainInterior(real.toDouble(),imag.toDouble()))
+                                        lane.count.status=Status::Interior;
+                                }
+                                if(lane.count.status==Status::Pending &&
+                                   greaterThan4(lane.x*lane.x+lane.y*lane.y))
+                                    lane.count.status=Status::Escaped;
+                            }
+                            indexes[used]=index;starts[used]=saved?before.iterations:0;
+                            if(saved && before.iterations) ++stat.resumed;else ++stat.started;
+                            ++used;
+                        }
+                        if(!used) continue;
+                        iterateDoubleDouble(lanes,used,r.settings.iterations,calculationStop,
+                                            Save,F::ship,r.settings.simd);
+                        for(size_t j=0;j<used;++j) {
+                            const size_t index=indexes[j];auto&lane=lanes[j];
+                            stat.steps+=lane.count.iterations-starts[j];
+                            if(!Save && lane.count.status==Status::Pending &&
+                               lane.count.iterations<f->counts[index].iterations) continue;
+                            f->counts[index]=lane.count;
+                            if constexpr(Save) state->store(index,lane);
+                            if(lane.count.known(r.settings.iterations)) {
+                                f->samplePixels[index]=pixelColor(lane.count,r.settings.iterations);
+                                f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                            }
+                        }
+                    }
+                }
+            });
+        };
+    };
+
+    auto makeFixedList=[&]<class F,size_t N>() -> CalculateList {
+        static_assert(F::quadratic);
+        using Fast=Fixed<N>;
+        auto coordinates=makeFastCoordinates.template operator()<Fast>();
+        FixedStateStorage<N>* state=nullptr;
+        if constexpr(Save && big) state=&f->state.template getFixed<N>();
+        const Fast jr=[](const Settings&s) {
+            if constexpr(F::julia) return Fast::fromBig(s.juliaRe);
+            else return Fast{};
+        }(r.settings);
+        const Fast ji=[](const Settings&s) {
+            if constexpr(F::julia) return Fast::fromBig(s.juliaIm);
+            else return Fast{};
+        }(r.settings);
+        return [&,coordinates,state,jr,ji](const std::vector<size_t>&list,
+                                           const Cancellation&calculationStop) {
+            if(list.empty()) return;
+            std::atomic<size_t> next{0};
+            executor.run([&](size_t worker) {
+                auto&stat=stats.at(worker);
+                FixedKernel<N,F> scratch;
+                const size_t chunk=list.size()>512?64:8;
+                while(!calculationStop.requested()) {
+                    const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
+                    if(first>=list.size()) break;
+                    const size_t last=std::min(first+chunk,list.size());
+                    for(size_t k=first;k<last && !calculationStop.requested();++k) {
+                        const size_t index=list[k];
+                        Count before=f->counts[index];
+                        if(before.known(r.settings.iterations)) {
+                            f->samplePixels[index]=pixelColor(before,r.settings.iterations);
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                            continue;
+                        }
+                        const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
+                        const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
+                        const auto&xr=(*coordinates)[0];const auto&xi=(*coordinates)[1];
+                        const auto&yr=(*coordinates)[2];const auto&yi=(*coordinates)[3];
+                        const Fast real=r.view.rotation==0?xr[static_cast<size_t>(x)]:
+                            xr[static_cast<size_t>(x)]+yr[static_cast<size_t>(y)];
+                        const Fast imag=r.view.rotation==0?yi[static_cast<size_t>(y)]:
+                            xi[static_cast<size_t>(x)]+yi[static_cast<size_t>(y)];
+                        FormulaOrbit<Fast,F> orbit{};const FormulaOrbit<Fast,F>*saved=nullptr;
+                        if constexpr(Save) {
+                            if(before.iterations) {orbit=state->load(index);saved=&orbit;}
+                        }
+                        const uint32_t startIterations=saved?before.iterations:0;
+                        Count result=scratch.run(real,imag,jr,ji,before,saved,
+                                                 r.settings.iterations,calculationStop,
+                                                 Save,r.settings.analytic);
+                        stat.steps+=result.iterations-startIterations;
+                        if(saved && startIterations) ++stat.resumed;else ++stat.started;
+                        if(!Save && result.status==Status::Pending &&
+                           result.iterations<before.iterations) continue;
+                        f->counts[index]=result;
+                        if constexpr(Save) state->store(index,scratch);
+                        if(result.known(r.settings.iterations)) {
+                            f->samplePixels[index]=pixelColor(result,r.settings.iterations);
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                        }
+                    }
+                }
+            });
+        };
+    };
+
     auto makeCalculateList=[&]<class F>() -> CalculateList {
+        if constexpr(big && F::quadratic) {
+            switch(quadraticBackend) {
+            case QuadraticBackend::DoubleDouble:
+                return makeDoubleDoubleList.template operator()<F>();
+            case QuadraticBackend::Fixed128:
+                return makeFixedList.template operator()<F,2>();
+            case QuadraticBackend::Fixed192:
+                return makeFixedList.template operator()<F,3>();
+            case QuadraticBackend::Fixed256:
+                return makeFixedList.template operator()<F,4>();
+            case QuadraticBackend::GMP:
+                break;
+            }
+        }
         using BigScratch=std::conditional_t<F::generic,detail::FixedFormulaKernel<Big,F>,BigKernel<F>>;
         auto bigScratch=std::make_shared<std::vector<std::unique_ptr<BigScratch>>>();
         if constexpr(big) {
@@ -1142,14 +1408,23 @@ std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,con
        !std::isfinite(r.view.rotation) || r.settings.solidGuessRange>16)
         throw std::invalid_argument("invalid reuse radius, focus, rotation, or solid-guess range");
 
-    mp_bitcnt_t bits=std::max(r.settings.minimumPrecision,r.view.requiredBits(r.width,r.settings.guardBits));
+    const mp_bitcnt_t requestedBits=
+        std::max(r.settings.minimumPrecision,r.view.requiredBits(r.width,r.settings.guardBits));
+    mp_bitcnt_t bits=requestedBits;
     const auto step=divide(r.view.span,static_cast<unsigned long>(r.width));
     const bool native=bits<=53 && r.view.re.exponent()<1000 && r.view.im.exponent()<1000 &&
                       r.view.span.exponent()<990 && step.exponent()>-1000;
+    QuadraticBackend quadraticBackend=QuadraticBackend::GMP;
     if(!native) {
-        bits=std::max<mp_bitcnt_t>(64,bits);
-        if(bits>std::numeric_limits<mp_bitcnt_t>::max()-GMP_NUMB_BITS) throw std::length_error("precision overflow");
-        bits=((bits+GMP_NUMB_BITS-1)/GMP_NUMB_BITS)*GMP_NUMB_BITS;
+        quadraticBackend=chooseQuadraticBackend(r,requestedBits);
+        if(quadraticBackend!=QuadraticBackend::GMP) {
+            bits=backendBits(quadraticBackend);
+        } else {
+            bits=std::max<mp_bitcnt_t>(64,bits);
+            if(bits>std::numeric_limits<mp_bitcnt_t>::max()-GMP_NUMB_BITS)
+                throw std::length_error("precision overflow");
+            bits=((bits+GMP_NUMB_BITS-1)/GMP_NUMB_BITS)*GMP_NUMB_BITS;
+        }
         if(r.settings.memoryBudget && bits/8>r.settings.memoryBudget/12)
             throw std::length_error("precision exceeds the memory budget");
     }
@@ -1161,8 +1436,8 @@ std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,con
             return compute<double,false>(request,e,s,statePrevious_,gridPrevious_,53);
         }
         if(request.settings.saveState)
-            return compute<Big,true>(request,e,s,statePrevious_,gridPrevious_,bits);
-        return compute<Big,false>(request,e,s,statePrevious_,gridPrevious_,bits);
+            return compute<Big,true>(request,e,s,statePrevious_,gridPrevious_,bits,quadraticBackend);
+        return compute<Big,false>(request,e,s,statePrevious_,gridPrevious_,bits,quadraticBackend);
     };
 
     std::shared_ptr<const FrameBase> result;

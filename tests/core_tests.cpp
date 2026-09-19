@@ -342,58 +342,150 @@ void resumeTests() {
 }
 // Freshly evaluate the ACTUAL nonuniform coordinates, not the ideal pixel grid.
 // This is the key test for retaining orbits during approximate zooming.
+template<class F> Count recomputeCoordinate(const FrameBase&frame,int x,int y) {
+    const auto&r=frame.request;Cancellation stop;
+    if(frame.stats.backend=="GMP") {
+        BigKernel<F> kernel(frame.stats.bits);
+        const auto point=r.view.complexFromAxes(
+            frame.xs[static_cast<size_t>(x)],frame.ys[static_cast<size_t>(y)]);
+        return kernel.run(point.first,point.second,r.settings.juliaRe,r.settings.juliaIm,
+                          {},nullptr,r.settings.iterations,stop,true,r.settings.analytic);
+    }
+    if(frame.stats.backend=="double") {
+        const double gx=frame.xs[static_cast<size_t>(x)].toDouble();
+        const double gy=frame.ys[static_cast<size_t>(y)].toDouble();
+        const double cs=std::cos(r.view.rotation),sn=std::sin(r.view.rotation);
+        const double real=r.view.rotation==0?gx:gx*cs-gy*sn;
+        const double imag=r.view.rotation==0?gy:gx*sn+gy*cs;
+        std::array<Lane,4>a{};
+        a[0]=prepareLane<F>(real,imag,r.settings.juliaRe.toDouble(),
+                            r.settings.juliaIm.toDouble(),{},nullptr,r.settings.analytic);
+        iterateFour(a,1,r.settings.iterations,stop,true,F::ship,false);
+        return a[0].count;
+    }
+
+    auto fastPoint=[&]<class Fast>() {
+        if(r.view.rotation==0)
+            return std::pair{Fast::fromBig(frame.xs[static_cast<size_t>(x)]),
+                             Fast::fromBig(frame.ys[static_cast<size_t>(y)])};
+        const double cs=std::cos(r.view.rotation),sn=std::sin(r.view.rotation);
+        const Fast xr=Fast::fromBig(scale(frame.xs[static_cast<size_t>(x)],cs));
+        const Fast xi=Fast::fromBig(scale(frame.xs[static_cast<size_t>(x)],sn));
+        const Fast yr=Fast::fromBig(scale(frame.ys[static_cast<size_t>(y)],-sn));
+        const Fast yi=Fast::fromBig(scale(frame.ys[static_cast<size_t>(y)],cs));
+        return std::pair{xr+yr,xi+yi};
+    };
+
+    if(frame.stats.backend=="double-double") {
+        static_assert(F::quadratic);
+        const auto [real,imag]=fastPoint.template operator()<DoubleDouble>();
+        DoubleDoubleLane lane{};
+        if constexpr(F::julia) {
+            lane.cr=DoubleDouble::fromBig(r.settings.juliaRe);
+            lane.ci=DoubleDouble::fromBig(r.settings.juliaIm);
+            lane.x=real;lane.y=imag;
+        } else {
+            lane.cr=real;lane.ci=imag;
+        }
+        if constexpr(F::interior)
+            if(r.settings.analytic && mainInterior(real.toDouble(),imag.toDouble()))
+                lane.count.status=Status::Interior;
+        if(lane.count.status==Status::Pending &&
+           greaterThan4(lane.x*lane.x+lane.y*lane.y))
+            lane.count.status=Status::Escaped;
+        std::array<DoubleDoubleLane,4> lanes{};lanes[0]=lane;
+        iterateDoubleDouble(lanes,1,r.settings.iterations,stop,true,F::ship,false);
+        return lanes[0].count;
+    }
+
+    auto fixed=[&]<size_t N>() {
+        using Fast=Fixed<N>;
+        static_assert(F::quadratic);
+        const auto [real,imag]=fastPoint.template operator()<Fast>();
+        const Fast jr=[](const Settings&s) {
+            if constexpr(F::julia) return Fast::fromBig(s.juliaRe);
+            else return Fast{};
+        }(r.settings);
+        const Fast ji=[](const Settings&s) {
+            if constexpr(F::julia) return Fast::fromBig(s.juliaIm);
+            else return Fast{};
+        }(r.settings);
+        FixedKernel<N,F> kernel;
+        return kernel.run(real,imag,jr,ji,{},nullptr,r.settings.iterations,
+                          stop,true,r.settings.analytic);
+    };
+    if(frame.stats.backend=="fixed128") return fixed.template operator()<2>();
+    if(frame.stats.backend=="fixed192") return fixed.template operator()<3>();
+    if(frame.stats.backend=="fixed256") return fixed.template operator()<4>();
+    throw std::runtime_error("unknown numeric backend in coordinate verifier");
+}
+
 /// Recomputes every stored coordinate independently and verifies the cache.
 template<class F> void verifyCoordinates(const FrameBase&frame) {
-    const auto&r=frame.request; Cancellation stop;
-    BigKernel<F> kernel(frame.stats.bits);
-    for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
-        Count expected;
-        if(frame.stats.backend=="GMP") {
-            const auto point=r.view.complexFromAxes(
-                frame.xs[static_cast<size_t>(x)],frame.ys[static_cast<size_t>(y)]);
-            expected=kernel.run(point.first,point.second,
-                r.settings.juliaRe,r.settings.juliaIm,{},nullptr,r.settings.iterations,stop,true,r.settings.analytic);
-        } else {
-            const double gx=frame.xs[static_cast<size_t>(x)].toDouble();
-            const double gy=frame.ys[static_cast<size_t>(y)].toDouble();
-            const double cs=std::cos(r.view.rotation),sn=std::sin(r.view.rotation);
-            const double real=r.view.rotation==0?gx:gx*cs-gy*sn;
-            const double imag=r.view.rotation==0?gy:gx*sn+gy*cs;
-            std::array<Lane,4>a{};
-            a[0]=prepareLane<F>(real,imag,
-                  r.settings.juliaRe.toDouble(),r.settings.juliaIm.toDouble(),{},nullptr,r.settings.analytic);
-            iterateFour(a,1,r.settings.iterations,stop,true,F::ship,false); expected=a[0].count;
-        }
-        CHECK(frame.at(x,y)==expected);
-    }
+    for(int y=0;y<frame.request.height;++y) for(int x=0;x<frame.request.width;++x)
+        CHECK(frame.at(x,y)==recomputeCoordinate<F>(frame,x,y));
 }
 /// Recomputes mathematically known samples and verifies cached results.
 template<class F> void verifyKnownCoordinates(const FrameBase&frame) {
-    const auto&r=frame.request; Cancellation stop;
-    BigKernel<F> kernel(frame.stats.bits);
+    const auto&r=frame.request;
     for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
         const Count actual=frame.at(x,y);
-        if(!actual.known(r.settings.iterations)) continue;
-        Count expected;
-        if(frame.stats.backend=="GMP") {
-            const auto point=r.view.complexFromAxes(
-                frame.xs[static_cast<size_t>(x)],frame.ys[static_cast<size_t>(y)]);
-            expected=kernel.run(point.first,point.second,
-                r.settings.juliaRe,r.settings.juliaIm,{},nullptr,r.settings.iterations,stop,true,r.settings.analytic);
-        } else {
-            const double gx=frame.xs[static_cast<size_t>(x)].toDouble();
-            const double gy=frame.ys[static_cast<size_t>(y)].toDouble();
-            const double cs=std::cos(r.view.rotation),sn=std::sin(r.view.rotation);
-            const double real=r.view.rotation==0?gx:gx*cs-gy*sn;
-            const double imag=r.view.rotation==0?gy:gx*sn+gy*cs;
-            std::array<Lane,4>a{};
-            a[0]=prepareLane<F>(real,imag,
-                  r.settings.juliaRe.toDouble(),r.settings.juliaIm.toDouble(),{},nullptr,r.settings.analytic);
-            iterateFour(a,1,r.settings.iterations,stop,true,F::ship,false); expected=a[0].count;
-        }
-        CHECK(actual==expected);
+        if(actual.known(r.settings.iterations))
+            CHECK(actual==recomputeCoordinate<F>(frame,x,y));
     }
 }
+/// Compares specialized quadratic precision backends against the GMP reference
+/// on an exactly representable grid and verifies resumable state.
+void fastPrecisionTests() {
+    ThreadExecutor one(1),many(4);Cancellation stop;
+    for(auto formula:{Formula::Mandelbrot,Formula::Julia,Formula::BurningShip}) {
+        for(mp_bitcnt_t precision:{80ul,112ul,150ul,210ul}) {
+            Request r;
+            r.width=16;r.height=8;
+            r.view=View::parse("-0.5","0","4",r.width);
+            r.settings.formula=formula;
+            r.settings.minimumPrecision=precision;
+            r.settings.iterations=24;
+            r.settings.analytic=false;
+            r.settings.uniform=true;
+            r.settings.solidGuessRange=0;
+            r.settings.saveState=true;
+
+            Renderer fast;
+            auto first=fast.render(r,many,stop);
+            CHECK(first->stats.backend!="double");
+
+            r.settings.iterations=80;
+            auto resumed=fast.render(r,many,stop);
+            CHECK(resumed->stats.resumed>0 || resumed->stats.pending==0);
+
+            Renderer fresh;
+            auto baseline=fresh.render(r,one,stop);
+            sameCounts(*resumed,*baseline);
+
+            Request gmpRequest=r;
+            gmpRequest.settings.fastPrecision=false;
+            Renderer gmp;
+            auto reference=gmp.render(gmpRequest,one,stop);
+            CHECK(reference->stats.backend=="GMP");
+            sameCounts(*resumed,*reference);
+        }
+    }
+
+    // Precision above the fixed-size range must transparently fall back to GMP.
+    Request deep;
+    deep.width=16;deep.height=8;
+    deep.view=View::parse("-0.5","0","4",deep.width);
+    deep.settings.minimumPrecision=300;
+    deep.settings.iterations=40;
+    deep.settings.analytic=false;
+    deep.settings.uniform=true;
+    deep.settings.solidGuessRange=0;
+    Renderer renderer;
+    auto frame=renderer.render(deep,one,stop);
+    CHECK(frame->stats.backend=="GMP");
+}
+
 /// Runs regression checks for zoom.
 void zoomTests() {
     ThreadExecutor pool(3); Cancellation stop;
@@ -839,7 +931,8 @@ int main() {
     try {
         for(auto [name,test]:std::vector<std::pair<const char*,std::function<void()>>>{
           {"axis optimizer vs independent dense DP",axisTests}, {"XaoS autopilot",autopilotTests}, {"XaoS fixed formulas",formulaTests}, {"classic XaoS palette",paletteTests}, {"arbitrary-precision camera",numericTests},
-          {"scalar/AVX2 bit identity",simdTests},{"counts/state/resume/limit decrease",resumeTests},
+          {"scalar/native SIMD bit identity",simdTests},{"counts/state/resume/limit decrease",resumeTests},
+          {"fast quadratic precision vs GMP",fastPrecisionTests},
           {"zoom coordinates and exact refinement",zoomTests},{"rotated view rendering and reuse",rotationTests},
           {"deep zoom and cache invalidation",deepTests},
           {"cancellation and resumption",cancellationTests},{"solid guessing and preview refinement",previewTests},
@@ -851,7 +944,7 @@ int main() {
           {"validation and exception barriers",failureTests}}) {
             test();std::cout<<"PASS "<<name<<'\n';
         }
-        std::cout<<"PASS "<<checks<<" checks; AVX2 available="<<hasAVX2()<<'\n';
+        std::cout<<"PASS "<<checks<<" checks; native SIMD available="<<hasNativeSIMD()<<'\n';
         return 0;
     }catch(const std::exception&e) {std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
 }

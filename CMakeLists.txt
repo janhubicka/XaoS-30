@@ -16,7 +16,7 @@ find_library(GMP_LIBRARY NAMES gmp REQUIRED)
 find_package(Threads REQUIRED)
 
 add_library(xaos_core
-  src/autopilot.cpp src/axis.cpp src/executor.cpp src/formulae.cpp
+  src/autopilot.cpp src/axis.cpp src/executor.cpp src/fast_mandel.cpp src/formulae.cpp
   src/palette.cpp src/renderer.cpp src/simd.cpp)
 target_include_directories(xaos_core PUBLIC include ${GMP_INCLUDE_DIR})
 target_link_libraries(xaos_core PUBLIC ${GMP_LIBRARY} Threads::Threads)
@@ -42,6 +42,12 @@ endif()
 if(NOT ANDROID)
   add_executable(xaos-bench app/bench.cpp)
   target_link_libraries(xaos-bench PRIVATE xaos_core)
+  add_executable(xaos-kernel-bench app/kernel_bench.cpp)
+  target_include_directories(xaos-kernel-bench PRIVATE ${GMP_INCLUDE_DIR})
+  target_link_libraries(xaos-kernel-bench PRIVATE ${GMP_LIBRARY})
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(xaos-kernel-bench PRIVATE -ffp-contract=off)
+  endif()
   include(CTest)
   if(BUILD_TESTING)
     add_executable(xaos-tests tests/core_tests.cpp)
