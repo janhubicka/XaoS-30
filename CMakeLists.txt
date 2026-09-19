@@ -16,7 +16,7 @@ find_library(GMP_LIBRARY NAMES gmp REQUIRED)
 find_package(Threads REQUIRED)
 
 add_library(xaos_core
-  src/autopilot.cpp src/axis.cpp src/executor.cpp src/formulae.cpp
+  src/autopilot.cpp src/axis.cpp src/executor.cpp src/fast_mandel.cpp src/formulae.cpp
   src/palette.cpp src/renderer.cpp src/simd.cpp)
 target_include_directories(xaos_core PUBLIC include ${GMP_INCLUDE_DIR})
 target_link_libraries(xaos_core PUBLIC ${GMP_LIBRARY} Threads::Threads)
