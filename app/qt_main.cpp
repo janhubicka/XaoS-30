@@ -110,6 +110,17 @@ class Canvas final:public QWidget {
                        std::clamp(currentV,0.0,1.0)*height());
     }
 
+    /// Restores the current formula's XaoS default view and parameter seed.
+    void restoreFormulaDefault() {
+        const auto&info=formulaInfo(settings.formula);
+        const mp_bitcnt_t p=std::max<mp_bitcnt_t>(128,settings.minimumPrecision);
+        view={Big::fromDouble(info.centerRe,p),Big::fromDouble(info.centerIm,p),
+              Big::fromDouble(info.horizontalSpan,p)};
+        settings.juliaRe=Big::fromDouble(info.seedRe,p);
+        settings.juliaIm=Big::fromDouble(info.seedIm,p);
+        autopilotEngine_.reset();autopilotStep_=0;latestDisplay_.reset();
+    }
+
     /// Applies XaoS's accelerated zoom/unzoom step selected by the autopilot.
     void autopilotTick() {
         if(!autopilotEnabled_ || !latestDisplay_) return;
@@ -117,9 +128,7 @@ class Canvas final:public QWidget {
         auto decision=autopilotEngine_.tick(*latestDisplay_,latestDisplayStats_.complete,
                                             latestDisplay_->request.view.span,1);
         if(decision.control==AutopilotControl::Reset) {
-            view=View{};
-            autopilotStep_=0;
-            latestDisplay_.reset();
+            restoreFormulaDefault();
             submit(true);
             return;
         }
@@ -517,7 +526,7 @@ public:
     /// Changes the worker count and requests a new render.
     void setThreads(size_t n) {threads_=n;submit();}
     /// Restores the default fractal view and requests a render.
-    void reset() {view=View{};autopilotEngine_.reset();autopilotStep_=0;latestDisplay_.reset();submit();}
+    void reset() {restoreFormulaDefault();submit();}
     /// Stops continuous zooming and requests refinement of the current view.
     void stopZoom() {direction_=0;motion_.stop();setAutopilot(false);submit();}
     /// Writes the currently displayed Qt image to a user-selected PNG file.
@@ -581,6 +590,7 @@ public:
         auto*coords=bar->addAction("Coordinates / bits");auto*reset=bar->addAction("Reset");
         connect(formula,qOverload<int>(&QComboBox::currentIndexChanged),this,[this,formula](int i){
             canvas->settings.formula=static_cast<Formula>(formula->itemData(i).toInt());
+            canvas->restoreFormulaDefault();
             canvas->submit(false,true);
         });
         connect(iterations,qOverload<int>(&QSpinBox::valueChanged),this,[this](int n){canvas->settings.iterations=static_cast<uint32_t>(n);canvas->submit(false,true);});
