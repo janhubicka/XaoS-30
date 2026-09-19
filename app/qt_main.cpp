@@ -118,6 +118,7 @@ class Canvas final:public QWidget {
         if(decision.control==AutopilotControl::Reset) {
             view=View{};
             autopilotStep_=0;
+            latestDisplay_.reset();
             submit(true);
             return;
         }
@@ -504,7 +505,7 @@ public:
     /// Changes the worker count and requests a new render.
     void setThreads(size_t n) {threads_=n;submit();}
     /// Restores the default fractal view and requests a render.
-    void reset() {view=View{};autopilotEngine_.reset();autopilotStep_=0;submit();}
+    void reset() {view=View{};autopilotEngine_.reset();autopilotStep_=0;latestDisplay_.reset();submit();}
     /// Stops continuous zooming and requests refinement of the current view.
     void stopZoom() {direction_=0;motion_.stop();setAutopilot(false);submit();}
     /// Writes the currently displayed Qt image to a user-selected PNG file.
