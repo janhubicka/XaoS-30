@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "xaos/autopilot.hpp"
+#include "xaos/formulae.hpp"
 #include "xaos/axis.hpp"
 #include "xaos/renderer.hpp"
 #include "xaos/palette.hpp"
@@ -181,6 +182,40 @@ void numericTests() {
     CHECK((std::is_empty_v<Storage<false,double>>));
     CHECK((std::is_empty_v<Storage<false,Big>>));
 }
+/// Runs every registered fixed formula through native and arbitrary-precision renderers.
+void formulaTests() {
+    CHECK(formulaInfos().size()==33);
+    ThreadExecutor one(1),many(4);Cancellation stop;
+    for(const auto&info:formulaInfos()) {
+        CHECK(formulaFromName(info.shortName)==info.formula);
+
+        Request r;r.width=19;r.height=13;r.settings.iterations=36;
+        r.settings.formula=info.formula;r.settings.analytic=false;r.settings.solidGuessRange=0;
+        r.settings.saveState=true;
+        Renderer saved;auto native=saved.render(r,many,stop);
+        r.settings.saveState=false;
+        Renderer counts;auto nativeCounts=counts.render(r,one,stop);
+        sameCounts(*native,*nativeCounts);
+        CHECK(native->stats.complete);
+
+        r.settings.minimumPrecision=128;r.settings.saveState=true;
+        Renderer precise;auto big=precise.render(r,one,stop);
+        CHECK(big->stats.bits>=128);
+        CHECK(big->stats.complete);
+
+        // Raising the limit must preserve correctness for formulas with auxiliary
+        // state such as Phoenix, Manowar, Spider, Octo, and Beryl.
+        r.settings.iterations=52;
+        auto resumed=precise.render(r,one,stop);
+        Renderer fresh;auto baseline=fresh.render(r,one,stop);
+        sameCounts(*resumed,*baseline);
+    }
+
+    CHECK(formulaFromName("julia")==Formula::Julia);
+    CHECK(formulaFromName("ship")==Formula::BurningShip);
+    CHECK(!formulaFromName("definitely-not-a-formula"));
+}
+
 /// Runs regression checks for simd.
 void simdTests() {
     Cancellation stop;
@@ -635,7 +670,7 @@ void failureTests() {
 int main() {
     try {
         for(auto [name,test]:std::vector<std::pair<const char*,std::function<void()>>>{
-          {"axis optimizer vs independent dense DP",axisTests}, {"XaoS autopilot",autopilotTests}, {"classic XaoS palette",paletteTests}, {"arbitrary-precision camera",numericTests},
+          {"axis optimizer vs independent dense DP",axisTests}, {"XaoS autopilot",autopilotTests}, {"XaoS fixed formulas",formulaTests}, {"classic XaoS palette",paletteTests}, {"arbitrary-precision camera",numericTests},
           {"scalar/AVX2 bit identity",simdTests},{"counts/state/resume/limit decrease",resumeTests},
           {"zoom coordinates and exact refinement",zoomTests},{"deep zoom and cache invalidation",deepTests},
           {"cancellation and resumption",cancellationTests},{"solid guessing and preview refinement",previewTests},

@@ -90,11 +90,13 @@ template<class Real> struct Storage<false,Real> {
     void copy(size_t,const Storage&,size_t) {}
 };
 template<> struct Storage<true,double> {
-    AlignedVector<double> x,y;
+    AlignedVector<double> x,y,a,b;
     /// Resizes the storage policy to cover the requested number of samples.
-    void resize(size_t n) { x.resize(n); y.resize(n); }
+    void resize(size_t n) { x.resize(n); y.resize(n); a.resize(n); b.resize(n); }
     /// Copies resumable state for one sample between compatible storage objects.
-    void copy(size_t d,const Storage&s,size_t i) { x[d]=s.x[i]; y[d]=s.y[i]; }
+    void copy(size_t d,const Storage&s,size_t i) {
+        x[d]=s.x[i]; y[d]=s.y[i]; a[d]=s.a[i]; b[d]=s.b[i];
+    }
 };
 template<> struct Storage<true,Big> {
     // Only unfinished orbits allocate limbs. Reused states are shared read-only.

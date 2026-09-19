@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "xaos/formulae.hpp"
 #include "xaos/renderer.hpp"
 #include <charconv>
 #include <iostream>
@@ -56,17 +57,19 @@ int main(int argc,char**argv) {
             else if(a=="--limits") { std::istringstream ss(next()); std::string item; while(std::getline(ss,item,',')) limits.push_back(integer<uint32_t>(item)); }
             else if(a=="--formula") {
                 auto name=next();
-                if(name=="mandelbrot") r.settings.formula=Formula::Mandelbrot;
-                else if(name=="julia") r.settings.formula=Formula::Julia;
-                else if(name=="ship") r.settings.formula=Formula::BurningShip;
-                else throw std::invalid_argument("formula must be mandelbrot, julia, or ship");
+                auto formula=formulaFromName(name);
+                if(!formula) throw std::invalid_argument("unknown formula: "+name);
+                r.settings.formula=*formula;
+            } else if(a=="--list-formulas") {
+                for(const auto&info:formulaInfos()) std::cout<<info.shortName<<"\t"<<info.name<<'\n';
+                return 0;
             } else if(a=="--help") {
                 std::cout<<"XaoS Modern headless renderer/benchmark\n"
                 "--width N --height N --iterations N --precision BITS (0=adaptive)\n"
                 "--threads N --counts | --state --scalar --no-interior --uniform\n"
                 "--slice MS --solid-guess N | --no-guess --no-fill --reconstruct MODE\n"
                 "--center-re DECIMAL --center-im DECIMAL --span DECIMAL\n"
-                "--formula mandelbrot|julia|ship --julia-re DECIMAL --julia-im DECIMAL\n"
+                "--formula NAME --list-formulas --julia-re DECIMAL --julia-im DECIMAL\n"
                 "--frames N --zoom FACTOR --limits 128,256,512 --output FILE.ppm\n"
                 "--memory-mib N (0=unlimited; default 1024)\n";
                 return 0;

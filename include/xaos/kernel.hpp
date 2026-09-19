@@ -7,7 +7,17 @@
 #include <cmath>
 
 namespace xaos {
-enum class Formula { Mandelbrot, Julia, BurningShip };
+enum class Formula {
+    Mandelbrot, Julia, BurningShip,
+    Mandelbrot3, Mandelbrot4, Mandelbrot5, Mandelbrot6,
+    Newton, Newton4,
+    Barnsley1, Barnsley2, Barnsley3,
+    Octo, Phoenix, Magnet, Magnet2, Triceratops, Catseye,
+    Mandelbar, Lambda, Manowar, Spider,
+    Sierpinski, SierpinskiCarpet, KochSnowflake, SpidronHornflake,
+    Mandelbrot9, Beryl, GoldenSierpinski, Circle7, Clock,
+    SymmetricBarnsley, SierpinskiCarpet4
+};
 enum class Status:uint8_t { Pending, Escaped, Interior };
 struct Count {
     uint32_t iterations=0;
@@ -18,10 +28,11 @@ struct Count {
     friend bool operator==(const Count&,const Count&)=default;
 };
 static_assert(sizeof(Count)==8);
-struct Mandelbrot { static constexpr bool julia=false, ship=false, interior=true; };
-struct Julia { static constexpr bool julia=true, ship=false, interior=false; };
-struct BurningShip { static constexpr bool julia=false, ship=true, interior=false; };
-template<class Real> struct Orbit { Real x,y; };
+struct Mandelbrot { static constexpr bool generic=false,julia=false,ship=false,interior=true; };
+struct Julia { static constexpr bool generic=false,julia=true,ship=false,interior=false; };
+struct BurningShip { static constexpr bool generic=false,julia=false,ship=true,interior=false; };
+struct GenericFormula { static constexpr bool generic=true,julia=false,ship=false,interior=false; };
+template<class Real> struct Orbit { Real x,y,a,b; };
 
 // Only use the cheap analytic test well away from either algebraic boundary.
 // Coordinate conversion error is tiny relative to this margin on [-2,2]^2.
