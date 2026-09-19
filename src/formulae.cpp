@@ -56,19 +56,24 @@ std::optional<Formula> formulaFromName(std::string_view name) noexcept {
     if(name=="burningship") return Formula::BurningShip;
     return std::nullopt;
 }
-/// Reports whether resumable iteration needs a second complex orbit value.
-bool formulaNeedsAuxiliaryState(Formula formula) noexcept {
+/// Returns the number of scalar values required to resume this formula.
+unsigned formulaStateScalars(Formula formula) noexcept {
     switch(formula) {
     case Formula::Newton:
     case Formula::Newton4:
+        return 3;
     case Formula::Octo:
     case Formula::Phoenix:
     case Formula::Manowar:
     case Formula::Spider:
     case Formula::Beryl:
-        return true;
+        return 4;
     default:
-        return false;
+        return 2;
     }
+}
+/// Reports whether resumable iteration needs state beyond the primary complex orbit.
+bool formulaNeedsAuxiliaryState(Formula formula) noexcept {
+    return formulaStateScalars(formula)>2;
 }
 } // namespace xaos

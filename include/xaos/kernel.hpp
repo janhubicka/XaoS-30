@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <cmath>
+#include <type_traits>
 
 namespace xaos {
 enum class Formula {
@@ -28,11 +29,44 @@ struct Count {
     friend bool operator==(const Count&,const Count&)=default;
 };
 static_assert(sizeof(Count)==8);
-struct Mandelbrot { static constexpr bool generic=false,julia=false,ship=false,interior=true; };
-struct Julia { static constexpr bool generic=false,julia=true,ship=false,interior=false; };
-struct BurningShip { static constexpr bool generic=false,julia=false,ship=true,interior=false; };
-struct GenericFormula { static constexpr bool generic=true,julia=false,ship=false,interior=false; };
-template<class Real> struct Orbit { Real x,y,a,b; };
+template<Formula Value> struct FormulaTag {
+    static constexpr Formula formula=Value;
+    static constexpr bool quadratic=
+        Value==Formula::Mandelbrot || Value==Formula::Julia || Value==Formula::BurningShip;
+    static constexpr bool generic=!quadratic;
+    static constexpr bool julia=Value==Formula::Julia;
+    static constexpr bool ship=Value==Formula::BurningShip;
+    static constexpr bool interior=Value==Formula::Mandelbrot;
+    // Resumable state is formula-specific. Most formulas only need z=(x,y);
+    // Newton additionally needs its convergence delta, while recurrence formulas
+    // need a second complex value.
+    static constexpr unsigned stateScalars=
+        (Value==Formula::Newton || Value==Formula::Newton4) ? 3u :
+        (Value==Formula::Octo || Value==Formula::Phoenix || Value==Formula::Manowar ||
+         Value==Formula::Spider || Value==Formula::Beryl) ? 4u : 2u;
+};
+using Mandelbrot=FormulaTag<Formula::Mandelbrot>;
+using Julia=FormulaTag<Formula::Julia>;
+using BurningShip=FormulaTag<Formula::BurningShip>;
+
+template<class Real,unsigned Scalars> struct OrbitScalars;
+template<class Real> struct OrbitScalars<Real,2> {
+    Real x,y;
+    OrbitScalars() requires std::is_same_v<Real,double> = default;
+    explicit OrbitScalars(mp_bitcnt_t bits) requires std::is_same_v<Real,Big>:x(bits),y(bits) {}
+};
+template<class Real> struct OrbitScalars<Real,3> {
+    Real x,y,a;
+    OrbitScalars() requires std::is_same_v<Real,double> = default;
+    explicit OrbitScalars(mp_bitcnt_t bits) requires std::is_same_v<Real,Big>:x(bits),y(bits),a(bits) {}
+};
+template<class Real> struct OrbitScalars<Real,4> {
+    Real x,y,a,b;
+    OrbitScalars() requires std::is_same_v<Real,double> = default;
+    explicit OrbitScalars(mp_bitcnt_t bits) requires std::is_same_v<Real,Big>:x(bits),y(bits),a(bits),b(bits) {}
+};
+template<class Real,class F>
+using FormulaOrbit=OrbitScalars<Real,F::stateScalars>;
 
 // Only use the cheap analytic test well away from either algebraic boundary.
 // Coordinate conversion error is tiny relative to this margin on [-2,2]^2.
@@ -57,7 +91,7 @@ void iterateFour(std::array<Lane,4>& lanes,size_t valid,uint32_t limit,
 template<class F>
 /// Builds one SIMD/scalar lane from a coordinate and optional resumable orbit state.
 Lane prepareLane(double cx,double cy,double jr,double ji,const Count& previous,
-                 const Orbit<double>* saved,bool analytic) {
+                 const FormulaOrbit<double,F>* saved,bool analytic) {
     Lane l;
     if constexpr(F::julia) { l.cr=jr; l.ci=ji; l.x=cx; l.y=cy; }
     else { l.cr=cx; l.ci=cy; }
@@ -79,7 +113,7 @@ public:
     explicit BigKernel(mp_bitcnt_t p):cr_(p),ci_(p),xx_(p),yy_(p),t_(p),nx_(p),x(p),y(p) {}
     /// Executes scheduled work using the implementation-specific worker machinery.
     Count run(const Big&cx,const Big&cy,const Big&jr,const Big&ji,const Count&previous,
-              const Orbit<Big>* saved,uint32_t limit,const Cancellation&stop,
+              const FormulaOrbit<Big,F>* saved,uint32_t limit,const Cancellation&stop,
               bool allowTimeBudget,bool analytic) {
         Count result;
         if constexpr(F::julia) {

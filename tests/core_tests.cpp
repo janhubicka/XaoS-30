@@ -200,6 +200,9 @@ void numericTests() {
     CHECK(std::abs(mapped.first-u)<5e-5);CHECK(std::abs(mapped.second-vv)<5e-5);
     CHECK((std::is_empty_v<Storage<false,double>>));
     CHECK((std::is_empty_v<Storage<false,Big>>));
+    CHECK((FormulaTag<Formula::Mandelbrot>::stateScalars==2));
+    CHECK((FormulaTag<Formula::Newton>::stateScalars==3));
+    CHECK((FormulaTag<Formula::Phoenix>::stateScalars==4));
 }
 /// Runs every registered fixed formula through native and arbitrary-precision renderers.
 void formulaTests() {
@@ -217,13 +220,20 @@ void formulaTests() {
         sameCounts(*native,*nativeCounts);
         CHECK(native->stats.complete);
 
-        r.settings.minimumPrecision=128;r.settings.saveState=true;
+        // Every native formula must resume correctly from its formula-sized
+        // structure-of-arrays checkpoint.
+        r.settings.saveState=true;r.settings.iterations=52;
+        auto nativeResumed=saved.render(r,many,stop);
+        Renderer nativeFresh;auto nativeBaseline=nativeFresh.render(r,one,stop);
+        sameCounts(*nativeResumed,*nativeBaseline);
+
+        r.settings.minimumPrecision=128;r.settings.iterations=36;
         Renderer precise;auto big=precise.render(r,one,stop);
         CHECK(big->stats.bits>=128);
         CHECK(big->stats.complete);
 
-        // Raising the limit must preserve correctness for formulas with auxiliary
-        // state such as Phoenix, Manowar, Spider, Octo, and Beryl.
+        // Raising the limit must also preserve correctness for the formula-sized
+        // arbitrary-precision checkpoint objects.
         r.settings.iterations=52;
         auto resumed=precise.render(r,one,stop);
         Renderer fresh;auto baseline=fresh.render(r,one,stop);
@@ -237,11 +247,23 @@ void formulaTests() {
     // Independent one-step checks for formula families whose XaoS defaults use
     // fixed Julia-like seeds rather than "pixel as c".
     auto oneStep=[](Formula formula,double cx,double cy) {
-        detail::GenericFormulaKernel<double> kernel;
-        Cancellation stop;
-        Count result=kernel.run(formula,cx,cy,{},nullptr,1,stop,false);
-        CHECK(result.iterations==1 || result.status==Status::Escaped);
-        return std::array<double,4>{kernel.x,kernel.y,kernel.a,kernel.b};
+        auto run=[&]<Formula Value>() {
+            using F=FormulaTag<Value>;
+            static_assert(F::generic);
+            detail::FixedFormulaKernel<double,F> kernel;
+            Cancellation stop;
+            Count result=kernel.run(cx,cy,{},nullptr,1,stop,false);
+            CHECK(result.iterations==1 || result.status==Status::Escaped);
+            return std::array<double,4>{kernel.x,kernel.y,kernel.a,kernel.b};
+        };
+        switch(formula) {
+        case Formula::Barnsley1:return run.template operator()<Formula::Barnsley1>();
+        case Formula::Phoenix:return run.template operator()<Formula::Phoenix>();
+        case Formula::Lambda:return run.template operator()<Formula::Lambda>();
+        case Formula::Beryl:return run.template operator()<Formula::Beryl>();
+        case Formula::SymmetricBarnsley:return run.template operator()<Formula::SymmetricBarnsley>();
+        default: throw std::invalid_argument("formula not covered by one-step regression");
+        }
     };
     auto close=[](double a,double b){CHECK(std::abs(a-b)<1.e-10);};
 
@@ -739,28 +761,39 @@ void rapidZoomDisplayTests() {
     CHECK(bestFilled<=beforeFilled);
 }
 
-/// Verifies lazy auxiliary storage and graceful renderer-budget fallback.
+/// Verifies formula-sized state storage and graceful renderer-budget fallback.
 void memoryBudgetTests() {
     ThreadExecutor one(1);Cancellation stop;
+    static_assert(sizeof(FormulaOrbit<double,Mandelbrot>)==2*sizeof(double));
+    static_assert(sizeof(FormulaOrbit<double,FormulaTag<Formula::Newton>>)==3*sizeof(double));
+    static_assert(sizeof(FormulaOrbit<double,FormulaTag<Formula::Phoenix>>)==4*sizeof(double));
     {
         Request r;r.width=64;r.height=48;r.settings.iterations=64;
         r.settings.formula=Formula::Mandelbrot;
         Renderer renderer;
         auto frame=renderer.render(r,one,stop);
+        using F=FormulaTag<Formula::Mandelbrot>;
         auto*typed=dynamic_cast<const Frame<double,true>*>(frame.get());
         CHECK(typed);
-        CHECK(typed->state.a.empty());
-        CHECK(typed->state.b.empty());
+        const auto&state=typed->state.template get<F>();
+        CHECK(state.x.size()==frame->counts.size());
+        CHECK(state.y.size()==frame->counts.size());
+        CHECK(F::stateScalars==2);
     }
     {
         Request r;r.width=64;r.height=48;r.settings.iterations=64;
         r.settings.formula=Formula::Phoenix;
         Renderer renderer;
         auto frame=renderer.render(r,one,stop);
+        using F=FormulaTag<Formula::Phoenix>;
         auto*typed=dynamic_cast<const Frame<double,true>*>(frame.get());
         CHECK(typed);
-        CHECK(!typed->state.a.empty());
-        CHECK(!typed->state.b.empty());
+        const auto&state=typed->state.template get<F>();
+        CHECK(state.x.size()==frame->counts.size());
+        CHECK(state.y.size()==frame->counts.size());
+        CHECK(state.a.size()==frame->counts.size());
+        CHECK(state.b.size()==frame->counts.size());
+        CHECK(F::stateScalars==4);
     }
     {
         Request r;r.width=512;r.height=256;r.settings.iterations=64;
