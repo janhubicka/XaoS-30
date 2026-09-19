@@ -32,7 +32,9 @@ The project is rooted here. Do not recreate `experimental/qt-modern/` or a secon
 9. Preserve XaoS line significance: zoom-in uses inverse movement (fixed-point bias), zoom-out uses movement with ×500 endpoint weighting, followed by recursive `addprices()` midpoint/span weighting.
 10. Precision is runtime-selected. Do not replace the GMP path with a fixed menu of template precisions.
 11. Preserve autopilot semantics when changing navigation: target selection inspects `DisplayFrame` only, runs at 25 Hz, uses the historical boundary/noise searches and oscillation escape, and maps displayed-frame targets into the current arbitrary-precision viewport before moving.
-12. Scalar and SIMD escape counts must stay identical; keep `-ffp-contract=off` unless the numerical contract and tests are deliberately changed.
+12. Keep formula metadata centralized in the fixed registry. Added XaoS formulas must preserve exact-coordinate resumable auxiliary state in both double and GMP modes; do not route them through display approximations.
+13. Up/Down zoom-speed changes scale both manual continuous zoom and autopilot by the historical 1.05 factor; wheel zoom remains independent.
+14. Scalar and SIMD escape counts must stay identical; keep `-ffp-contract=off` unless the numerical contract and tests are deliberately changed.
 
 ## Coding style
 
