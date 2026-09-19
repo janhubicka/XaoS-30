@@ -40,12 +40,14 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: ctest --test-dir build --output-on-failure
-      - name: Qt offscreen smoke test
+      - name: Qt desktop and phone UI smoke tests
         env:
           QT_QPA_PLATFORM: offscreen
           ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: ./build/xaos-modern --smoke-test
+        run: |
+          ./build/xaos-modern --smoke-test
+          ./build/xaos-modern --smoke-test --mobile-ui
 
   thread-sanitizer:
     name: ThreadSanitizer
