@@ -362,6 +362,7 @@ protected:
     void resizeEvent(QResizeEvent*e) override { QWidget::resizeEvent(e); submit(false,true); }
     /// Starts zooming or panning in response to a mouse press.
     void mousePressEvent(QMouseEvent*e) override {
+        if(autopilotEnabled_) {e->accept();return;}
         pointer_=e->position();
         if(e->button()==Qt::MiddleButton) {dragging_=true;lastDrag_=pointer_;}
         else if(e->button()==Qt::LeftButton || e->button()==Qt::RightButton) {
@@ -375,6 +376,7 @@ protected:
     }
     /// Updates the zoom focus or pans while the middle button is held.
     void mouseMoveEvent(QMouseEvent*e) override {
+        if(autopilotEnabled_) {e->accept();return;}
         pointer_=e->position();
         if(dragging_) {
             auto d=pointer_-lastDrag_;lastDrag_=pointer_;
@@ -383,6 +385,7 @@ protected:
     }
     /// Applies a stepped pointer-centred zoom from the mouse wheel.
     void wheelEvent(QWheelEvent*e) override {
+        if(autopilotEnabled_) {e->accept();return;}
         const double steps=e->angleDelta().y()/120.;
         try {
             view.zoom(e->position().x()/std::max(1,width()),e->position().y()/std::max(1,height()),
@@ -396,6 +399,7 @@ public:
     int completedFrames=0;
     int publishedFrames=0;
     std::function<void(QString)> onStatus;
+    std::function<void(bool)> onAutopilotChanged;
     /// Constructs a Canvas instance.
     explicit Canvas(QWidget*parent=nullptr):QWidget(parent) {
         setMouseTracking(true);setFocusPolicy(Qt::StrongFocus);
@@ -479,6 +483,7 @@ public:
         if(autopilotEnabled_==enabled) return;
         autopilotEnabled_=enabled;
         direction_=0;motion_.stop();dragging_=false;
+        if(onAutopilotChanged) onAutopilotChanged(enabled);
         autopilotEngine_.reset();autopilotStep_=0;
         if(enabled) {
             autopilotClock_.restart();
@@ -565,6 +570,7 @@ public:
         });
         connect(threads,qOverload<int>(&QSpinBox::valueChanged),this,[this](int n){canvas->setThreads(static_cast<size_t>(n));});
         connect(autopilot,&QAction::toggled,canvas,&Canvas::setAutopilot);
+        canvas->onAutopilotChanged=[autopilot](bool enabled){autopilot->setChecked(enabled);};
         connect(coords,&QAction::triggered,canvas,&Canvas::coordinates);connect(reset,&QAction::triggered,canvas,&Canvas::reset);
         auto*file=menuBar()->addMenu("File");auto*save=file->addAction("Save frame as PNG");
         connect(save,&QAction::triggered,canvas,&Canvas::saveImage);
