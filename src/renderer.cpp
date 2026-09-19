@@ -490,7 +490,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     const bool quadratic=r.settings.formula==Formula::Mandelbrot ||
                          r.settings.formula==Formula::Julia ||
                          r.settings.formula==Formula::BurningShip;
-    f->stats.simd=!big && quadratic && r.settings.simd && hasAVX2();
+    f->stats.simd=!big && quadratic && r.settings.simd && hasNativeSIMD();
     f->counts.resize(pixels); f->state.resize(pixels,stateScalars);
     f->samplePixels.assign(pixels,0xff000000u);
     f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
