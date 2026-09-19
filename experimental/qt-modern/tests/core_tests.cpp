@@ -411,6 +411,7 @@ void splitCacheTests() {
     r.view.zoom(.51,.47,.985,r.width,r.height);
     auto recovered=renderer.render(r,pool,go);
     CHECK(recovered->stats.reusableGrid);
+    CHECK(recovered->stats.reused>static_cast<uint64_t>(r.width*r.height)/4);
     uint64_t exactSamples=0;
     for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x)
         exactSamples+=recovered->qualityAt(x,y)==DisplayQuality::Exact;
