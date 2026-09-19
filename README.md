@@ -43,7 +43,11 @@ only Linux x86-64 has actually been tested.
 
 Hold the left/right mouse button to zoom in/out around the pointer; use the wheel
 for stepped zoom and middle-button dragging to pan. `I` doubles the iteration
-limit. `Escape` stops continuous zoom. The toolbar chooses formula, iterations,
+limit. `Escape` stops continuous zoom or autopilot. **Autopilot** (toolbar or
+`Ctrl++`) ports the classic XaoS automatic explorer: it searches displayed 5x5
+neighborhoods for set boundaries or noisy multi-colour regions, prefers targets
+near the previous one, occasionally reseeds globally, and unzooms/resets when it
+cannot find an interesting area. The toolbar also chooses formula, iterations,
 saved-orbit policy, **reconstruction mode** (Nearest/XaoS, Bilinear, or Bicubic),
 and worker count. **Coordinates / bits** accepts decimal
 centers and spans such as `1e-1000`, a manual minimum precision in bits (`0` for
@@ -89,6 +93,13 @@ valid samples. The status bar reports separate compute and presentation times,
 the reconstruction mode, guesses, fills, completion and uniformity. By default
 the GUI reserves a small presentation pool (one worker, or two on larger
 machines) and uses the remaining CPUs for multithreaded fractal computation.
+
+The autopilot selector runs at the original **25 Hz**. It holds a chosen
+zoom/unzoom direction for a random 0–9 selector ticks and uses XaoS's original
+`STEP=0.0018`, `MAXSTEP=0.024`, and 20-FPS acceleration model. A paused
+autopilot waits for a complete-enough displayed frame before choosing a target;
+once moving, it can continue across reduced-resolution frames just like the
+historical implementation.
 
 ## Headless examples
 

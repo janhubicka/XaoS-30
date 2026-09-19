@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "xaos/autopilot.hpp"
 #include "xaos/renderer.hpp"
 #include "qt_executor.hpp"
 #include <QApplication>
@@ -83,12 +84,71 @@ class Canvas final:public QWidget {
     uint64_t serial_=0,shown_=0,epoch_=1;
     QImage image_,fallback_;
     View imageView_,fallbackView_;
-    QTimer motion_,idle_;
-    QElapsedTimer motionClock_;
+    QTimer motion_,idle_,autopilotTimer_;
+    QElapsedTimer motionClock_,autopilotClock_;
+    Autopilot autopilotEngine_;
+    std::shared_ptr<const DisplayFrame> latestDisplay_;
+    Statistics latestDisplayStats_;
+    double autopilotStep_=0;
+    bool autopilotEnabled_=false;
     QPointF pointer_{.5,.5},lastDrag_;
     int direction_=0;
     bool dragging_=false;
     size_t threads_=std::max<size_t>(1,defaultWorkerCount()-presentationWorkerCount());
+    /// Maps a target selected in a displayed source frame into the current viewport.
+    QPointF mapDisplayFocus(const DisplayFrame&frame,double u,double v) const {
+        if(width()<1 || height()<1) return QPointF(.5,.5);
+        const auto&source=frame.request.view;
+        const double sourceAspect=static_cast<double>(frame.request.height)/frame.request.width;
+        Big real=add(source.re,scale(source.span,u-.5));
+        Big imag=add(source.im,scale(source.span,(.5-v)*sourceAspect));
+        const double currentU=.5+div(sub(real,view.re),view.span).toDouble();
+        const double currentV=.5-div(sub(imag,view.im),view.span).toDouble()*
+                                   static_cast<double>(width())/height();
+        return QPointF(std::clamp(currentU,0.0,1.0)*width(),
+                       std::clamp(currentV,0.0,1.0)*height());
+    }
+
+    /// Applies XaoS's accelerated zoom/unzoom step selected by the autopilot.
+    void autopilotTick() {
+        if(!autopilotEnabled_ || !latestDisplay_) return;
+        const double seconds=std::clamp<double>(autopilotClock_.restart()/1000.0,.001,.2);
+        auto decision=autopilotEngine_.tick(*latestDisplay_,latestDisplayStats_.complete,
+                                            latestDisplay_->request.view.span,1);
+        if(decision.control==AutopilotControl::Reset) {
+            view=View{};
+            autopilotStep_=0;
+            latestDisplay_.reset();
+            submit(true);
+            return;
+        }
+
+        pointer_=mapDisplayFocus(*latestDisplay_,decision.focusX,decision.focusY);
+        constexpr double speedup=.0018; // original STEP
+        constexpr double maximum=.024;  // original MAXSTEP
+        const double mul=seconds/.05;    // original FRAMERATE=20 time multiplier
+
+        if(decision.control==AutopilotControl::ZoomIn)
+            autopilotStep_=std::min(maximum,autopilotStep_+speedup*2*mul);
+        else if(decision.control==AutopilotControl::ZoomOut)
+            autopilotStep_=std::max(-maximum,autopilotStep_-speedup*2*mul);
+        else if(autopilotStep_>0)
+            autopilotStep_=std::max(0.0,autopilotStep_-speedup*mul);
+        else if(autopilotStep_<0)
+            autopilotStep_=std::min(0.0,autopilotStep_+speedup*mul);
+
+        if(autopilotStep_==0) return;
+        try {
+            const double factor=std::pow(1.0-autopilotStep_,mul);
+            view.zoom(pointer_.x()/std::max(1,width()),pointer_.y()/std::max(1,height()),
+                      factor,std::max(1,width()),std::max(1,height()));
+            submit(true);
+        } catch(const std::exception&e) {
+            setAutopilot(false);
+            if(onStatus) onStatus(QString("Autopilot stopped: ")+e.what());
+        }
+    }
+
     /// Queues the newest computed grid for asynchronous presentation.
     void queuePresentation(std::shared_ptr<const FrameBase> frame,uint64_t serial,uint64_t epoch) {
         {
@@ -141,13 +201,14 @@ class Canvas final:public QWidget {
                 const auto reconstruction=job.frame->request.settings.reconstruction;
                 const double presentationMs=display->milliseconds;
                 QMetaObject::invokeMethod(this,
-                    [this,image=std::move(image),view,stats,reconstruction,presentationMs,
+                    [this,image=std::move(image),display,view,stats,reconstruction,presentationMs,
                      id=job.serial,epoch=job.epoch] {
                         if(epoch!=epoch_ || id<shown_) return;
                         shown_=id;
                         ++publishedFrames;
                         fallback_=image_; fallbackView_=imageView_;
                         image_=image; imageView_=view;
+                        latestDisplay_=display;latestDisplayStats_=stats;
                         if(stats.complete) ++completedFrames;
                         const char* mode="nearest";
                         switch(reconstruction) {
@@ -296,12 +357,13 @@ protected:
         p.fillRect(rect(),Qt::black);
         drawView(p,fallback_,fallbackView_);drawView(p,image_,imageView_);
         p.setPen(Qt::white);
-        p.drawText(12,22,"Hold left/right: zoom   |   Middle drag: pan   |   Wheel: zoom   |   I: more iterations");
+        p.drawText(12,22,"Hold left/right: zoom   |   Middle drag: pan   |   Wheel: zoom   |   Ctrl++: autopilot");
     }
     /// Submits a new render request after the canvas size changes.
     void resizeEvent(QResizeEvent*e) override { QWidget::resizeEvent(e); submit(false,true); }
     /// Starts zooming or panning in response to a mouse press.
     void mousePressEvent(QMouseEvent*e) override {
+        if(autopilotEnabled_) {e->accept();return;}
         pointer_=e->position();
         if(e->button()==Qt::MiddleButton) {dragging_=true;lastDrag_=pointer_;}
         else if(e->button()==Qt::LeftButton || e->button()==Qt::RightButton) {
@@ -310,11 +372,13 @@ protected:
     }
     /// Stops the active mouse interaction and schedules idle refinement.
     void mouseReleaseEvent(QMouseEvent*e) override {
+        if(autopilotEnabled_) {e->accept();return;}
         if(e->button()==Qt::MiddleButton) dragging_=false;
         if(e->button()==Qt::LeftButton || e->button()==Qt::RightButton) {direction_=0;motion_.stop();idle_.start();}
     }
     /// Updates the zoom focus or pans while the middle button is held.
     void mouseMoveEvent(QMouseEvent*e) override {
+        if(autopilotEnabled_) {e->accept();return;}
         pointer_=e->position();
         if(dragging_) {
             auto d=pointer_-lastDrag_;lastDrag_=pointer_;
@@ -323,6 +387,7 @@ protected:
     }
     /// Applies a stepped pointer-centred zoom from the mouse wheel.
     void wheelEvent(QWheelEvent*e) override {
+        if(autopilotEnabled_) {e->accept();return;}
         const double steps=e->angleDelta().y()/120.;
         try {
             view.zoom(e->position().x()/std::max(1,width()),e->position().y()/std::max(1,height()),
@@ -336,10 +401,12 @@ public:
     int completedFrames=0;
     int publishedFrames=0;
     std::function<void(QString)> onStatus;
+    std::function<void(bool)> onAutopilotChanged;
     /// Constructs a Canvas instance.
     explicit Canvas(QWidget*parent=nullptr):QWidget(parent) {
         setMouseTracking(true);setFocusPolicy(Qt::StrongFocus);
         motion_.setInterval(16);idle_.setSingleShot(true);idle_.setInterval(180);
+        autopilotTimer_.setInterval(40); // original XaoS autopilot timer: 25 Hz
         connect(&motion_,&QTimer::timeout,this,[this] {
             if(!direction_) return;
             const double seconds=std::min<qint64>(motionClock_.restart(),100)/1000.;
@@ -349,12 +416,13 @@ public:
             }catch(const std::exception&e){motion_.stop();if(onStatus)onStatus(e.what());}
         });
         connect(&idle_,&QTimer::timeout,this,[this]{submit(false);});
+        connect(&autopilotTimer_,&QTimer::timeout,this,[this]{autopilotTick();});
         presenter_=std::jthread([this](std::stop_token s){presentationLoop(s);});
         coordinator_=std::jthread([this](std::stop_token s){coordinator(s);});
     }
     /// Releases resources owned by the Canvas instance.
     ~Canvas() override {
-        motion_.stop();idle_.stop();
+        motion_.stop();idle_.stop();autopilotTimer_.stop();
         coordinator_.request_stop();
         presenter_.request_stop();
         {
@@ -386,7 +454,12 @@ public:
         {
             std::lock_guard lock(mutex_);
             serial=++serial_;
-            if(invalidate) ++epoch_;
+            if(invalidate) {
+                ++epoch_;
+                autopilotEngine_.reset();
+                autopilotStep_=0;
+                latestDisplay_.reset();
+            }
             epoch=epoch_;
 
             // Continuous zoom/pan only replaces the pending target. Let the active
@@ -407,14 +480,34 @@ public:
         wake_.notify_one();update();
         if(interactive) idle_.start();
     }
+    /// Enables or disables the XaoS-style automatic fractal explorer.
+    void setAutopilot(bool enabled) {
+        if(autopilotEnabled_==enabled) return;
+        autopilotEnabled_=enabled;
+        direction_=0;motion_.stop();dragging_=false;
+        if(onAutopilotChanged) onAutopilotChanged(enabled);
+        autopilotEngine_.reset();autopilotStep_=0;
+        if(enabled) {
+            autopilotClock_.restart();
+            autopilotTimer_.start();
+            if(onStatus) onStatus("Autopilot: searching fractal boundaries");
+        } else {
+            autopilotTimer_.stop();
+            idle_.start();
+            if(onStatus) onStatus("Autopilot off");
+        }
+    }
+    /// Reports whether automatic fractal exploration is enabled.
+    bool autopilotEnabled() const noexcept { return autopilotEnabled_; }
+
     /// Returns the number of compute workers, excluding presentation workers.
     size_t workerCount() const noexcept { return threads_; }
     /// Changes the worker count and requests a new render.
     void setThreads(size_t n) {threads_=n;submit();}
     /// Restores the default fractal view and requests a render.
-    void reset() {view=View{};submit();}
+    void reset() {view=View{};autopilotEngine_.reset();autopilotStep_=0;latestDisplay_.reset();submit();}
     /// Stops continuous zooming and requests refinement of the current view.
-    void stopZoom() {direction_=0;motion_.stop();submit();}
+    void stopZoom() {direction_=0;motion_.stop();setAutopilot(false);submit();}
     /// Writes the currently displayed Qt image to a user-selected PNG file.
     void saveImage() {
         if(image_.isNull()) return;
@@ -468,6 +561,8 @@ public:
         bar->addWidget(reconstruction);
         bar->addWidget(new QLabel("  Workers ",bar));auto*threads=new QSpinBox(bar);threads->setRange(1,1024);
         threads->setValue(static_cast<int>(canvas->workerCount()));bar->addWidget(threads);
+        auto*autopilot=bar->addAction("Autopilot");autopilot->setCheckable(true);
+        autopilot->setShortcut(QKeySequence("Ctrl++"));
         auto*coords=bar->addAction("Coordinates / bits");auto*reset=bar->addAction("Reset");
         connect(formula,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int i){canvas->settings.formula=static_cast<Formula>(i);canvas->submit(false,true);});
         connect(iterations,qOverload<int>(&QSpinBox::valueChanged),this,[this](int n){canvas->settings.iterations=static_cast<uint32_t>(n);canvas->submit(false,true);});
@@ -476,6 +571,8 @@ public:
             canvas->settings.reconstruction=static_cast<Reconstruction>(i);canvas->submit(false,true);
         });
         connect(threads,qOverload<int>(&QSpinBox::valueChanged),this,[this](int n){canvas->setThreads(static_cast<size_t>(n));});
+        connect(autopilot,&QAction::toggled,canvas,&Canvas::setAutopilot);
+        canvas->onAutopilotChanged=[autopilot](bool enabled){autopilot->setChecked(enabled);};
         connect(coords,&QAction::triggered,canvas,&Canvas::coordinates);connect(reset,&QAction::triggered,canvas,&Canvas::reset);
         auto*file=menuBar()->addMenu("File");auto*save=file->addAction("Save frame as PNG");
         connect(save,&QAction::triggered,canvas,&Canvas::saveImage);
@@ -532,7 +629,9 @@ int main(int argc,char**argv) {
         QTimer::singleShot(1000,&window,[&window]{window.iterations->setValue(128);});
         QTimer::singleShot(1400,&window,[&window]{window.canvas->settings.minimumPrecision=128;window.canvas->submit(false,true);});
         QTimer::singleShot(1900,&window,[&window]{window.canvas->settings.saveState=false;window.canvas->submit();});
-        QTimer::singleShot(4000,&window,[&window,&app,state]{
+        QTimer::singleShot(2400,&window,[&window]{window.canvas->setAutopilot(true);});
+        QTimer::singleShot(3300,&window,[&window]{window.canvas->setAutopilot(false);});
+        QTimer::singleShot(4500,&window,[&window,&app,state]{
             const bool ok=window.canvas->completedFrames && state->publishedDuringMotion;
             app.exit(ok?0:2);
         });

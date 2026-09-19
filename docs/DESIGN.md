@@ -193,6 +193,32 @@ Qt-specific paths have been statically reviewed but could not be compiled in the
 local container because Qt 6 development files are unavailable; repository CI
 provides the Qt build and offscreen smoke test.
 
+## Autopilot
+
+The automatic explorer is a direct modernisation of
+[`src/ui-hlp/autopilot.cpp`](https://github.com/xaos-project/XaoS/blob/51fd5e2ba052246c6ef44c556e906aac9c822378/src/ui-hlp/autopilot.cpp)
+and `autod.h`. It deliberately operates on the **displayed** immutable
+`DisplayFrame`, matching the historical code's inspection of the current image
+rather than privileged mathematical state.
+
+At 25 Hz it randomly samples 5x5 neighborhoods. The first heuristic accepts a
+small mixture of palette-zero black and non-black pixels (a set boundary). If
+that fails, the second heuristic accepts neighborhoods with very few repeated
+colour pairs (the old fallback for fractals without an inside-set colour).
+Search first stays within 30 pixels of the previous target, with 450 attempts;
+roughly one decision in 30 deliberately forces a global reseed. Final global
+fallbacks use the historical small guess counts. Failure on a complete frame
+selects unzoom; failure while paused on an incomplete frame waits for better
+quality.
+
+Direction is held for a random 0–9 selector ticks. Motion uses XaoS's
+`STEP=0.0018`, `MAXSTEP=0.024`, and 20-FPS acceleration/slowdown equations
+rather than teleporting the viewport. Repeated unzoom decisions trigger the old
+`minlong>5` oscillation escape and reset to the formula's default modern view.
+A target selected in an older displayed frame is transformed through arbitrary
+precision into the current viewport before motion, so asynchronous presentation
+does not move the autopilot toward stale screen coordinates.
+
 ## Numerical and performance limits
 
 The arbitrary-precision backend is GMP `mpf_t`, with explicitly initialized
