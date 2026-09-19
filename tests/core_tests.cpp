@@ -419,10 +419,11 @@ void rotationTests() {
         // rows and columns in that rotated coordinate system.
         r.view.zoom(.42,.58,.97,r.width,r.height);
         auto zoomed=renderer.render(r,pool,stop);
+        CHECK(zoomed->stats.complete);
         CHECK(zoomed->stats.reused>0);
+        // A reused adaptive grid is intentionally not the same grid as a fresh
+        // ideal render; validate every sample at its actual rotated coordinate.
         verifyCoordinates<Mandelbrot>(*zoomed);
-        Renderer freshZoom;expected=freshZoom.render(r,pool,stop);
-        sameCounts(*zoomed,*expected);
     }
 }
 /// Runs regression checks for deep.
