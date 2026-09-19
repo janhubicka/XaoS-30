@@ -1074,11 +1074,44 @@ std::shared_ptr<const FrameBase> selectFormula(const Request&r,Executor&e,const 
                                               const std::shared_ptr<const FrameBase>&gridOld,
                                               mp_bitcnt_t bits) {
     switch(r.settings.formula) {
-    case Formula::Mandelbrot: return compute<Real,Save,Mandelbrot>(r,e,s,stateOld,gridOld,bits);
-    case Formula::Julia: return compute<Real,Save,Julia>(r,e,s,stateOld,gridOld,bits);
-    case Formula::BurningShip: return compute<Real,Save,BurningShip>(r,e,s,stateOld,gridOld,bits);
-    default: return compute<Real,Save,GenericFormula>(r,e,s,stateOld,gridOld,bits);
+#define XAOS_DISPATCH_FORMULA(Name) \
+    case Formula::Name: return compute<Real,Save,FormulaTag<Formula::Name>>(r,e,s,stateOld,gridOld,bits)
+    XAOS_DISPATCH_FORMULA(Mandelbrot);
+    XAOS_DISPATCH_FORMULA(Julia);
+    XAOS_DISPATCH_FORMULA(BurningShip);
+    XAOS_DISPATCH_FORMULA(Mandelbrot3);
+    XAOS_DISPATCH_FORMULA(Mandelbrot4);
+    XAOS_DISPATCH_FORMULA(Mandelbrot5);
+    XAOS_DISPATCH_FORMULA(Mandelbrot6);
+    XAOS_DISPATCH_FORMULA(Newton);
+    XAOS_DISPATCH_FORMULA(Newton4);
+    XAOS_DISPATCH_FORMULA(Barnsley1);
+    XAOS_DISPATCH_FORMULA(Barnsley2);
+    XAOS_DISPATCH_FORMULA(Barnsley3);
+    XAOS_DISPATCH_FORMULA(Octo);
+    XAOS_DISPATCH_FORMULA(Phoenix);
+    XAOS_DISPATCH_FORMULA(Magnet);
+    XAOS_DISPATCH_FORMULA(Magnet2);
+    XAOS_DISPATCH_FORMULA(Triceratops);
+    XAOS_DISPATCH_FORMULA(Catseye);
+    XAOS_DISPATCH_FORMULA(Mandelbar);
+    XAOS_DISPATCH_FORMULA(Lambda);
+    XAOS_DISPATCH_FORMULA(Manowar);
+    XAOS_DISPATCH_FORMULA(Spider);
+    XAOS_DISPATCH_FORMULA(Sierpinski);
+    XAOS_DISPATCH_FORMULA(SierpinskiCarpet);
+    XAOS_DISPATCH_FORMULA(KochSnowflake);
+    XAOS_DISPATCH_FORMULA(SpidronHornflake);
+    XAOS_DISPATCH_FORMULA(Mandelbrot9);
+    XAOS_DISPATCH_FORMULA(Beryl);
+    XAOS_DISPATCH_FORMULA(GoldenSierpinski);
+    XAOS_DISPATCH_FORMULA(Circle7);
+    XAOS_DISPATCH_FORMULA(Clock);
+    XAOS_DISPATCH_FORMULA(SymmetricBarnsley);
+    XAOS_DISPATCH_FORMULA(SierpinskiCarpet4);
+#undef XAOS_DISPATCH_FORMULA
     }
+    throw std::invalid_argument("unknown formula");
 }
 }
 
