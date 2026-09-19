@@ -396,12 +396,20 @@ void rapidZoomDisplayTests() {
             if((f.displayAt(x,y)>>24)!=0xffu) return false;
         return true;
     };
+    auto uniqueAxis=[](const std::vector<Big>&axis) {
+        if(axis.empty()) return size_t{0};
+        size_t n=1;
+        for(size_t i=1;i<axis.size();++i) if(!(axis[i]==axis[i-1])) ++n;
+        return n;
+    };
     bool sawSparse=false,sawReuse=false;
     r.settings.sliceMilliseconds=2;
     for(int k=0;k<8;++k) {
         r.view.zoom(.37,.61,.975,r.width,r.height);
         frame=renderer.render(r,pool,go);
         CHECK(fullyVisible(*frame));
+        CHECK(uniqueAxis(frame->previewXs)>=static_cast<size_t>(std::min(3,r.width)));
+        CHECK(uniqueAxis(frame->previewYs)>=static_cast<size_t>(std::min(3,r.height)));
         sawReuse|=frame->stats.reused>0;
         uint64_t missing=0;
         for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x)
@@ -418,6 +426,8 @@ void rapidZoomDisplayTests() {
         r.view.zoom(.63,.39,1.028,r.width,r.height);
         frame=renderer.render(r,pool,go);
         CHECK(fullyVisible(*frame));
+        CHECK(uniqueAxis(frame->previewXs)>=static_cast<size_t>(std::min(3,r.width)));
+        CHECK(uniqueAxis(frame->previewYs)>=static_cast<size_t>(std::min(3,r.height)));
     }
     CHECK(frame->displayAt(0,0)!=0u);
     CHECK(frame->displayAt(r.width-1,r.height-1)!=0u);
