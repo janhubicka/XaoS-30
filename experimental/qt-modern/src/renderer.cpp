@@ -709,9 +709,11 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         });
     };
 
-    // Classic XaoS observes interruption only between complete line operations.
-    // A started line is atomic even if the UI requests the next frame meanwhile.
-    Cancellation lineStop;
+    // Ignore only the renderer's internal frame deadline once a line starts.
+    // External cancellation (new UI input, shutdown, explicit caller deadline)
+    // still propagates so pathological single-orbit work remains cancellable.
+    // A cancelled partial line is never promoted to rowReady/colReady.
+    Cancellation lineStop; lineStop.parent=&stop;
 
     std::vector<uint8_t> rowReady(static_cast<size_t>(r.height),1),colReady(static_cast<size_t>(r.width),1);
     bool hasNewLines=false;
