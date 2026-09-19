@@ -371,6 +371,7 @@ protected:
     }
     /// Stops the active mouse interaction and schedules idle refinement.
     void mouseReleaseEvent(QMouseEvent*e) override {
+        if(autopilotEnabled_) {e->accept();return;}
         if(e->button()==Qt::MiddleButton) dragging_=false;
         if(e->button()==Qt::LeftButton || e->button()==Qt::RightButton) {direction_=0;motion_.stop();idle_.start();}
     }
