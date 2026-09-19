@@ -236,16 +236,64 @@ struct CubicPoint {
     bool valid=false;
 };
 
-int nearestSource(const AxisSupport&axis,double target,bool preferHighOnTie) {
-    if(axis.index.empty()) return -1;
-    auto it=std::lower_bound(axis.position.begin(),axis.position.end(),target);
-    if(it==axis.position.begin()) return axis.index.front();
-    if(it==axis.position.end()) return axis.index.back();
-    const size_t hi=static_cast<size_t>(it-axis.position.begin()),lo=hi-1;
-    const double lowDistance=target-axis.position[lo];
-    const double highDistance=axis.position[hi]-target;
-    if(lowDistance==highDistance) return preferHighOnTie?axis.index[hi]:axis.index[lo];
-    return lowDistance<highDistance?axis.index[lo]:axis.index[hi];
+std::vector<int> classicColumnSources(const std::vector<Big>&coordinates,
+                                      const std::vector<uint8_t>&ready,const Big&step) {
+    const int n=static_cast<int>(coordinates.size());
+    std::vector<int> source(static_cast<size_t>(n),-1);
+    int x=0;
+    while(x<n) {
+        if(ready[static_cast<size_t>(x)]) {
+            source[static_cast<size_t>(x)]=x;
+            ++x;
+            continue;
+        }
+        const int start=x;
+        const int left=start-1;
+        int right=start+1;
+        while(right<n && !ready[static_cast<size_t>(right)]) ++right;
+        int chosen=-1;
+        if(right<n &&
+           (left<0 || pixelDistance(coordinates[static_cast<size_t>(start)],
+                                    coordinates[static_cast<size_t>(left)],step) >
+                      pixelDistance(coordinates[static_cast<size_t>(right)],
+                                    coordinates[static_cast<size_t>(start)],step)))
+            chosen=right;
+        else if(left>=0)
+            chosen=left;
+        const int end=right<n?right:n;
+        if(chosen>=0)
+            for(int i=start;i<end;++i) source[static_cast<size_t>(i)]=chosen;
+        x=end;
+    }
+    return source;
+}
+
+std::vector<int> classicRowSources(const std::vector<Big>&coordinates,
+                                   const std::vector<uint8_t>&ready,const Big&step) {
+    const int n=static_cast<int>(coordinates.size());
+    std::vector<int> source(static_cast<size_t>(n),-1);
+    int y=0;
+    while(y<n) {
+        if(ready[static_cast<size_t>(y)]) {
+            source[static_cast<size_t>(y)]=y;
+            ++y;
+            continue;
+        }
+        const int start=y;
+        while(y<n && !ready[static_cast<size_t>(y)]) ++y;
+        const int down=start-1,up=y<n?y:-1;
+        for(int i=start;i<y;++i) {
+            if(down<0) source[static_cast<size_t>(i)]=up;
+            else if(up<0) source[static_cast<size_t>(i)]=down;
+            else source[static_cast<size_t>(i)]=
+                pixelDistance(coordinates[static_cast<size_t>(i)],
+                              coordinates[static_cast<size_t>(down)],step) <
+                pixelDistance(coordinates[static_cast<size_t>(up)],
+                              coordinates[static_cast<size_t>(i)],step)
+                    ? down : up; // original filly() chooses the upper row on a tie
+        }
+    }
+    return source;
 }
 
 LinearPoint linearPoint(const AxisSupport&axis,double target) {
@@ -364,21 +412,19 @@ void postprocess(FrameBase&frame,const Big&step,const std::vector<uint8_t>&rowRe
     frame.displayPixels.assign(frame.samplePixels.size(),0u);
     if(xaxis.index.empty() || yaxis.index.empty()) return;
 
-    std::vector<int> nearestX(static_cast<size_t>(frame.request.width));
-    std::vector<int> nearestY(static_cast<size_t>(frame.request.height));
+    const auto nearestX=classicColumnSources(frame.xs,colReady,step);
+    const auto nearestY=classicRowSources(frame.ys,rowReady,step);
     std::vector<LinearPoint> linearX(static_cast<size_t>(frame.request.width));
     std::vector<LinearPoint> linearY(static_cast<size_t>(frame.request.height));
     std::vector<CubicPoint> cubicX(static_cast<size_t>(frame.request.width));
     std::vector<CubicPoint> cubicY(static_cast<size_t>(frame.request.height));
     for(int x=0;x<frame.request.width;++x) {
         const double target=xaxis.target[static_cast<size_t>(x)];
-        nearestX[static_cast<size_t>(x)]=nearestSource(xaxis,target,false);
         linearX[static_cast<size_t>(x)]=linearPoint(xaxis,target);
         cubicX[static_cast<size_t>(x)]=cubicPoint(xaxis,target);
     }
     for(int y=0;y<frame.request.height;++y) {
         const double target=yaxis.target[static_cast<size_t>(y)];
-        nearestY[static_cast<size_t>(y)]=nearestSource(yaxis,target,true);
         linearY[static_cast<size_t>(y)]=linearPoint(yaxis,target);
         cubicY[static_cast<size_t>(y)]=cubicPoint(yaxis,target);
     }
@@ -806,43 +852,33 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     // exhausted, copy nearby already-rendered samples into remaining gaps. These
     // colours are presentation-only and are replaced by later exact/guessed work.
     if(r.settings.sliceMilliseconds && r.settings.dynamicFill) {
-        auto copyFill=[&](size_t d,size_t src) {
-            if(f->sampleQuality[d]!=static_cast<uint8_t>(DisplayQuality::Missing) ||
-               f->sampleQuality[src]==static_cast<uint8_t>(DisplayQuality::Missing)) return;
+        const auto columnSource=classicColumnSources(f->xs,colReady,step);
+        const auto rowSource=classicRowSources(f->ys,rowReady,step);
+        auto storeFill=[&](size_t d,size_t src) {
+            if(f->sampleQuality[src]==static_cast<uint8_t>(DisplayQuality::Missing)) return;
+            if(f->sampleQuality[d]!=static_cast<uint8_t>(DisplayQuality::Fill))
+                ++f->stats.filled;
             f->samplePixels[d]=f->samplePixels[src];
             f->sampleQuality[d]=static_cast<uint8_t>(DisplayQuality::Fill);
-            ++f->stats.filled;
         };
-        // zoom.cpp:mkfilltable()/filly() select the closest completed column,
-        // then the closest completed row in coordinate space. Keep exact sample
-        // coordinates and orbit state untouched; only the presentation buffer moves.
+
+        // mkfilltable() chooses one source for a whole contiguous run of dirty
+        // columns. Fill those columns only on completed rows; filly() later copies
+        // completed rows wholesale into dirty rows.
         for(int x=0;x<r.width;++x) if(!colReady[static_cast<size_t>(x)]) {
-            int left=x-1,right=x+1;
-            while(left>=0 && !colReady[static_cast<size_t>(left)]) --left;
-            while(right<r.width && !colReady[static_cast<size_t>(right)]) ++right;
-            int src=-1;
-            if(left<0) src=right<r.width?right:-1;
-            else if(right>=r.width) src=left;
-            else src=pixelDistance(f->xs[static_cast<size_t>(x)],f->xs[static_cast<size_t>(left)],step) <
-                     pixelDistance(f->xs[static_cast<size_t>(right)],f->xs[static_cast<size_t>(x)],step)?left:right;
-            if(src>=0) {
-                for(int y=0;y<r.height;++y) copyFill(f->index(x,y),f->index(src,y));
-                f->previewXs[static_cast<size_t>(x)]=f->previewXs[static_cast<size_t>(src)];
-            }
+            const int src=columnSource[static_cast<size_t>(x)];
+            if(src<0) continue;
+            for(int y=0;y<r.height;++y) if(rowReady[static_cast<size_t>(y)])
+                storeFill(f->index(x,y),f->index(src,y));
+            f->previewXs[static_cast<size_t>(x)]=f->previewXs[static_cast<size_t>(src)];
         }
+
         for(int y=0;y<r.height;++y) if(!rowReady[static_cast<size_t>(y)]) {
-            int down=y-1,up=y+1;
-            while(down>=0 && !rowReady[static_cast<size_t>(down)]) --down;
-            while(up<r.height && !rowReady[static_cast<size_t>(up)]) ++up;
-            int src=-1;
-            if(down<0) src=up<r.height?up:-1;
-            else if(up>=r.height) src=down;
-            else src=pixelDistance(f->ys[static_cast<size_t>(y)],f->ys[static_cast<size_t>(down)],step) <
-                     pixelDistance(f->ys[static_cast<size_t>(up)],f->ys[static_cast<size_t>(y)],step)?down:up;
-            if(src>=0) {
-                for(int x=0;x<r.width;++x) copyFill(f->index(x,y),f->index(x,src));
-                f->previewYs[static_cast<size_t>(y)]=f->previewYs[static_cast<size_t>(src)];
-            }
+            const int src=rowSource[static_cast<size_t>(y)];
+            if(src<0) continue;
+            for(int x=0;x<r.width;++x)
+                storeFill(f->index(x,y),f->index(x,src));
+            f->previewYs[static_cast<size_t>(y)]=f->previewYs[static_cast<size_t>(src)];
         }
     }
 
