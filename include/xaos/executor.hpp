@@ -36,7 +36,8 @@ class ThreadExecutor final:public Executor {
     std::mutex mutex_;
     std::condition_variable_any wake_;
     std::condition_variable finished_;
-    std::vector<std::jthread> threads_;
+    std::vector<std::thread> threads_;
+    bool stopping_=false;
     std::function<void(size_t)> work_;
     std::exception_ptr error_;
     size_t generation_=0,remaining_=0;
