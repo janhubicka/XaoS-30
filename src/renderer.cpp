@@ -1108,7 +1108,7 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
         while(!stop.requested(false)) {
             const int y=nextRow.fetch_add(1,std::memory_order_relaxed);
             if(y>=frame.request.height) break;
-            const size_t outputRow=static_cast<size_t>(y)*width;
+            const size_t outputRow=static_cast<size_t>(frame.request.height-1-y)*width;
             for(int x=0;x<frame.request.width;++x) {
                 uint32_t color=0;
                 bool ok=false;
