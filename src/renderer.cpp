@@ -221,9 +221,9 @@ std::vector<int> classicColumnSources(const std::vector<Big>&coordinates,
         while(right<n && !ready[static_cast<size_t>(right)]) ++right;
         int chosen=-1;
         if(right<n &&
-           (left<0 || pixelDistance(coordinates[static_cast<size_t>(start)],
+           (left<0 || axisPixelDistance(coordinates[static_cast<size_t>(start)],
                                     coordinates[static_cast<size_t>(left)],step) >
-                      pixelDistance(coordinates[static_cast<size_t>(right)],
+                      axisPixelDistance(coordinates[static_cast<size_t>(right)],
                                     coordinates[static_cast<size_t>(start)],step)))
             chosen=right;
         else if(left>=0)
@@ -255,9 +255,9 @@ std::vector<int> classicRowSources(const std::vector<Big>&coordinates,
             if(down<0) source[static_cast<size_t>(i)]=up;
             else if(up<0) source[static_cast<size_t>(i)]=down;
             else source[static_cast<size_t>(i)]=
-                pixelDistance(coordinates[static_cast<size_t>(i)],
+                axisPixelDistance(coordinates[static_cast<size_t>(i)],
                               coordinates[static_cast<size_t>(down)],step) <
-                pixelDistance(coordinates[static_cast<size_t>(up)],
+                axisPixelDistance(coordinates[static_cast<size_t>(up)],
                               coordinates[static_cast<size_t>(i)],step)
                     ? down : up; // original filly() chooses the upper row on a tie
         }
