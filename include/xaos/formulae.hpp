@@ -12,6 +12,8 @@ struct FormulaInfo {
     Formula formula;
     const char* name;
     const char* shortName;
+    double centerRe,centerIm,horizontalSpan,verticalSpan;
+    double seedRe,seedIm;
 };
 
 /// Returns metadata for every fixed formula exposed by the modern renderer.
@@ -69,8 +71,6 @@ template<class R> bool less(const R&a,double b) {
 template<class R> bool greater(const R&a,double b) {
     return NumberOps<R>::gt(a,NumberOps<R>::value(b,a));
 }
-template<class R> bool less(const R&a,const R&b) { return NumberOps<R>::lt(a,b); }
-template<class R> bool greater(const R&a,const R&b) { return NumberOps<R>::gt(a,b); }
 
 template<class R> void cmul(const R&ar,const R&ai,const R&br,const R&bi,R&rr,R&ri) {
     auto ac=NumberOps<R>::mul(ar,br),bd=NumberOps<R>::mul(ai,bi);
@@ -118,16 +118,26 @@ private:
             break;
         case Formula::Barnsley1:
         case Formula::Barnsley2:
+            cr=O::value(-.6,cx);ci=O::value(1.1,cx);
+            break;
         case Formula::Barnsley3:
-            x=O::value(0,cx);y=O::value(0,cx);
+            cr=O::value(0,cx);ci=O::value(.4,cx);
             break;
         case Formula::Octo:
             cr=O::value(0,cx);ci=O::value(0,cx);
             a=O::value(0,cx);b=O::value(0,cx);
             break;
+        case Formula::Phoenix:
+            cr=O::value(.56667,cx);ci=O::value(-.5,cx);
+            break;
         case Formula::Magnet:
         case Formula::Magnet2:
             x=O::value(0,cx);y=O::value(0,cx);
+            break;
+        case Formula::Lambda:
+            // Default XaoS Lambda mode starts z at 0.5 and uses the pixel as lambda.
+            x=O::value(.5,cx);y=O::value(0,cx);
+            cr=cx;ci=cy;
             break;
         case Formula::Manowar:
             a=x;b=y;
@@ -160,7 +170,11 @@ private:
             y=O::abs(cy);
             break;
         case Formula::Beryl:
+            cr=O::value(1,cx);ci=O::value(0,cx);
             a=cr;b=ci;
+            break;
+        case Formula::SymmetricBarnsley:
+            cr=O::value(1.3,cx);ci=O::value(1.3,cx);
             break;
         default:
             break;
@@ -176,6 +190,19 @@ private:
         case Formula::Newton4:
         case Formula::Octo:
             cr=O::value(0,cx);ci=O::value(0,cx);break;
+        case Formula::Barnsley1:
+        case Formula::Barnsley2:
+            cr=O::value(-.6,cx);ci=O::value(1.1,cx);break;
+        case Formula::Barnsley3:
+            cr=O::value(0,cx);ci=O::value(.4,cx);break;
+        case Formula::Phoenix:
+            cr=O::value(.56667,cx);ci=O::value(-.5,cx);break;
+        case Formula::Lambda:
+            cr=cx;ci=cy;break;
+        case Formula::Beryl:
+            cr=O::value(1,cx);ci=O::value(0,cx);break;
+        case Formula::SymmetricBarnsley:
+            cr=O::value(1.3,cx);ci=O::value(1.3,cx);break;
         case Formula::Sierpinski:
         case Formula::GoldenSierpinski:
             cr=O::value(.5,cx);ci=O::value(.8660254,cx);break;
@@ -224,7 +251,7 @@ private:
             return !(less(x,0.0)&&greater(y,0.0)&&
                      less(O::add(O::scale(x,-1),O::scale(y,1.732050808)),1.732050808));
         case Formula::Beryl:
-            return less(m,9.0) || less(mag2(a,b),O::scale(m,4));
+            return less(m,9.0) || O::lt(mag2(a,b),O::scale(m,4));
         case Formula::Circle7:
             return less(m,1.0);
         case Formula::Clock:

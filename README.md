@@ -43,8 +43,9 @@ only Linux x86-64 has actually been tested.
 
 Hold the left/right mouse button to zoom in/out around the pointer; use the wheel
 for stepped zoom and middle-button dragging to pan. `I` doubles the iteration
-limit. `Escape` stops continuous zoom or autopilot. **Autopilot** (toolbar or
-`Ctrl++`) ports the classic XaoS automatic explorer: it searches displayed 5x5
+limit. `Escape` stops continuous zoom or autopilot. **Up/Down** adjust the continuous
+zoom speed by the original XaoS ×/÷1.05 factor. **Autopilot** (toolbar or `A`)
+ports the classic XaoS automatic explorer: it searches displayed 5x5
 neighborhoods for set boundaries or noisy multi-colour regions, prefers targets
 near the previous one, occasionally reseeds globally, and unzooms/resets when it
 cannot find an interesting area. The toolbar also chooses formula, iterations,
@@ -177,7 +178,12 @@ states read-only. Large high-precision interior areas remain expensive.
 
 ## Scope
 
-Implemented formulas are Mandelbrot, Julia, and Burning Ship. There are no
+The renderer exposes the fixed XaoS formula families plus the existing Burning
+Ship implementation: Mandelbrot powers 2/3/4/5/6/9, Julia, Newton/Newton^4,
+Barnsley 1/2/3, Octo, Phoenix, Magnet/Magnet2, Triceratops, Catseye, Mandelbar,
+Lambda, Manowar, Spider, Sierpinski variants, Koch Snowflake, Spidron Hornflake,
+Beryl, Circle 7, Clock, and Symmetric Barnsley. The optional upstream SFFE
+user-expression engine is not embedded. There are no
 reference-orbit perturbation, series approximation, GPU, AVX-512, ARM NEON,
 periodicity-detection, certified interval, deep-reference glitch-repair, or
 full upstream filter/animation compatibility implementations here. The default

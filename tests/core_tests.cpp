@@ -214,6 +214,43 @@ void formulaTests() {
     CHECK(formulaFromName("julia")==Formula::Julia);
     CHECK(formulaFromName("ship")==Formula::BurningShip);
     CHECK(!formulaFromName("definitely-not-a-formula"));
+
+    // Independent one-step checks for formula families whose XaoS defaults use
+    // fixed Julia-like seeds rather than "pixel as c".
+    auto oneStep=[](Formula formula,double cx,double cy) {
+        detail::GenericFormulaKernel<double> kernel;
+        Cancellation stop;
+        Count result=kernel.run(formula,cx,cy,{},nullptr,1,stop,false);
+        CHECK(result.iterations==1 || result.status==Status::Escaped);
+        return std::array<double,4>{kernel.x,kernel.y,kernel.a,kernel.b};
+    };
+    auto close=[](double a,double b){CHECK(std::abs(a-b)<1.e-10);};
+
+    {
+        auto z=oneStep(Formula::Barnsley1,0,0);
+        close(z[0],.6);close(z[1],-1.1);
+    }
+    {
+        auto z=oneStep(Formula::Phoenix,0,0);
+        close(z[0],.56667);close(z[1],0);
+    }
+    {
+        auto z=oneStep(Formula::Lambda,.2,.3);
+        close(z[0],.05);close(z[1],.075);
+    }
+    {
+        auto z=oneStep(Formula::Beryl,.2,.3);
+        close(z[0],1.2);close(z[1],.3);
+        close(z[2],.2);close(z[3],.3);
+    }
+    {
+        auto z=oneStep(Formula::SymmetricBarnsley,.2,.3);
+        close(z[0],-.13);close(z[1],-1.95);
+    }
+
+    const auto&barnsley=formulaInfo(Formula::Barnsley2);
+    CHECK(barnsley.centerRe==0 && barnsley.horizontalSpan==2.5 && barnsley.verticalSpan==5.5);
+    CHECK(barnsley.seedRe==-.6 && barnsley.seedIm==1.1);
 }
 
 /// Runs regression checks for simd.
