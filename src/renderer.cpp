@@ -711,7 +711,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         static_assert(F::quadratic);
         auto coordinates=makeFastCoordinates.template operator()<DoubleDouble>();
         DoubleDoubleStateStorage* state=nullptr;
-        if constexpr(Save) state=&f->state.getDoubleDouble();
+        if constexpr(Save && big) state=&f->state.getDoubleDouble();
         const DoubleDouble jr=DoubleDouble::fromBig(r.settings.juliaRe);
         const DoubleDouble ji=DoubleDouble::fromBig(r.settings.juliaIm);
         return [&,coordinates,state,jr,ji](const std::vector<size_t>&list,
@@ -799,7 +799,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         using Fast=Fixed<N>;
         auto coordinates=makeFastCoordinates.template operator()<Fast>();
         FixedStateStorage<N>* state=nullptr;
-        if constexpr(Save) state=&f->state.template getFixed<N>();
+        if constexpr(Save && big) state=&f->state.template getFixed<N>();
         const Fast jr=[](const Settings&s) {
             if constexpr(F::julia) return Fast::fromBig(s.juliaRe);
             else return Fast{};
