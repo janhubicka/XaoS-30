@@ -19,6 +19,7 @@ public:
     template<class U> bool operator==(const AlignedAllocator<U>&) const noexcept { return true; }
 };
 template<class T> using AlignedVector=std::vector<T,AlignedAllocator<T>>;
+enum class Reconstruction : uint8_t { Nearest=0, Bilinear=1, Bicubic=2 };
 struct Settings {
     uint32_t iterations=512;
     mp_bitcnt_t minimumPrecision=0; // 0 = adaptive; >53 forces the GMP backend
@@ -31,6 +32,7 @@ struct Settings {
     // displayed sample to be iterated exactly.
     unsigned solidGuessRange=3;
     bool dynamicFill=true;
+    Reconstruction reconstruction=Reconstruction::Nearest;
     unsigned sliceMilliseconds=0; // 0=unbounded; starts AFTER axis planning/allocation
     // Conservative estimate for two frames + worker scratch. 0 disables the budget.
     size_t memoryBudget=1024ull*1024*1024;
@@ -56,15 +58,17 @@ struct FrameBase {
     // xs/ys and resumable orbit state remain mathematically honest.
     std::vector<Big> previewXs,previewYs;
     AlignedVector<Count> counts;
-    // Preview pixels are deliberately separate from count/orbit state. A guessed
-    // or timeout-filled colour must never become resumable mathematical state.
+    // Adaptive-grid samples are deliberately separate from count/orbit state. A
+    // guessed or timeout-filled colour must never become resumable mathematical
+    // state. The final display raster below is a pure post-processing product.
+    AlignedVector<uint32_t> samplePixels;
+    AlignedVector<uint8_t> sampleQuality;
     AlignedVector<uint32_t> displayPixels;
-    AlignedVector<uint8_t> displayQuality;
     Statistics stats;
     size_t index(int x,int y) const { return static_cast<size_t>(y)*static_cast<size_t>(stride)+static_cast<size_t>(x); }
     Count at(int x,int y) const { return counts[index(x,y)]; }
     uint32_t displayAt(int x,int y) const { return displayPixels[index(x,y)]; }
-    DisplayQuality qualityAt(int x,int y) const { return static_cast<DisplayQuality>(displayQuality[index(x,y)]); }
+    DisplayQuality qualityAt(int x,int y) const { return static_cast<DisplayQuality>(sampleQuality[index(x,y)]); }
 };
 template<bool Save,class Real> struct Storage;
 template<class Real> struct Storage<false,Real> {
