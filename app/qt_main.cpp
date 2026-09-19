@@ -36,6 +36,7 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QTouchEvent>
 #include <QTransform>
 #include <QWheelEvent>
 #include <algorithm>
@@ -109,6 +110,12 @@ class Canvas final:public QWidget {
     bool dragging_=false;
     bool mobileUi_=false;
     bool nativeGestureActive_=false,gestureChanged_=false;
+    enum class TouchMode { None, Pan, Pinch };
+    TouchMode touchMode_=TouchMode::None;
+    QPointF touchLastCenter_,touchStart_,lastTapPosition_;
+    double touchLastDistance_=0,touchLastAngle_=0;
+    bool touchChanged_=false,touchTapCandidate_=false,touchPanStarted_=false;
+    QElapsedTimer lastTapClock_;
     size_t threads_=std::max<size_t>(1,defaultWorkerCount()-presentationWorkerCount());
     /// Maps a target selected in a displayed source frame into the current viewport.
     QPointF mapDisplayFocus(const DisplayFrame&frame,double u,double v) const {
@@ -393,8 +400,136 @@ class Canvas final:public QWidget {
         p.restore();
     }
 protected:
-    /// Handles native trackpad gestures and touchscreen pinch/rotation gestures.
+    /// Handles direct mobile touch plus native trackpad and generic pinch gestures.
     bool event(QEvent*event) override {
+        if(mobileUi_ && (event->type()==QEvent::TouchBegin ||
+                         event->type()==QEvent::TouchUpdate ||
+                         event->type()==QEvent::TouchEnd ||
+                         event->type()==QEvent::TouchCancel)) {
+            auto*touch=static_cast<QTouchEvent*>(event);
+            if(autopilotEnabled_) {touch->accept();return true;}
+
+            std::vector<QPointF> active;
+            active.reserve(2);
+            for(const auto&point:touch->points()) {
+                if(point.state()!=QEventPoint::State::Released && active.size()<2)
+                    active.push_back(point.position());
+            }
+
+            const QPointF releasedPosition=touch->points().empty()
+                ? touchLastCenter_ : touch->points().front().position();
+            if(event->type()==QEvent::TouchEnd || event->type()==QEvent::TouchCancel ||
+               active.empty()) {
+                if(event->type()!=QEvent::TouchCancel && touchTapCandidate_ && !touchPanStarted_) {
+                    const bool doubleTap=lastTapClock_.isValid() && lastTapClock_.elapsed()<350 &&
+                        std::hypot(releasedPosition.x()-lastTapPosition_.x(),
+                                   releasedPosition.y()-lastTapPosition_.y())<48.0;
+                    if(doubleTap) {
+                        try {
+                            view.zoom(releasedPosition.x()/std::max(1,width()),
+                                      releasedPosition.y()/std::max(1,height()),.5,
+                                      std::max(1,width()),std::max(1,height()));
+                            pointer_=releasedPosition;
+                            touchChanged_=true;
+                        } catch(const std::exception&ex) {
+                            if(onStatus) onStatus(ex.what());
+                        }
+                        lastTapClock_.invalidate();
+                    } else {
+                        lastTapPosition_=releasedPosition;
+                        lastTapClock_.restart();
+                    }
+                }
+                if(touchChanged_) submit(true); else idle_.start();
+                touchMode_=TouchMode::None;
+                touchChanged_=false;
+                touchTapCandidate_=false;
+                touchPanStarted_=false;
+                dragging_=false;
+                touch->accept();return true;
+            }
+
+            idle_.stop();
+            try {
+                if(active.size()>=2) {
+                    const QPointF center=(active[0]+active[1])*.5;
+                    const QPointF separation=active[1]-active[0];
+                    const double distance=std::hypot(separation.x(),separation.y());
+                    const double angle=std::atan2(separation.y(),separation.x());
+                    touchTapCandidate_=false;
+                    dragging_=false;
+
+                    if(touchMode_!=TouchMode::Pinch) {
+                        // The first finger may already have generated a few touch
+                        // updates. Re-baseline when the second finger arrives so
+                        // that those never turn the intended pinch into a pan.
+                        touchMode_=TouchMode::Pinch;
+                        touchLastCenter_=center;
+                        touchLastDistance_=distance;
+                        touchLastAngle_=angle;
+                    } else {
+                        bool changed=false;
+                        const QPointF delta=center-touchLastCenter_;
+                        if(std::hypot(delta.x(),delta.y())>.01) {
+                            view.pan(delta.x(),delta.y(),std::max(1,width()));
+                            changed=true;
+                        }
+                        if(distance>4.0 && touchLastDistance_>4.0) {
+                            const double scale=distance/touchLastDistance_;
+                            if(std::isfinite(scale) && scale>0 && std::abs(scale-1.0)>1e-4) {
+                                view.zoom(center.x()/std::max(1,width()),
+                                          center.y()/std::max(1,height()),1.0/scale,
+                                          std::max(1,width()),std::max(1,height()));
+                                changed=true;
+                            }
+                        }
+                        const double rotation=std::remainder(
+                            angle-touchLastAngle_,2.0*std::numbers::pi);
+                        if(std::abs(rotation)>1e-5) {
+                            view.rotate(center.x()/std::max(1,width()),
+                                        center.y()/std::max(1,height()),rotation,
+                                        std::max(1,width()),std::max(1,height()));
+                            changed=true;
+                        }
+                        touchLastCenter_=center;
+                        touchLastDistance_=distance;
+                        touchLastAngle_=angle;
+                        pointer_=center;
+                        if(changed) {touchChanged_=true;update();}
+                    }
+                } else {
+                    const QPointF position=active.front();
+                    pointer_=position;
+                    if(touchMode_!=TouchMode::Pan) {
+                        const bool continuingAfterPinch=touchMode_==TouchMode::Pinch;
+                        touchMode_=TouchMode::Pan;
+                        touchStart_=touchLastCenter_=position;
+                        touchPanStarted_=continuingAfterPinch;
+                        touchTapCandidate_=!continuingAfterPinch;
+                    } else if(!touchPanStarted_) {
+                        // A small dead zone gives the second finger time to land
+                        // without moving the image underneath an intended pinch.
+                        if(std::hypot(position.x()-touchStart_.x(),
+                                      position.y()-touchStart_.y())>=8.0) {
+                            touchPanStarted_=true;
+                            touchTapCandidate_=false;
+                            touchLastCenter_=position;
+                        }
+                    } else {
+                        const QPointF delta=position-touchLastCenter_;
+                        touchLastCenter_=position;
+                        if(std::hypot(delta.x(),delta.y())>.01) {
+                            view.pan(delta.x(),delta.y(),std::max(1,width()));
+                            touchChanged_=true;
+                            update();
+                        }
+                    }
+                }
+            } catch(const std::exception&ex) {
+                if(onStatus) onStatus(ex.what());
+            }
+            touch->accept();return true;
+        }
         if(event->type()==QEvent::NativeGesture) {
             auto*gesture=static_cast<QNativeGestureEvent*>(event);
             if(autopilotEnabled_) {gesture->accept();return true;}
@@ -501,6 +636,7 @@ protected:
     void resizeEvent(QResizeEvent*e) override { QWidget::resizeEvent(e); submit(false,true); }
     /// Starts zooming or panning in response to a mouse press.
     void mousePressEvent(QMouseEvent*e) override {
+        if(mobileUi_ && e->source()!=Qt::MouseEventNotSynthesized) {e->accept();return;}
         if(autopilotEnabled_) {e->accept();return;}
         pointer_=e->position();
         if(mobileUi_ && e->button()==Qt::LeftButton) {
@@ -513,6 +649,7 @@ protected:
     }
     /// Stops the active mouse interaction and schedules idle refinement.
     void mouseReleaseEvent(QMouseEvent*e) override {
+        if(mobileUi_ && e->source()!=Qt::MouseEventNotSynthesized) {e->accept();return;}
         if(autopilotEnabled_) {e->accept();return;}
         if(e->button()==Qt::MiddleButton || (mobileUi_ && e->button()==Qt::LeftButton)) {
             dragging_=false;idle_.start();
@@ -523,6 +660,7 @@ protected:
     }
     /// Updates the zoom focus or pans while the middle button is held.
     void mouseMoveEvent(QMouseEvent*e) override {
+        if(mobileUi_ && e->source()!=Qt::MouseEventNotSynthesized) {e->accept();return;}
         if(autopilotEnabled_) {e->accept();return;}
         pointer_=e->position();
         if(dragging_) {
@@ -532,6 +670,7 @@ protected:
     }
     /// Double-tap/double-click zooms into the touched point in the mobile UI.
     void mouseDoubleClickEvent(QMouseEvent*e) override {
+        if(mobileUi_ && e->source()!=Qt::MouseEventNotSynthesized) {e->accept();return;}
         if(!mobileUi_ || autopilotEnabled_ || e->button()!=Qt::LeftButton) {
             QWidget::mouseDoubleClickEvent(e);return;
         }
@@ -678,7 +817,15 @@ public:
     double zoomSpeedScale() const noexcept { return zoomSpeedScale_; }
 
     /// Switches interaction hints and one-finger behavior for the phone layout.
-    void setMobileUi(bool enabled) { mobileUi_=enabled;update(); }
+    void setMobileUi(bool enabled) {
+        if(mobileUi_==enabled) return;
+        mobileUi_=enabled;
+        // The phone UI handles QTouchEvent directly so a one-finger synthetic
+        // mouse drag cannot win the race against Qt's pinch recognizer.
+        if(enabled) ungrabGesture(Qt::PinchGesture);
+        else grabGesture(Qt::PinchGesture);
+        update();
+    }
     /// Returns whether phone-oriented interaction is enabled.
     bool mobileUi() const noexcept { return mobileUi_; }
     /// Returns the number of compute workers, excluding presentation workers.
