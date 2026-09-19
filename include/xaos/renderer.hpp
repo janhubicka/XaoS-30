@@ -5,6 +5,7 @@
 #include <new>
 #include <string>
 #include <vector>
+#include <variant>
 namespace xaos {
 template<class T> class AlignedAllocator {
 public:
@@ -85,11 +86,11 @@ struct FrameBase {
     /// Returns the adaptive-grid quality marker at one image coordinate.
     DisplayQuality qualityAt(int x,int y) const { return static_cast<DisplayQuality>(sampleQuality[index(x,y)]); }
 };
-template<bool Save,class Real,class F> struct Storage;
+template<bool Save,class Real> struct Storage;
 
-template<class Real,class F> struct Storage<false,Real,F> {
+template<class Real> struct Storage<false,Real> {
     /// Resizes the count-only policy. It intentionally stores no orbit fields.
-    void resize(size_t) {}
+    void resize(size_t,unsigned=2) {}
     /// Count-only frames never copy resumable orbit state.
     void copy(size_t,const Storage&,size_t) {}
 };
@@ -123,20 +124,73 @@ template<> struct DoubleStateStorage<4> {
         x[i]=k.x;y[i]=k.y;a[i]=k.a;b[i]=k.b;
     }
 };
-template<class F> struct Storage<true,double,F>:DoubleStateStorage<F::stateScalars> {};
+
+template<> struct Storage<true,double> {
+    using Variant=std::variant<DoubleStateStorage<2>,DoubleStateStorage<3>,DoubleStateStorage<4>>;
+    Variant data;
+    void resize(size_t n,unsigned scalars) {
+        switch(scalars) {
+        case 2:data.emplace<DoubleStateStorage<2>>();break;
+        case 3:data.emplace<DoubleStateStorage<3>>();break;
+        case 4:data.emplace<DoubleStateStorage<4>>();break;
+        default:throw std::logic_error("invalid formula state width");
+        }
+        std::visit([&](auto&state){state.resize(n);},data);
+    }
+    void copy(size_t d,const Storage&s,size_t i) {
+        std::visit([&](auto&dst) {
+            using T=std::decay_t<decltype(dst)>;
+            const auto*src=std::get_if<T>(&s.data);
+            if(!src) throw std::logic_error("incompatible formula state storage");
+            dst.copy(d,*src,i);
+        },data);
+    }
+    template<class F> DoubleStateStorage<F::stateScalars>& get() {
+        return std::get<DoubleStateStorage<F::stateScalars>>(data);
+    }
+    template<class F> const DoubleStateStorage<F::stateScalars>& get() const {
+        return std::get<DoubleStateStorage<F::stateScalars>>(data);
+    }
+};
 
 template<unsigned Scalars> struct BigStateStorage {
     using State=OrbitScalars<Big,Scalars>;
-    // Only unfinished orbits allocate limbs. The object itself contains exactly
-    // the scalar fields required by this formula.
+    // Only unfinished orbits allocate limbs. The checkpoint object contains
+    // exactly the scalar fields required by the selected formula.
     std::vector<std::shared_ptr<const State>> orbit;
     void resize(size_t n) { orbit.resize(n); }
     void copy(size_t d,const BigStateStorage&s,size_t i) { orbit[d]=s.orbit[i]; }
 };
-template<class F> struct Storage<true,Big,F>:BigStateStorage<F::stateScalars> {};
+template<> struct Storage<true,Big> {
+    using Variant=std::variant<BigStateStorage<2>,BigStateStorage<3>,BigStateStorage<4>>;
+    Variant data;
+    void resize(size_t n,unsigned scalars) {
+        switch(scalars) {
+        case 2:data.emplace<BigStateStorage<2>>();break;
+        case 3:data.emplace<BigStateStorage<3>>();break;
+        case 4:data.emplace<BigStateStorage<4>>();break;
+        default:throw std::logic_error("invalid formula state width");
+        }
+        std::visit([&](auto&state){state.resize(n);},data);
+    }
+    void copy(size_t d,const Storage&s,size_t i) {
+        std::visit([&](auto&dst) {
+            using T=std::decay_t<decltype(dst)>;
+            const auto*src=std::get_if<T>(&s.data);
+            if(!src) throw std::logic_error("incompatible formula state storage");
+            dst.copy(d,*src,i);
+        },data);
+    }
+    template<class F> BigStateStorage<F::stateScalars>& get() {
+        return std::get<BigStateStorage<F::stateScalars>>(data);
+    }
+    template<class F> const BigStateStorage<F::stateScalars>& get() const {
+        return std::get<BigStateStorage<F::stateScalars>>(data);
+    }
+};
 
-template<class Real,bool Save,class F> struct Frame final:FrameBase {
-    Storage<Save,Real,F> state;
+template<class Real,bool Save> struct Frame final:FrameBase {
+    Storage<Save,Real> state;
 };
 
 struct DisplayFrame {
