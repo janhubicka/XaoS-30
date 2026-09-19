@@ -52,17 +52,17 @@ using BurningShip=FormulaTag<Formula::BurningShip>;
 template<class Real,unsigned Scalars> struct OrbitScalars;
 template<class Real> struct OrbitScalars<Real,2> {
     Real x,y;
-    OrbitScalars() requires std::is_same_v<Real,double> = default;
+    OrbitScalars() requires (!std::is_same_v<Real,Big>) = default;
     explicit OrbitScalars(mp_bitcnt_t bits) requires std::is_same_v<Real,Big>:x(bits),y(bits) {}
 };
 template<class Real> struct OrbitScalars<Real,3> {
     Real x,y,a;
-    OrbitScalars() requires std::is_same_v<Real,double> = default;
+    OrbitScalars() requires (!std::is_same_v<Real,Big>) = default;
     explicit OrbitScalars(mp_bitcnt_t bits) requires std::is_same_v<Real,Big>:x(bits),y(bits),a(bits) {}
 };
 template<class Real> struct OrbitScalars<Real,4> {
     Real x,y,a,b;
-    OrbitScalars() requires std::is_same_v<Real,double> = default;
+    OrbitScalars() requires (!std::is_same_v<Real,Big>) = default;
     explicit OrbitScalars(mp_bitcnt_t bits) requires std::is_same_v<Real,Big>:x(bits),y(bits),a(bits),b(bits) {}
 };
 template<class Real,class F>
