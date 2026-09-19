@@ -21,7 +21,7 @@ size_t plusChecked(size_t a,size_t b) {
     return a+b;
 }
 size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state) {
-    size_t each=sizeof(Count)+sizeof(uint32_t)+sizeof(uint8_t);
+    size_t each=sizeof(Count)+2*sizeof(uint32_t)+sizeof(uint8_t);
     if(state) {
         if(big) each=plusChecked(each,plusChecked(sizeof(std::shared_ptr<const Orbit<Big>>)+sizeof(Orbit<Big>)+32,
                                   multiplyChecked(2,static_cast<size_t>(bits/8)+3*sizeof(mp_limb_t))));
@@ -201,6 +201,218 @@ std::vector<int> interlacedOrder(int n,int range) {
     return order;
 }
 
+struct AxisSupport {
+    std::vector<int> index;
+    std::vector<double> position;
+    std::vector<double> target;
+};
+
+AxisSupport buildAxisSupport(const std::vector<Big>&coordinates,const std::vector<uint8_t>&ready,
+                             const Big&step) {
+    AxisSupport out;
+    out.target.reserve(coordinates.size());
+    if(coordinates.empty()) return out;
+    const Big&origin=coordinates.front();
+    for(const auto&coordinate:coordinates)
+        out.target.push_back(div(sub(coordinate,origin),step).toDouble());
+    for(size_t i=0;i<coordinates.size();++i) {
+        if(i>=ready.size() || !ready[i]) continue;
+        if(!out.index.empty() &&
+           coordinates[i]==coordinates[static_cast<size_t>(out.index.back())])
+            continue;
+        out.index.push_back(static_cast<int>(i));
+        out.position.push_back(out.target[i]);
+    }
+    return out;
+}
+
+struct LinearPoint {
+    int a=-1,b=-1;
+    double t=0;
+};
+struct CubicPoint {
+    std::array<int,4> index{{-1,-1,-1,-1}};
+    std::array<double,4> weight{{0,0,0,0}};
+    bool valid=false;
+};
+
+int nearestSource(const AxisSupport&axis,double target,bool preferHighOnTie) {
+    if(axis.index.empty()) return -1;
+    auto it=std::lower_bound(axis.position.begin(),axis.position.end(),target);
+    if(it==axis.position.begin()) return axis.index.front();
+    if(it==axis.position.end()) return axis.index.back();
+    const size_t hi=static_cast<size_t>(it-axis.position.begin()),lo=hi-1;
+    const double lowDistance=target-axis.position[lo];
+    const double highDistance=axis.position[hi]-target;
+    if(lowDistance==highDistance) return preferHighOnTie?axis.index[hi]:axis.index[lo];
+    return lowDistance<highDistance?axis.index[lo]:axis.index[hi];
+}
+
+LinearPoint linearPoint(const AxisSupport&axis,double target) {
+    if(axis.index.empty()) return {};
+    auto it=std::lower_bound(axis.position.begin(),axis.position.end(),target);
+    if(it==axis.position.begin()) return {axis.index.front(),axis.index.front(),0};
+    if(it==axis.position.end()) return {axis.index.back(),axis.index.back(),0};
+    const size_t hi=static_cast<size_t>(it-axis.position.begin());
+    if(axis.position[hi]==target) return {axis.index[hi],axis.index[hi],0};
+    const size_t lo=hi-1;
+    const double span=axis.position[hi]-axis.position[lo];
+    if(!(span>0)) return {axis.index[lo],axis.index[lo],0};
+    return {axis.index[lo],axis.index[hi],
+            std::clamp((target-axis.position[lo])/span,0.0,1.0)};
+}
+
+CubicPoint cubicPoint(const AxisSupport&axis,double target) {
+    CubicPoint out;
+    if(axis.index.size()<4) return out;
+    auto it=std::lower_bound(axis.position.begin(),axis.position.end(),target);
+    if(it==axis.position.begin() || it==axis.position.end()) return out;
+    const size_t hi=static_cast<size_t>(it-axis.position.begin());
+    if(axis.position[hi]==target) return out; // exact node is handled by linear fallback
+    const size_t lo=hi-1;
+    if(lo<1 || hi+1>=axis.index.size()) return out;
+    const double p0=axis.position[lo-1],p1=axis.position[lo];
+    const double p2=axis.position[hi],p3=axis.position[hi+1];
+    if(!(p0<p1 && p1<p2 && p2<p3)) return out;
+    const double t=std::clamp((target-p1)/(p2-p1),0.0,1.0);
+    const double t2=t*t,t3=t2*t;
+    const double h00=2*t3-3*t2+1;
+    const double h10=t3-2*t2+t;
+    const double h01=-2*t3+3*t2;
+    const double h11=t3-t2;
+    const double span=p2-p1;
+    const double d10=p2-p0,d21=p3-p1;
+    out.index={{axis.index[lo-1],axis.index[lo],axis.index[hi],axis.index[hi+1]}};
+    // Non-uniform Catmull-Rom/Hermite weights. Slopes at p1/p2 use the
+    // surrounding secants, so changing line spacing does not change the curve's
+    // parameterization as an index-space cubic would.
+    out.weight={{
+        -h10*span/d10,
+         h00-h11*span/d21,
+         h01+h10*span/d10,
+         h11*span/d21
+    }};
+    out.valid=true;
+    return out;
+}
+
+struct RGB { double r=0,g=0,b=0; };
+RGB unpack(uint32_t c) {
+    return {static_cast<double>((c>>16)&255),static_cast<double>((c>>8)&255),
+            static_cast<double>(c&255)};
+}
+uint32_t pack(const RGB&c) {
+    const auto channel=[](double v) {
+        return static_cast<uint32_t>(std::lround(std::clamp(v,0.0,255.0)));
+    };
+    return 0xff000000u|(channel(c.r)<<16)|(channel(c.g)<<8)|channel(c.b);
+}
+RGB mix(const RGB&a,const RGB&b,double t) {
+    return {a.r+(b.r-a.r)*t,a.g+(b.g-a.g)*t,a.b+(b.b-a.b)*t};
+}
+
+bool gridColor(const FrameBase&frame,int x,int y,uint32_t&color) {
+    if(x<0 || y<0 || x>=frame.request.width || y>=frame.request.height) return false;
+    const size_t i=frame.index(x,y);
+    if(static_cast<DisplayQuality>(frame.sampleQuality[i])==DisplayQuality::Missing)
+        return false;
+    color=frame.samplePixels[i];
+    return true;
+}
+
+bool bilinearColor(const FrameBase&frame,const LinearPoint&x,const LinearPoint&y,
+                   uint32_t&color) {
+    if(x.a<0 || y.a<0) return false;
+    uint32_t c00=0,c10=0,c01=0,c11=0;
+    if(!gridColor(frame,x.a,y.a,c00) || !gridColor(frame,x.b,y.a,c10) ||
+       !gridColor(frame,x.a,y.b,c01) || !gridColor(frame,x.b,y.b,c11))
+        return false;
+    const RGB r0=mix(unpack(c00),unpack(c10),x.t);
+    const RGB r1=mix(unpack(c01),unpack(c11),x.t);
+    color=pack(mix(r0,r1,y.t));
+    return true;
+}
+
+bool bicubicColor(const FrameBase&frame,const CubicPoint&x,const CubicPoint&y,
+                  uint32_t&color) {
+    if(!x.valid || !y.valid) return false;
+    RGB sum{};
+    double minr=255,ming=255,minb=255,maxr=0,maxg=0,maxb=0;
+    for(size_t j=0;j<4;++j) for(size_t i=0;i<4;++i) {
+        uint32_t c=0;
+        if(!gridColor(frame,x.index[i],y.index[j],c)) return false;
+        const RGB rgb=unpack(c);
+        const double w=x.weight[i]*y.weight[j];
+        sum.r+=w*rgb.r; sum.g+=w*rgb.g; sum.b+=w*rgb.b;
+        minr=std::min(minr,rgb.r); ming=std::min(ming,rgb.g); minb=std::min(minb,rgb.b);
+        maxr=std::max(maxr,rgb.r); maxg=std::max(maxg,rgb.g); maxb=std::max(maxb,rgb.b);
+    }
+    // Cubics can ring strongly across an escape-time palette edge. Preserve the
+    // smoother cubic shape but forbid channel excursions outside the 4x4 support
+    // range, which removes the most distracting neon halos.
+    sum.r=std::clamp(sum.r,minr,maxr);
+    sum.g=std::clamp(sum.g,ming,maxg);
+    sum.b=std::clamp(sum.b,minb,maxb);
+    color=pack(sum);
+    return true;
+}
+
+void postprocess(FrameBase&frame,const Big&step,const std::vector<uint8_t>&rowReady,
+                 const std::vector<uint8_t>&colReady) {
+    const AxisSupport xaxis=buildAxisSupport(frame.xs,colReady,step);
+    const AxisSupport yaxis=buildAxisSupport(frame.ys,rowReady,step);
+    frame.displayPixels.assign(frame.samplePixels.size(),0u);
+    if(xaxis.index.empty() || yaxis.index.empty()) return;
+
+    std::vector<int> nearestX(static_cast<size_t>(frame.request.width));
+    std::vector<int> nearestY(static_cast<size_t>(frame.request.height));
+    std::vector<LinearPoint> linearX(static_cast<size_t>(frame.request.width));
+    std::vector<LinearPoint> linearY(static_cast<size_t>(frame.request.height));
+    std::vector<CubicPoint> cubicX(static_cast<size_t>(frame.request.width));
+    std::vector<CubicPoint> cubicY(static_cast<size_t>(frame.request.height));
+    for(int x=0;x<frame.request.width;++x) {
+        const double target=xaxis.target[static_cast<size_t>(x)];
+        nearestX[static_cast<size_t>(x)]=nearestSource(xaxis,target,false);
+        linearX[static_cast<size_t>(x)]=linearPoint(xaxis,target);
+        cubicX[static_cast<size_t>(x)]=cubicPoint(xaxis,target);
+    }
+    for(int y=0;y<frame.request.height;++y) {
+        const double target=yaxis.target[static_cast<size_t>(y)];
+        nearestY[static_cast<size_t>(y)]=nearestSource(yaxis,target,true);
+        linearY[static_cast<size_t>(y)]=linearPoint(yaxis,target);
+        cubicY[static_cast<size_t>(y)]=cubicPoint(yaxis,target);
+    }
+
+    for(int y=0;y<frame.request.height;++y) for(int x=0;x<frame.request.width;++x) {
+        uint32_t color=0;
+        bool ok=false;
+        switch(frame.request.settings.reconstruction) {
+        case Reconstruction::Nearest:
+            ok=gridColor(frame,nearestX[static_cast<size_t>(x)],
+                         nearestY[static_cast<size_t>(y)],color);
+            break;
+        case Reconstruction::Bilinear:
+            ok=bilinearColor(frame,linearX[static_cast<size_t>(x)],
+                             linearY[static_cast<size_t>(y)],color);
+            if(!ok)
+                ok=gridColor(frame,nearestX[static_cast<size_t>(x)],
+                             nearestY[static_cast<size_t>(y)],color);
+            break;
+        case Reconstruction::Bicubic:
+            ok=bicubicColor(frame,cubicX[static_cast<size_t>(x)],
+                            cubicY[static_cast<size_t>(y)],color);
+            if(!ok)
+                ok=bilinearColor(frame,linearX[static_cast<size_t>(x)],
+                                 linearY[static_cast<size_t>(y)],color);
+            if(!ok)
+                ok=gridColor(frame,nearestX[static_cast<size_t>(x)],
+                             nearestY[static_cast<size_t>(y)],color);
+            break;
+        }
+        frame.displayPixels[frame.index(x,y)]=ok?color:0u;
+    }
+}
+
 template<class Real,bool Save,class F>
 std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const Cancellation&stop,
                                          const std::shared_ptr<const FrameBase>&previous,mp_bitcnt_t bits) {
@@ -251,8 +463,9 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->stats.bits=bits; f->stats.backend=big?"GMP":"double";
     f->stats.simd=!big && r.settings.simd && hasAVX2();
     f->counts.resize(pixels); f->state.resize(pixels);
-    f->displayPixels.assign(pixels,0xff000000u);
-    f->displayQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
+    f->samplePixels.assign(pixels,0xff000000u);
+    f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
+    f->displayPixels.assign(pixels,0u);
 
     std::vector<double> dx,dy;
     if constexpr(!big) {
@@ -281,16 +494,16 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     // not also our true sample coordinate, downgrade it to Fill.
                     if(r.settings.sliceMilliseconds && psx>=0 && psy>=0 && old->request.settings.iterations==r.settings.iterations) {
                         const size_t ps=static_cast<size_t>(psy)*static_cast<size_t>(old->stride)+static_cast<size_t>(psx);
-                        if(old->displayQuality[ps]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
-                            f->displayPixels[d]=old->displayPixels[ps];
+                        if(old->sampleQuality[ps]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
+                            f->samplePixels[d]=old->samplePixels[ps];
                             // The DP source is already at exactly this new presentation
                             // coordinate. A timeout-filled old pixel becomes an ordinary
                             // approximate sample once its collapsed coordinate is selected
                             // by the next DP pass, just as classic XaoS clears dirty state
                             // on the reused line. Keep it non-resumable, but do not carry
                             // "needs resolution refinement" forever.
-                            const auto oldQuality=static_cast<DisplayQuality>(old->displayQuality[ps]);
-                            f->displayQuality[d]=static_cast<uint8_t>(oldQuality==DisplayQuality::Fill?DisplayQuality::Guess:oldQuality);
+                            const auto oldQuality=static_cast<DisplayQuality>(old->sampleQuality[ps]);
+                            f->sampleQuality[d]=static_cast<uint8_t>(oldQuality==DisplayQuality::Fill?DisplayQuality::Guess:oldQuality);
                         }
                     }
                     if(sx<0 || sy<0) continue;
@@ -298,14 +511,14 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     f->counts[d]=old->counts[ss];
                     if constexpr(Save) f->state.copy(d,old->state,ss);
                     if(f->counts[d].known(r.settings.iterations)) {
-                        f->displayPixels[d]=pixelColor(f->counts[d],r.settings.iterations);
-                        f->displayQuality[d]=static_cast<uint8_t>(DisplayQuality::Exact);
+                        f->samplePixels[d]=pixelColor(f->counts[d],r.settings.iterations);
+                        f->sampleQuality[d]=static_cast<uint8_t>(DisplayQuality::Exact);
                         ++stat.reused;
                     } else if(old->request.settings.iterations==r.settings.iterations &&
-                              f->displayQuality[d]==static_cast<uint8_t>(DisplayQuality::Missing) &&
-                              old->displayQuality[ss]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
-                        f->displayPixels[d]=old->displayPixels[ss];
-                        f->displayQuality[d]=old->displayQuality[ss];
+                              f->sampleQuality[d]==static_cast<uint8_t>(DisplayQuality::Missing) &&
+                              old->sampleQuality[ss]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
+                        f->samplePixels[d]=old->samplePixels[ss];
+                        f->sampleQuality[d]=old->sampleQuality[ss];
                     }
                 }
             }
@@ -341,8 +554,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
                         Count before=f->counts[index];
                         if(before.known(r.settings.iterations)) {
-                            f->displayPixels[index]=pixelColor(before,r.settings.iterations);
-                            f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                            f->samplePixels[index]=pixelColor(before,r.settings.iterations);
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                             continue;
                         }
                         const Orbit<Big>*saved=nullptr;
@@ -360,8 +573,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                 f->state.orbit[index]=std::make_shared<Orbit<Big>>(Orbit<Big>{scratch.x,scratch.y});
                         }
                         if(result.known(r.settings.iterations)) {
-                            f->displayPixels[index]=pixelColor(result,r.settings.iterations);
-                            f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                            f->samplePixels[index]=pixelColor(result,r.settings.iterations);
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                         }
                     }
                 }
@@ -381,8 +594,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             const size_t index=list[k++];
                             Count before=f->counts[index];
                             if(before.known(r.settings.iterations)) {
-                                f->displayPixels[index]=pixelColor(before,r.settings.iterations);
-                                f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                                f->samplePixels[index]=pixelColor(before,r.settings.iterations);
+                                f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                                 continue;
                             }
                             const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
@@ -406,8 +619,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             f->counts[index]=l.count;
                             if constexpr(Save) { f->state.x[index]=l.x;f->state.y[index]=l.y; }
                             if(l.count.known(r.settings.iterations)) {
-                                f->displayPixels[index]=pixelColor(l.count,r.settings.iterations);
-                                f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                                f->samplePixels[index]=pixelColor(l.count,r.settings.iterations);
+                                f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                             }
                         }
                     }
@@ -426,8 +639,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
 
     auto colorAt=[&](int x,int y,uint32_t&color)->bool {
         const size_t i=f->index(x,y);
-        if(!previewKnown(f->displayQuality[i])) return false;
-        color=f->displayPixels[i];return true;
+        if(!previewKnown(f->sampleQuality[i])) return false;
+        color=f->samplePixels[i];return true;
     };
     auto sameSeven=[&](const std::array<std::pair<int,int>,7>&points,uint32_t&color)->bool {
         if(!colorAt(points[0].first,points[0].second,color)) return false;
@@ -471,20 +684,20 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         for(int y:rowOrder) for(int x=0;x<r.width;++x) {
             const size_t index=f->index(x,y);
             if(!f->counts[index].known(r.settings.iterations)) list.push_back(index);
-            else if(f->displayQuality[index]!=static_cast<uint8_t>(DisplayQuality::Exact)) {
-                f->displayPixels[index]=pixelColor(f->counts[index],r.settings.iterations);
-                f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+            else if(f->sampleQuality[index]!=static_cast<uint8_t>(DisplayQuality::Exact)) {
+                f->samplePixels[index]=pixelColor(f->counts[index],r.settings.iterations);
+                f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
             }
         }
         calculateList(list);
         // A completed raster row/column can act as an exact source for the same
         // nearest-line timeout fill used by the classic renderer.
         for(int y=0;y<r.height;++y) {
-            bool ready=true;for(int x=0;x<r.width;++x) if(f->displayQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) {ready=false;break;}
+            bool ready=true;for(int x=0;x<r.width;++x) if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) {ready=false;break;}
             if(ready) rowReady[static_cast<size_t>(y)]=1;
         }
         for(int x=0;x<r.width;++x) {
-            bool ready=true;for(int y=0;y<r.height;++y) if(f->displayQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) {ready=false;break;}
+            bool ready=true;for(int y=0;y<r.height;++y) if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) {ready=false;break;}
             if(ready) colReady[static_cast<size_t>(x)]=1;
         }
     };
@@ -531,19 +744,19 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 for(int x:positions) {
                     const size_t index=f->index(x,y);
                     if(f->counts[index].known(r.settings.iterations)) {
-                        f->displayPixels[index]=pixelColor(f->counts[index],r.settings.iterations);
-                        f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                        f->samplePixels[index]=pixelColor(f->counts[index],r.settings.iterations);
+                        f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                     } else {
                         uint32_t guessed=0;
                         if(guessRow(y,x,guessed)) {
-                            f->displayPixels[index]=guessed;
-                            f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Guess);
+                            f->samplePixels[index]=guessed;
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Guess);
                             ++f->stats.solidGuessed;
                         } else calculate.push_back(index);
                     }
                 }
                 calculateList(calculate);
-                for(int x:positions) if(f->displayQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) { visuallyComplete=false;break; }
+                for(int x:positions) if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) { visuallyComplete=false;break; }
                 if(visuallyComplete) rowReady[static_cast<size_t>(y)]=1;
             } else {
                 const int x=t.index;
@@ -558,19 +771,19 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 for(int y:positions) {
                     const size_t index=f->index(x,y);
                     if(f->counts[index].known(r.settings.iterations)) {
-                        f->displayPixels[index]=pixelColor(f->counts[index],r.settings.iterations);
-                        f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                        f->samplePixels[index]=pixelColor(f->counts[index],r.settings.iterations);
+                        f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                     } else {
                         uint32_t guessed=0;
                         if(guessColumn(x,y,guessed)) {
-                            f->displayPixels[index]=guessed;
-                            f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Guess);
+                            f->samplePixels[index]=guessed;
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Guess);
                             ++f->stats.solidGuessed;
                         } else calculate.push_back(index);
                     }
                 }
                 calculateList(calculate);
-                for(int y:positions) if(f->displayQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) { visuallyComplete=false;break; }
+                for(int y:positions) if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) { visuallyComplete=false;break; }
                 if(visuallyComplete) colReady[static_cast<size_t>(x)]=1;
             }
             if(!visuallyComplete && workStop.requested()) break;
@@ -594,10 +807,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     // colours are presentation-only and are replaced by later exact/guessed work.
     if(r.settings.sliceMilliseconds && r.settings.dynamicFill) {
         auto copyFill=[&](size_t d,size_t src) {
-            if(f->displayQuality[d]!=static_cast<uint8_t>(DisplayQuality::Missing) ||
-               f->displayQuality[src]==static_cast<uint8_t>(DisplayQuality::Missing)) return;
-            f->displayPixels[d]=f->displayPixels[src];
-            f->displayQuality[d]=static_cast<uint8_t>(DisplayQuality::Fill);
+            if(f->sampleQuality[d]!=static_cast<uint8_t>(DisplayQuality::Missing) ||
+               f->sampleQuality[src]==static_cast<uint8_t>(DisplayQuality::Missing)) return;
+            f->samplePixels[d]=f->samplePixels[src];
+            f->sampleQuality[d]=static_cast<uint8_t>(DisplayQuality::Fill);
             ++f->stats.filled;
         };
         // zoom.cpp:mkfilltable()/filly() select the closest completed column,
@@ -640,7 +853,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
         const size_t i=f->index(x,y);
         if(!f->counts[i].known(r.settings.iterations)) ++f->stats.pending;
-        const auto q=static_cast<DisplayQuality>(f->displayQuality[i]);
+        const auto q=static_cast<DisplayQuality>(f->sampleQuality[i]);
         if(q==DisplayQuality::Missing || q==DisplayQuality::Fill) ++visualPending;
     }
     // Guessed samples are deliberately considered finished for an interactive
@@ -649,6 +862,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->stats.complete=r.settings.sliceMilliseconds?visualPending==0:f->stats.pending==0;
     if(!f->previewXs.empty() || !f->previewYs.empty())
         f->stats.uniform=f->stats.uniform && f->previewXs==f->xs && f->previewYs==f->ys;
+    postprocess(*f,step,rowReady,colReady);
     f->stats.milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
     return f;
 }

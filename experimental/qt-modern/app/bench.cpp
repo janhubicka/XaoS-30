@@ -42,6 +42,13 @@ int main(int argc,char**argv) {
             else if(a=="--solid-guess") r.settings.solidGuessRange=integer<unsigned>(next());
             else if(a=="--no-guess") r.settings.solidGuessRange=0;
             else if(a=="--no-fill") r.settings.dynamicFill=false;
+            else if(a=="--reconstruct") {
+                auto name=next();
+                if(name=="nearest") r.settings.reconstruction=Reconstruction::Nearest;
+                else if(name=="bilinear") r.settings.reconstruction=Reconstruction::Bilinear;
+                else if(name=="bicubic") r.settings.reconstruction=Reconstruction::Bicubic;
+                else throw std::invalid_argument("reconstruction must be nearest, bilinear, or bicubic");
+            }
             else if(a=="--frames") frames=integer<int>(next());
             else if(a=="--zoom") { std::string z=next(); size_t used=0; zoom=std::stod(z,&used); if(used!=z.size()||!std::isfinite(zoom)||zoom<=0) throw std::invalid_argument("invalid zoom factor"); }
             else if(a=="--limits") { std::istringstream ss(next()); std::string item; while(std::getline(ss,item,',')) limits.push_back(integer<uint32_t>(item)); }
@@ -55,7 +62,7 @@ int main(int argc,char**argv) {
                 std::cout<<"XaoS Modern headless renderer/benchmark\n"
                 "--width N --height N --iterations N --precision BITS (0=adaptive)\n"
                 "--threads N --counts | --state --scalar --no-interior --uniform\n"
-                "--slice MS --solid-guess N | --no-guess --no-fill\n"
+                "--slice MS --solid-guess N | --no-guess --no-fill --reconstruct MODE\n"
                 "--center-re DECIMAL --center-im DECIMAL --span DECIMAL\n"
                 "--formula mandelbrot|julia|ship --julia-re DECIMAL --julia-im DECIMAL\n"
                 "--frames N --zoom FACTOR --limits 128,256,512 --output FILE.ppm\n"

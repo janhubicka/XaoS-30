@@ -50,13 +50,8 @@ QImage makeImage(const FrameBase&f) {
     for(int row=0;row<f.request.height;++row) {
         auto*data=reinterpret_cast<QRgb*>(image.scanLine(row));
         const int y=f.request.height-1-row;
-        for(int x=0;x<f.request.width;++x) {
-            // Leave genuinely unresolved pixels transparent. The previously
-            // published frame is drawn underneath at its transformed viewport,
-            // which is both less destructive and closer to classic XaoS than
-            // smearing a single computed pixel across an edge.
-            data[x]=f.qualityAt(x,y)==DisplayQuality::Missing?0u:f.displayAt(x,y);
-        }
+        for(int x=0;x<f.request.width;++x)
+            data[x]=f.displayAt(x,y);
     }
     return image;
 }
@@ -125,18 +120,26 @@ class Canvas final:public QWidget {
                 const auto stats=frame->stats;
                 budget.observe(stats.milliseconds,imageMs);
                 const auto view=frame->request.view;
+                const auto reconstruction=frame->request.settings.reconstruction;
                 // No QWidget access on this thread. QObject drops queued calls on
                 // destruction; our destructor also joins this coordinator first.
-                QMetaObject::invokeMethod(this,[this,image=std::move(image),view,stats,id=job.serial] {
+                QMetaObject::invokeMethod(this,[this,image=std::move(image),view,stats,reconstruction,id=job.serial] {
                     if(id<shown_) return;
                     shown_=id;
                     fallback_=image_;fallbackView_=imageView_;
                     image_=image;imageView_=view;
                     if(stats.complete) ++completedFrames;
-                    if(onStatus) onStatus(QString("%1%2  |  %3 bits  |  %4 ms  |  reused %5  resumed %6  |  %7%8")
+                    const char* mode="nearest";
+                    switch(reconstruction) {
+                    case Reconstruction::Nearest: mode="nearest"; break;
+                    case Reconstruction::Bilinear: mode="bilinear"; break;
+                    case Reconstruction::Bicubic: mode="bicubic"; break;
+                    }
+                    if(onStatus) onStatus(QString("%1%2  |  %3 bits  |  %4 ms  |  reused %5  resumed %6  |  %7  |  %8%9")
                         .arg(QString::fromStdString(stats.backend)).arg(stats.simd?" / AVX2":"")
                         .arg(static_cast<qulonglong>(stats.bits)).arg(stats.milliseconds,0,'f',1)
                         .arg(static_cast<qulonglong>(stats.reused)).arg(static_cast<qulonglong>(stats.resumed))
+                        .arg(QString::fromLatin1(mode))
                         .arg(stats.uniform?"uniform samples":"adaptive preview")
                         .arg(stats.complete?QString{}:QString(" / refining (guess %1, fill %2)")
                             .arg(static_cast<qulonglong>(stats.solidGuessed)).arg(static_cast<qulonglong>(stats.filled))));
@@ -302,12 +305,19 @@ public:
         auto*formula=new QComboBox(bar);formula->addItems({"Mandelbrot","Julia","Burning ship"});bar->addWidget(formula);
         bar->addWidget(new QLabel("  Iterations ",bar));iterations=new QSpinBox(bar);iterations->setRange(1,2000000000);iterations->setValue(512);bar->addWidget(iterations);
         auto*states=new QCheckBox("Save orbits",bar);states->setChecked(true);bar->addWidget(states);
+        bar->addWidget(new QLabel("  Reconstruction ",bar));
+        auto*reconstruction=new QComboBox(bar);
+        reconstruction->addItems({"Nearest (XaoS)","Bilinear","Bicubic"});
+        bar->addWidget(reconstruction);
         bar->addWidget(new QLabel("  Workers ",bar));auto*threads=new QSpinBox(bar);threads->setRange(1,1024);
         threads->setValue(static_cast<int>(defaultWorkerCount()));bar->addWidget(threads);
         auto*coords=bar->addAction("Coordinates / bits");auto*reset=bar->addAction("Reset");
         connect(formula,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int i){canvas->settings.formula=static_cast<Formula>(i);canvas->submit();});
         connect(iterations,qOverload<int>(&QSpinBox::valueChanged),this,[this](int n){canvas->settings.iterations=static_cast<uint32_t>(n);canvas->submit();});
         connect(states,&QCheckBox::toggled,this,[this](bool b){canvas->settings.saveState=b;canvas->submit();});
+        connect(reconstruction,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int i){
+            canvas->settings.reconstruction=static_cast<Reconstruction>(i);canvas->submit();
+        });
         connect(threads,qOverload<int>(&QSpinBox::valueChanged),this,[this](int n){canvas->setThreads(static_cast<size_t>(n));});
         connect(coords,&QAction::triggered,canvas,&Canvas::coordinates);connect(reset,&QAction::triggered,canvas,&Canvas::reset);
         auto*file=menuBar()->addMenu("File");auto*save=file->addAction("Save frame as PNG");
