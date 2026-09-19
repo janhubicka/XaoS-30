@@ -28,22 +28,22 @@ uint32_t Autopilot::pixel(const DisplayFrame&frame,int x,int y) const noexcept {
 }
 
 /// Chooses one local or global candidate point using XaoS's range convention.
-bool Autopilot::randomCandidate(const DisplayFrame&frame,int range) {
+bool Autopilot::randomCandidate(const DisplayFrame&frame,int range,int centerX,int centerY) {
     const int width=frame.request.width,height=frame.request.height;
     const int minimum=LookSize;
     const int maximumX=width-2-LookSize,maximumY=height-2-LookSize;
     if(maximumX<minimum || maximumY<minimum) return false;
 
     const bool global=range>width/2;
-    if(!global && (x_<0 || x_>width || y_<0 || y_>height)) return false;
+    if(!global && (centerX<0 || centerX>width || centerY<0 || centerY>height)) return false;
 
     if(global) {
         std::uniform_int_distribution<int> dx(minimum,maximumX),dy(minimum,maximumY);
         x_=dx(random_);y_=dy(random_);
     } else {
         std::uniform_int_distribution<int> offset(0,range-1);
-        x_=std::clamp(offset(random_)-(range>>1)+x_,minimum,maximumX);
-        y_=std::clamp(offset(random_)-(range>>1)+y_,minimum,maximumY);
+        x_=std::clamp(offset(random_)-(range>>1)+centerX,minimum,maximumX);
+        y_=std::clamp(offset(random_)-(range>>1)+centerY,minimum,maximumY);
     }
     return true;
 }
@@ -70,9 +70,9 @@ bool Autopilot::noiseInteresting(const DisplayFrame&frame) const noexcept {
 }
 
 /// Tries random candidates until one satisfies the requested heuristic.
-bool Autopilot::look(const DisplayFrame&frame,int range,int maximum,bool noisy) {
+bool Autopilot::look(const DisplayFrame&frame,int centerX,int centerY,int range,int maximum,bool noisy) {
     while(maximum-->0) {
-        if(!randomCandidate(frame,range)) return false;
+        if(!randomCandidate(frame,range,centerX,centerY)) return false;
         if(noisy?noiseInteresting(frame):boundaryInteresting(frame)) {
             interestLevel_=noisy?2:1;
             return true;
@@ -126,16 +126,17 @@ AutopilotDecision Autopilot::tick(const DisplayFrame&frame,bool complete,const B
         remainingTicks_=std::uniform_int_distribution<int>(0,MaxTime-1)(random_);
         interestLevel_=0;
 
-        bool found=look(frame,NearRange,NearGuesses,false);
-        if(!found) found=look(frame,NearRange,NearGuesses,true);
+        const int oldX=x_,oldY=y_;
+        bool found=look(frame,oldX,oldY,NearRange,NearGuesses,false);
+        if(!found) found=look(frame,oldX,oldY,NearRange,NearGuesses,true);
 
         // XaoS deliberately abandons a good nearby point roughly once per 30
         // decisions so the exploration can occasionally jump elsewhere.
         if(found && std::uniform_int_distribution<int>(0,29)(random_)==0)
             found=false;
 
-        if(!found) found=look(frame,10000,GlobalBoundaryGuesses,false);
-        if(!found) found=look(frame,10000,GlobalNoiseGuesses,true);
+        if(!found) found=look(frame,oldX,oldY,10000,GlobalBoundaryGuesses,false);
+        if(!found) found=look(frame,oldX,oldY,10000,GlobalNoiseGuesses,true);
 
         if(found) {
             control_=AutopilotControl::ZoomIn;
