@@ -12,6 +12,8 @@ struct FormulaInfo {
     Formula formula;
     const char* name;
     const char* shortName;
+    double centerRe,centerIm,horizontalSpan;
+    double seedRe,seedIm;
 };
 
 /// Returns metadata for every fixed formula exposed by the modern renderer.
