@@ -144,11 +144,13 @@ void autopilotTests() {
     {
         Autopilot pilot(4);
         auto boundary=makeFrame(80,60,0xff557799u);
-        for(int y=5;y<55;y+=9) for(int x=5;x<75;x+=9)
+        // Every five consecutive x/y coordinates contain exactly one residue 2
+        // modulo 5, so every valid 5x5 candidate contains exactly one black pixel.
+        for(int y=2;y<60;y+=5) for(int x=2;x<80;x+=5)
             boundary.pixels[static_cast<size_t>(y)*80+static_cast<size_t>(x)]=0xff000000u;
         auto decision=pilot.tick(boundary,true,span);
         CHECK(decision.control==AutopilotControl::ZoomIn);
-        CHECK(decision.interestLevel==1 || decision.interestLevel==2);
+        CHECK(decision.interestLevel==1);
     }
     {
         Autopilot pilot(5);
