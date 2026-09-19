@@ -4,10 +4,11 @@ A C++20 implementation of the XaoS row/column-reuse idea, with a Qt 6
 frontend, persistent CPU worker pools, runtime arbitrary-precision coordinates,
 and compile-time count-only / resumable-orbit storage policies.
 
-**Status:** active development. GitHub Actions builds and tests the Qt application,
-the ASan/UBSan configuration, and the headless TSan configuration, including an
-offscreen GUI smoke test. The renderer is a focused modernisation of the XaoS
-zoom engine rather than a replacement for every historical feature.
+**Status:** active development. GitHub Actions builds and tests the Qt application
+on Linux, macOS and Windows, runs ASan/UBSan and TSan coverage, and also produces
+an installable Android arm64 APK. Desktop and phone-focused offscreen GUI smoke
+tests exercise both interface variants. The renderer is a focused modernisation
+of the XaoS zoom engine rather than a replacement for every historical feature.
 
 ## Build and run
 
@@ -25,6 +26,11 @@ ctest --test-dir build --output-on-failure
 When Qt is installed outside the system prefix, add
 `-DCMAKE_PREFIX_PATH=/path/to/Qt/6.x/gcc_64` to configuration.
 
+The GitHub Actions **Android arm64 APK** artifact is built with Qt for Android 6.8,
+Android API 36 / minimum API 28, and a statically linked Android build of GMP.
+The CI APK uses Android debug signing so it can be sideloaded directly for testing;
+a store release should use a project signing key and preferably an AAB.
+
 Headless build, independently verified here:
 
 ```sh
@@ -36,10 +42,23 @@ ctest --test-dir build-headless --output-on-failure
 
 `-DXAOS_NATIVE=ON` permits host-specific compiler optimization; do not distribute
 that binary to an incompatible CPU. AVX2 is runtime-dispatched even without this
-option on supported GCC/Clang x86 builds. Other targets use the scalar fallback;
-only Linux x86-64 has actually been tested.
+option on supported GCC/Clang x86 builds. Other targets use the scalar fallback.
+CI now builds Linux x86-64, Windows x86-64, macOS arm64/x86-64, and Android arm64.
 
 ## Controls
+
+### Phone / Android
+
+The phone layout is deliberately almost all fractal. It runs full-screen with a
+small translucent identity pill at the top and a floating control dock at the
+bottom. One finger drags the plane, a two-finger pinch zooms, a two-finger twist
+rotates, and double-tap dives in at the touched point. The dock exposes automatic
+exploration, formula choice, iteration detail, reconstruction style, reset, and a
+small overflow menu for exact coordinates/precision, rotation leveling, saved
+orbit state and image export. On desktop, pass `--mobile-ui` to preview this
+layout without an Android device.
+
+### Desktop
 
 Hold the left/right mouse button to zoom in/out around the pointer; use the wheel
 for stepped zoom and middle-button dragging to pan. `I` doubles the iteration

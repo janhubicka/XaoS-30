@@ -1,19 +1,23 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 project(XaoSModern VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-option(XAOS_BUILD_GUI "Build the Qt 6 desktop application" ON)
+option(XAOS_BUILD_GUI "Build the Qt 6 desktop/mobile application" ON)
 option(XAOS_NATIVE "Optimize for this computer (binaries are not portable)" OFF)
 option(XAOS_SANITIZE "Enable address/undefined sanitizers" OFF)
 option(XAOS_TSAN "Enable thread sanitizer instead" OFF)
 if(XAOS_SANITIZE AND XAOS_TSAN)
   message(FATAL_ERROR "Use separate builds for ASan/UBSan and TSan")
 endif()
+
 find_path(GMP_INCLUDE_DIR gmp.h REQUIRED)
 find_library(GMP_LIBRARY NAMES gmp REQUIRED)
 find_package(Threads REQUIRED)
-add_library(xaos_core src/autopilot.cpp src/axis.cpp src/executor.cpp src/formulae.cpp src/palette.cpp src/renderer.cpp src/simd.cpp)
+
+add_library(xaos_core
+  src/autopilot.cpp src/axis.cpp src/executor.cpp src/formulae.cpp
+  src/palette.cpp src/renderer.cpp src/simd.cpp)
 target_include_directories(xaos_core PUBLIC include ${GMP_INCLUDE_DIR})
 target_link_libraries(xaos_core PUBLIC ${GMP_LIBRARY} Threads::Threads)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -33,19 +37,43 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 elseif(MSVC)
   target_compile_options(xaos_core PUBLIC /fp:strict)
 endif()
-add_executable(xaos-bench app/bench.cpp)
-target_link_libraries(xaos-bench PRIVATE xaos_core)
-include(CTest)
-if(BUILD_TESTING)
-  add_executable(xaos-tests tests/core_tests.cpp)
-  target_link_libraries(xaos-tests PRIVATE xaos_core)
-  add_test(NAME core COMMAND xaos-tests)
-  set_tests_properties(core PROPERTIES TIMEOUT 120)
+
+# The benchmark/test executables are host tools. Android only builds the Qt app.
+if(NOT ANDROID)
+  add_executable(xaos-bench app/bench.cpp)
+  target_link_libraries(xaos-bench PRIVATE xaos_core)
+  include(CTest)
+  if(BUILD_TESTING)
+    add_executable(xaos-tests tests/core_tests.cpp)
+    target_link_libraries(xaos-tests PRIVATE xaos_core)
+    add_test(NAME core COMMAND xaos-tests)
+    set_tests_properties(core PROPERTIES TIMEOUT 120)
+  endif()
 endif()
+
 if(XAOS_BUILD_GUI)
   find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets)
-  add_executable(xaos-modern WIN32 MACOSX_BUNDLE app/qt_main.cpp app/qt_executor.hpp)
+  # qt_add_executable is required for Qt's Android deployment metadata/APK target,
+  # and is equally valid for the existing desktop platforms.
+  qt_add_executable(xaos-modern MANUAL_FINALIZATION app/qt_main.cpp app/qt_executor.hpp)
   target_link_libraries(xaos-modern PRIVATE xaos_core Qt6::Widgets)
-  install(TARGETS xaos-modern RUNTIME DESTINATION bin BUNDLE DESTINATION .)
+  set_target_properties(xaos-modern PROPERTIES
+    WIN32_EXECUTABLE TRUE
+    MACOSX_BUNDLE TRUE)
+  if(ANDROID)
+    set_target_properties(xaos-modern PROPERTIES
+      QT_ANDROID_PACKAGE_NAME "org.xaos.xaos30"
+      QT_ANDROID_MIN_SDK_VERSION 28
+      QT_ANDROID_TARGET_SDK_VERSION 36
+      QT_ANDROID_VERSION_NAME "${PROJECT_VERSION}"
+      QT_ANDROID_VERSION_CODE 1)
+  endif()
+  qt_finalize_target(xaos-modern)
+  if(NOT ANDROID)
+    install(TARGETS xaos-modern RUNTIME DESTINATION bin BUNDLE DESTINATION .)
+  endif()
 endif()
-install(TARGETS xaos-bench RUNTIME DESTINATION bin)
+
+if(NOT ANDROID)
+  install(TARGETS xaos-bench RUNTIME DESTINATION bin)
+endif()
