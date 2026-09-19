@@ -189,6 +189,12 @@ void numericTests() {
     rotated.rotate(u,vv,.61,320,200);
     auto mapped=rotated.complexToScreen(anchor.first,anchor.second,320,200);
     CHECK(std::abs(mapped.first-u)<1e-12);CHECK(std::abs(mapped.second-vv)<1e-12);
+    // The O(1) center must survive projection to the rotated basis with accuracy
+    // measured against the tiny viewport span, not merely against double epsilon.
+    const auto axisCenter=rotated.axisCenter();
+    const auto centerBack=rotated.complexFromAxes(axisCenter.first,axisCenter.second);
+    CHECK(std::abs(div(sub(centerBack.first,rotated.re),rotated.span).toDouble())<1e-12);
+    CHECK(std::abs(div(sub(centerBack.second,rotated.im),rotated.span).toDouble())<1e-12);
     rotated.zoom(u,vv,.83,320,200);
     mapped=rotated.complexToScreen(anchor.first,anchor.second,320,200);
     CHECK(std::abs(mapped.first-u)<1e-12);CHECK(std::abs(mapped.second-vv)<1e-12);
