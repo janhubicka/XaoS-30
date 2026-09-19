@@ -486,7 +486,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->stats.lineCost=ax.cost+ay.cost;
     f->stats.uniform=ax.uniform && ay.uniform;
     f->stats.bits=bits; f->stats.backend=big?"GMP":"double";
-    f->stats.simd=!big && r.settings.simd && hasAVX2();
+    f->stats.simd=!big && !F::generic && r.settings.simd && hasAVX2();
     f->counts.resize(pixels); f->state.resize(pixels);
     f->samplePixels.assign(pixels,0xff000000u);
     f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
