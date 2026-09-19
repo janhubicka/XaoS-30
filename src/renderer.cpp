@@ -1130,53 +1130,6 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     return f;
 }
 
-template<class Real,bool Save>
-/// Dispatches a render request to the compile-time kernel for the selected formula.
-std::shared_ptr<const FrameBase> selectFormula(const Request&r,Executor&e,const Cancellation&s,
-                                              const std::shared_ptr<const FrameBase>&stateOld,
-                                              const std::shared_ptr<const FrameBase>&gridOld,
-                                              mp_bitcnt_t bits) {
-    switch(r.settings.formula) {
-#define XAOS_DISPATCH_FORMULA(Name) \
-    case Formula::Name: return compute<Real,Save,FormulaTag<Formula::Name>>(r,e,s,stateOld,gridOld,bits)
-    XAOS_DISPATCH_FORMULA(Mandelbrot);
-    XAOS_DISPATCH_FORMULA(Julia);
-    XAOS_DISPATCH_FORMULA(BurningShip);
-    XAOS_DISPATCH_FORMULA(Mandelbrot3);
-    XAOS_DISPATCH_FORMULA(Mandelbrot4);
-    XAOS_DISPATCH_FORMULA(Mandelbrot5);
-    XAOS_DISPATCH_FORMULA(Mandelbrot6);
-    XAOS_DISPATCH_FORMULA(Newton);
-    XAOS_DISPATCH_FORMULA(Newton4);
-    XAOS_DISPATCH_FORMULA(Barnsley1);
-    XAOS_DISPATCH_FORMULA(Barnsley2);
-    XAOS_DISPATCH_FORMULA(Barnsley3);
-    XAOS_DISPATCH_FORMULA(Octo);
-    XAOS_DISPATCH_FORMULA(Phoenix);
-    XAOS_DISPATCH_FORMULA(Magnet);
-    XAOS_DISPATCH_FORMULA(Magnet2);
-    XAOS_DISPATCH_FORMULA(Triceratops);
-    XAOS_DISPATCH_FORMULA(Catseye);
-    XAOS_DISPATCH_FORMULA(Mandelbar);
-    XAOS_DISPATCH_FORMULA(Lambda);
-    XAOS_DISPATCH_FORMULA(Manowar);
-    XAOS_DISPATCH_FORMULA(Spider);
-    XAOS_DISPATCH_FORMULA(Sierpinski);
-    XAOS_DISPATCH_FORMULA(SierpinskiCarpet);
-    XAOS_DISPATCH_FORMULA(KochSnowflake);
-    XAOS_DISPATCH_FORMULA(SpidronHornflake);
-    XAOS_DISPATCH_FORMULA(Mandelbrot9);
-    XAOS_DISPATCH_FORMULA(Beryl);
-    XAOS_DISPATCH_FORMULA(GoldenSierpinski);
-    XAOS_DISPATCH_FORMULA(Circle7);
-    XAOS_DISPATCH_FORMULA(Clock);
-    XAOS_DISPATCH_FORMULA(SymmetricBarnsley);
-    XAOS_DISPATCH_FORMULA(SierpinskiCarpet4);
-#undef XAOS_DISPATCH_FORMULA
-    }
-    throw std::invalid_argument("unknown formula");
-}
-}
 
 /// Validates a request, selects numeric/storage backends, and updates renderer caches.
 std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,const Cancellation&s) {
@@ -1204,12 +1157,12 @@ std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,con
     auto dispatch=[&](const Request&request)->std::shared_ptr<const FrameBase> {
         if(native) {
             if(request.settings.saveState)
-                return selectFormula<double,true>(request,e,s,statePrevious_,gridPrevious_,53);
-            return selectFormula<double,false>(request,e,s,statePrevious_,gridPrevious_,53);
+                return compute<double,true>(request,e,s,statePrevious_,gridPrevious_,53);
+            return compute<double,false>(request,e,s,statePrevious_,gridPrevious_,53);
         }
         if(request.settings.saveState)
-            return selectFormula<Big,true>(request,e,s,statePrevious_,gridPrevious_,bits);
-        return selectFormula<Big,false>(request,e,s,statePrevious_,gridPrevious_,bits);
+            return compute<Big,true>(request,e,s,statePrevious_,gridPrevious_,bits);
+        return compute<Big,false>(request,e,s,statePrevious_,gridPrevious_,bits);
     };
 
     std::shared_ptr<const FrameBase> result;
