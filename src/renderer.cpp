@@ -171,7 +171,46 @@ bool compatible(const FrameBase& old,const Request&r,mp_bitcnt_t bits) {
     // basis. A different angle therefore denotes a different coordinate system:
     // visual fallback is still valid, but DP/orbit state is not.
     return displayCompatible(old,r) && old.request.view.rotation==r.view.rotation &&
-           old.stats.bits==bits && old.request.settings.analytic==r.settings.analytic;
+           old.stats.bits==bits && old.request.settings.analytic==r.settings.analytic &&
+           old.request.settings.fastPrecision==r.settings.fastPrecision;
+}
+bool quadraticFormula(Formula formula) noexcept {
+    return formula==Formula::Mandelbrot || formula==Formula::Julia ||
+           formula==Formula::BurningShip;
+}
+bool fixedRangeSafe(const Request&r) {
+    auto safe=[](const Big&v) {
+        const double d=v.toDouble();
+        return std::isfinite(d) && std::abs(d)<=2.9;
+    };
+    for(double u:{0.0,1.0}) for(double v:{0.0,1.0}) {
+        const auto point=r.view.screenToComplex(u,v,r.width,r.height);
+        if(!safe(point.first) || !safe(point.second)) return false;
+    }
+    if(r.settings.formula==Formula::Julia &&
+       (!safe(r.settings.juliaRe) || !safe(r.settings.juliaIm))) return false;
+    return true;
+}
+QuadraticBackend chooseQuadraticBackend(const Request&r,mp_bitcnt_t requestedBits) {
+    if(!r.settings.fastPrecision || !quadraticFormula(r.settings.formula))
+        return QuadraticBackend::GMP;
+    if(requestedBits<=100 && preferDoubleDoubleBackend())
+        return QuadraticBackend::DoubleDouble;
+    if(!fixedBackendAvailable || !fixedRangeSafe(r)) return QuadraticBackend::GMP;
+    if(requestedBits<=120) return QuadraticBackend::Fixed128;
+    if(requestedBits<=184) return QuadraticBackend::Fixed192;
+    if(requestedBits<=248) return QuadraticBackend::Fixed256;
+    return QuadraticBackend::GMP;
+}
+mp_bitcnt_t backendBits(QuadraticBackend backend) noexcept {
+    switch(backend) {
+    case QuadraticBackend::DoubleDouble:return 106;
+    case QuadraticBackend::Fixed128:return Fixed<2>::precision;
+    case QuadraticBackend::Fixed192:return Fixed<3>::precision;
+    case QuadraticBackend::Fixed256:return Fixed<4>::precision;
+    case QuadraticBackend::GMP:return 0;
+    }
+    return 0;
 }
 struct alignas(64) LocalStats { uint64_t reused=0,started=0,resumed=0,steps=0; };
 struct LineTask { bool row=false; int index=0; double priority=0; size_t serial=0; };
@@ -1173,14 +1212,23 @@ std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,con
        !std::isfinite(r.view.rotation) || r.settings.solidGuessRange>16)
         throw std::invalid_argument("invalid reuse radius, focus, rotation, or solid-guess range");
 
-    mp_bitcnt_t bits=std::max(r.settings.minimumPrecision,r.view.requiredBits(r.width,r.settings.guardBits));
+    const mp_bitcnt_t requestedBits=
+        std::max(r.settings.minimumPrecision,r.view.requiredBits(r.width,r.settings.guardBits));
+    mp_bitcnt_t bits=requestedBits;
     const auto step=divide(r.view.span,static_cast<unsigned long>(r.width));
     const bool native=bits<=53 && r.view.re.exponent()<1000 && r.view.im.exponent()<1000 &&
                       r.view.span.exponent()<990 && step.exponent()>-1000;
+    QuadraticBackend quadraticBackend=QuadraticBackend::GMP;
     if(!native) {
-        bits=std::max<mp_bitcnt_t>(64,bits);
-        if(bits>std::numeric_limits<mp_bitcnt_t>::max()-GMP_NUMB_BITS) throw std::length_error("precision overflow");
-        bits=((bits+GMP_NUMB_BITS-1)/GMP_NUMB_BITS)*GMP_NUMB_BITS;
+        quadraticBackend=chooseQuadraticBackend(r,requestedBits);
+        if(quadraticBackend!=QuadraticBackend::GMP) {
+            bits=backendBits(quadraticBackend);
+        } else {
+            bits=std::max<mp_bitcnt_t>(64,bits);
+            if(bits>std::numeric_limits<mp_bitcnt_t>::max()-GMP_NUMB_BITS)
+                throw std::length_error("precision overflow");
+            bits=((bits+GMP_NUMB_BITS-1)/GMP_NUMB_BITS)*GMP_NUMB_BITS;
+        }
         if(r.settings.memoryBudget && bits/8>r.settings.memoryBudget/12)
             throw std::length_error("precision exceeds the memory budget");
     }
@@ -1192,8 +1240,8 @@ std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,con
             return compute<double,false>(request,e,s,statePrevious_,gridPrevious_,53);
         }
         if(request.settings.saveState)
-            return compute<Big,true>(request,e,s,statePrevious_,gridPrevious_,bits);
-        return compute<Big,false>(request,e,s,statePrevious_,gridPrevious_,bits);
+            return compute<Big,true>(request,e,s,statePrevious_,gridPrevious_,bits,quadraticBackend);
+        return compute<Big,false>(request,e,s,statePrevious_,gridPrevious_,bits,quadraticBackend);
     };
 
     std::shared_ptr<const FrameBase> result;
