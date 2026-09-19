@@ -17,18 +17,23 @@
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QImage>
+#include <QGestureEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMainWindow>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QNativeGestureEvent>
 #include <QPainter>
+#include <QPinchGesture>
+#include <QPolygonF>
 #include <QResizeEvent>
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QTimer>
 #include <QToolBar>
+#include <QTransform>
 #include <QWheelEvent>
 #include <algorithm>
 #include <array>
@@ -37,6 +42,7 @@
 #include <condition_variable>
 #include <functional>
 #include <optional>
+#include <numbers>
 
 using namespace xaos;
 namespace {
@@ -95,19 +101,17 @@ class Canvas final:public QWidget {
     QPointF pointer_{.5,.5},lastDrag_;
     int direction_=0;
     bool dragging_=false;
+    bool nativeGestureActive_=false,gestureChanged_=false;
     size_t threads_=std::max<size_t>(1,defaultWorkerCount()-presentationWorkerCount());
     /// Maps a target selected in a displayed source frame into the current viewport.
     QPointF mapDisplayFocus(const DisplayFrame&frame,double u,double v) const {
         if(width()<1 || height()<1) return QPointF(.5,.5);
-        const auto&source=frame.request.view;
-        const double sourceAspect=static_cast<double>(frame.request.height)/frame.request.width;
-        Big real=add(source.re,scale(source.span,u-.5));
-        Big imag=add(source.im,scale(source.span,(.5-v)*sourceAspect));
-        const double currentU=.5+div(sub(real,view.re),view.span).toDouble();
-        const double currentV=.5-div(sub(imag,view.im),view.span).toDouble()*
-                                   static_cast<double>(width())/height();
-        return QPointF(std::clamp(currentU,0.0,1.0)*width(),
-                       std::clamp(currentV,0.0,1.0)*height());
+        const auto point=frame.request.view.screenToComplex(
+            u,v,std::max(1,frame.request.width),std::max(1,frame.request.height));
+        const auto current=view.complexToScreen(
+            point.first,point.second,std::max(1,width()),std::max(1,height()));
+        return QPointF(std::clamp(current.first,0.0,1.0)*width(),
+                       std::clamp(current.second,0.0,1.0)*height());
     }
 
     /// Restores the current formula's XaoS default view and parameter seed.
@@ -320,47 +324,144 @@ class Canvas final:public QWidget {
             }
         }
     }
-    /// Draws a cached image transformed into the current viewport, including zoom-out edge extension.
+    /// Draws a cached image through the affine transform between two rotated viewports.
     void drawView(QPainter&p,const QImage&image,const View&source) {
         if(image.isNull() || width()<1||height()<1) return;
-        const Big oldLeft=sub(source.re,scale(source.span,.5));
-        const Big newLeft=sub(view.re,scale(view.span,.5));
-        const Big oldTop=add(source.im,scale(source.span,.5*image.height()/image.width()));
-        const Big newTop=add(view.im,scale(view.span,.5*height()/width()));
-        // Convert only *relative screen coordinates* to double, after subtraction
-        // and scaling at arbitrary precision. Never subtract two rounded doubles.
-        const double x=div(sub(oldLeft,newLeft),view.span).toDouble()*width();
-        const double y=div(sub(newTop,oldTop),view.span).toDouble()*width();
-        const double w=div(source.span,view.span).toDouble()*width();
-        const double h=w*image.height()/image.width();
-        if(std::isfinite(x)&&std::isfinite(y)&&std::isfinite(w)&&std::isfinite(h) && w>0 && w<1.e9) {
-            // During zoom-out the transformed previous frame is smaller than the
-            // widget. Classic XaoS immediately fills the newly exposed bands from
-            // the nearest boundary row/column instead of flashing black. Do the
-            // same while the next DP frame is still being computed.
-            const double cw=width(),ch=height();
-            if(x>0) {
-                p.drawImage(QRectF(0,y,x,h),image,QRectF(0,0,1,image.height()));
-                if(y>0) p.fillRect(QRectF(0,0,x,y),QColor::fromRgba(image.pixel(0,0)));
-                if(y+h<ch) p.fillRect(QRectF(0,y+h,x,ch-(y+h)),QColor::fromRgba(image.pixel(0,image.height()-1)));
-            }
-            if(x+w<cw) {
-                p.drawImage(QRectF(x+w,y,cw-(x+w),h),image,
-                            QRectF(image.width()-1,0,1,image.height()));
-                if(y>0) p.fillRect(QRectF(x+w,0,cw-(x+w),y),
-                                  QColor::fromRgba(image.pixel(image.width()-1,0)));
-                if(y+h<ch) p.fillRect(QRectF(x+w,y+h,cw-(x+w),ch-(y+h)),
-                                     QColor::fromRgba(image.pixel(image.width()-1,image.height()-1)));
-            }
-            if(y>0)
-                p.drawImage(QRectF(x,0,w,y),image,QRectF(0,0,image.width(),1));
-            if(y+h<ch)
-                p.drawImage(QRectF(x,y+h,w,ch-(y+h)),image,
-                            QRectF(0,image.height()-1,image.width(),1));
-            p.drawImage(QRectF(x,y,w,h),image);
-        }
+        auto targetPoint=[&](double u,double v) {
+            const auto point=source.screenToComplex(u,v,image.width(),image.height());
+            const auto uv=view.complexToScreen(point.first,point.second,width(),height());
+            return QPointF(uv.first*width(),uv.second*height());
+        };
+        const QPolygonF sourceQuad{
+            QPointF(0,0),QPointF(image.width(),0),
+            QPointF(image.width(),image.height()),QPointF(0,image.height())};
+        const QPolygonF targetQuad{
+            targetPoint(0,0),targetPoint(1,0),targetPoint(1,1),targetPoint(0,1)};
+        QTransform transform;
+        if(!QTransform::quadToQuad(sourceQuad,targetQuad,transform)) return;
+        bool invertible=false;
+        const QTransform inverse=transform.inverted(&invertible);
+        if(!invertible) return;
+
+        // Determine which source-space rectangle covers the current widget. When
+        // zooming out, extend the nearest boundary row/column exactly as before;
+        // doing it before the affine transform also works for rotated viewports.
+        const QPolygonF widgetQuad{
+            QPointF(0,0),QPointF(width(),0),QPointF(width(),height()),QPointF(0,height())};
+        QRectF needed=inverse.map(widgetQuad).boundingRect();
+        if(!std::isfinite(needed.left())||!std::isfinite(needed.right())||
+           !std::isfinite(needed.top())||!std::isfinite(needed.bottom()))
+            return;
+        const double iw=image.width(),ih=image.height();
+        const double left=std::min(0.0,needed.left());
+        const double right=std::max(iw,needed.right());
+        const double top=std::min(0.0,needed.top());
+        const double bottom=std::max(ih,needed.bottom());
+
+        p.save();
+        p.setTransform(transform,true);
+        if(left<0)
+            p.drawImage(QRectF(left,0,-left,ih),image,QRectF(0,0,1,ih));
+        if(right>iw)
+            p.drawImage(QRectF(iw,0,right-iw,ih),image,QRectF(iw-1,0,1,ih));
+        if(top<0)
+            p.drawImage(QRectF(0,top,iw,-top),image,QRectF(0,0,iw,1));
+        if(bottom>ih)
+            p.drawImage(QRectF(0,ih,iw,bottom-ih),image,QRectF(0,ih-1,iw,1));
+        if(left<0 && top<0)
+            p.drawImage(QRectF(left,top,-left,-top),image,QRectF(0,0,1,1));
+        if(right>iw && top<0)
+            p.drawImage(QRectF(iw,top,right-iw,-top),image,QRectF(iw-1,0,1,1));
+        if(left<0 && bottom>ih)
+            p.drawImage(QRectF(left,ih,-left,bottom-ih),image,QRectF(0,ih-1,1,1));
+        if(right>iw && bottom>ih)
+            p.drawImage(QRectF(iw,ih,right-iw,bottom-ih),image,QRectF(iw-1,ih-1,1,1));
+        p.drawImage(QRectF(0,0,iw,ih),image);
+        p.restore();
     }
 protected:
+    /// Handles native trackpad gestures and touchscreen pinch/rotation gestures.
+    bool event(QEvent*event) override {
+        if(event->type()==QEvent::NativeGesture) {
+            auto*gesture=static_cast<QNativeGestureEvent*>(event);
+            if(autopilotEnabled_) {gesture->accept();return true;}
+            const auto type=gesture->gestureType();
+            if(type==Qt::BeginNativeGesture) {
+                nativeGestureActive_=true;gestureChanged_=false;idle_.stop();
+                gesture->accept();return true;
+            }
+            if(type==Qt::EndNativeGesture) {
+                nativeGestureActive_=false;
+                if(gestureChanged_) submit(true); else update();
+                gestureChanged_=false;gesture->accept();return true;
+            }
+            const QPointF position=gesture->position();
+            const double u=position.x()/std::max(1,width());
+            const double v=position.y()/std::max(1,height());
+            try {
+                if(type==Qt::RotateNativeGesture) {
+                    view.rotate(u,v,gesture->value()*std::numbers::pi/180.0,
+                                std::max(1,width()),std::max(1,height()));
+                    gestureChanged_=true;
+                } else if(type==Qt::ZoomNativeGesture) {
+                    const double magnification=1.0+gesture->value();
+                    if(magnification>0) {
+                        view.zoom(u,v,1.0/magnification,
+                                  std::max(1,width()),std::max(1,height()));
+                        gestureChanged_=true;
+                    }
+                } else if(type==Qt::PanNativeGesture) {
+                    const QPointF delta=gesture->delta();
+                    view.pan(delta.x(),delta.y(),std::max(1,width()));
+                    gestureChanged_=true;
+                } else return QWidget::event(event);
+                pointer_=position;idle_.stop();update();
+            } catch(const std::exception&ex) {
+                if(onStatus) onStatus(ex.what());
+            }
+            gesture->accept();return true;
+        }
+        if(event->type()==QEvent::Gesture && !nativeGestureActive_) {
+            auto*gestureEvent=static_cast<QGestureEvent*>(event);
+            if(auto*pinch=static_cast<QPinchGesture*>(gestureEvent->gesture(Qt::PinchGesture))) {
+                if(autopilotEnabled_) {gestureEvent->accept(pinch);return true;}
+                if(pinch->state()==Qt::GestureStarted) {
+                    gestureChanged_=false;idle_.stop();
+                }
+                const QPointF center=pinch->centerPoint();
+                const double u=center.x()/std::max(1,width());
+                const double v=center.y()/std::max(1,height());
+                try {
+                    const auto flags=pinch->changeFlags();
+                    if(flags.testFlag(QPinchGesture::CenterPointChanged)) {
+                        const QPointF delta=center-pinch->lastCenterPoint();
+                        view.pan(delta.x(),delta.y(),std::max(1,width()));
+                        gestureChanged_=true;
+                    }
+                    if(flags.testFlag(QPinchGesture::ScaleFactorChanged) && pinch->scaleFactor()>0) {
+                        view.zoom(u,v,1.0/pinch->scaleFactor(),
+                                  std::max(1,width()),std::max(1,height()));
+                        gestureChanged_=true;
+                    }
+                    if(flags.testFlag(QPinchGesture::RotationAngleChanged)) {
+                        const double degrees=pinch->rotationAngle()-pinch->lastRotationAngle();
+                        view.rotate(u,v,degrees*std::numbers::pi/180.0,
+                                    std::max(1,width()),std::max(1,height()));
+                        gestureChanged_=true;
+                    }
+                    pointer_=center;update();
+                } catch(const std::exception&ex) {
+                    if(onStatus) onStatus(ex.what());
+                }
+                if(pinch->state()==Qt::GestureFinished || pinch->state()==Qt::GestureCanceled) {
+                    if(gestureChanged_) submit(true);
+                    gestureChanged_=false;
+                }
+                gestureEvent->accept(pinch);return true;
+            }
+        }
+        return QWidget::event(event);
+    }
     /// Paints the current and fallback fractal images plus the interaction hint.
     void paintEvent(QPaintEvent*) override {
         QPainter p(this);
@@ -371,7 +472,7 @@ protected:
         p.fillRect(rect(),Qt::black);
         drawView(p,fallback_,fallbackView_);drawView(p,image_,imageView_);
         p.setPen(Qt::white);
-        p.drawText(12,22,"Hold left/right: zoom   |   Middle drag: pan   |   Wheel: zoom   |   A: autopilot");
+        p.drawText(12,22,"Hold left/right: zoom   |   Middle drag: pan   |   Wheel/pinch: zoom   |   Two-finger twist: rotate   |   A: autopilot");
     }
     /// Submits a new render request after the canvas size changes.
     void resizeEvent(QResizeEvent*e) override { QWidget::resizeEvent(e); submit(false,true); }
@@ -419,6 +520,8 @@ public:
     /// Constructs a Canvas instance.
     explicit Canvas(QWidget*parent=nullptr):QWidget(parent) {
         setMouseTracking(true);setFocusPolicy(Qt::StrongFocus);
+        setAttribute(Qt::WA_AcceptTouchEvents,true);
+        grabGesture(Qt::PinchGesture);
         motion_.setInterval(16);idle_.setSingleShot(true);idle_.setInterval(180);
         autopilotTimer_.setInterval(40); // original XaoS autopilot timer: 25 Hz
         connect(&motion_,&QTimer::timeout,this,[this] {
@@ -553,11 +656,13 @@ public:
         QLineEdit re,im,span;
         for(auto*field:{&re,&im,&span}) field->setMaxLength(std::numeric_limits<int>::max());
         re.setText(QString::fromStdString(view.re.str()));im.setText(QString::fromStdString(view.im.str()));span.setText(QString::fromStdString(view.span.str()));
+        QLineEdit rotation(QString::number(view.rotation*180.0/std::numbers::pi,'g',15));
         QLineEdit precision(QString::number(static_cast<qulonglong>(settings.minimumPrecision)));
         QLineEdit jr,ji;
         jr.setMaxLength(std::numeric_limits<int>::max());ji.setMaxLength(std::numeric_limits<int>::max());
         jr.setText(QString::fromStdString(settings.juliaRe.str()));ji.setText(QString::fromStdString(settings.juliaIm.str()));
         form.addRow("Center, real",&re);form.addRow("Center, imaginary",&im);form.addRow("Horizontal span",&span);
+        form.addRow("Rotation (degrees)",&rotation);
         form.addRow("Minimum bits (0 = adaptive)",&precision);form.addRow("Julia c, real",&jr);form.addRow("Julia c, imaginary",&ji);
         QLabel note("Precision grows with zoom depth. More bits invalidate old orbits.\nMemory and CPU time remain finite; direct GMP is not perturbation rendering.");
         form.addRow(&note);
@@ -567,6 +672,10 @@ public:
         if(d.exec()==QDialog::Accepted) {
             try {
                 View next=View::parse(re.text().trimmed().toStdString(),im.text().trimmed().toStdString(),span.text().trimmed().toStdString(),std::max(1,width()),16,settings.memoryBudget);
+                bool rotationOk=false;
+                const double degrees=rotation.text().trimmed().toDouble(&rotationOk);
+                if(!rotationOk || !std::isfinite(degrees)) throw std::invalid_argument("invalid rotation");
+                next.rotation=View::normalizeRotation(degrees*std::numbers::pi/180.0);
                 auto bits=readInteger<mp_bitcnt_t>(precision.text());
                 const auto r=jr.text().trimmed().toStdString(),i=ji.text().trimmed().toStdString();
                 Big real=Big::parse(r,View::textBits(r,i,"")),imag=Big::parse(i,View::textBits(r,i,""));
