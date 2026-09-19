@@ -12,7 +12,7 @@ struct FormulaInfo {
     Formula formula;
     const char* name;
     const char* shortName;
-    double centerRe,centerIm,horizontalSpan;
+    double centerRe,centerIm,horizontalSpan,verticalSpan;
     double seedRe,seedIm;
 };
 
