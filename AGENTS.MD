@@ -20,14 +20,16 @@ The project is rooted here. Do not recreate `experimental/qt-modern/` or a secon
 2. Mathematical state and display state are separate:
    - counts and saved orbit state are valid only at their exact complex coordinate;
    - `samplePixels/sampleQuality` describe the adaptive grid;
-   - `displayPixels` are post-processed output only.
+   - `displayXSource/displayYSource` describe timeout resolution reduction without copying pixels;
+   - `DisplayFrame` is post-processed output only.
    Interpolated or fallback pixels must never become resumable orbit state or input to solid guessing.
 3. Keep mathematical-state history separate from the last valid DP/display-grid history. A cancelled frame may contain useful orbit state without being a valid image grid.
 4. Observe the internal frame budget between row/column operations. Do not let the internal time slice cut a grid line in half. Explicit caller/UI cancellation must remain effective for pathological long orbits.
 5. Before honoring an interactive timeout, maintain enough row/column support for reduced-resolution reconstruction (the classic XaoS `readyforinterrupt` invariant).
 6. Nearest reconstruction must remain compatible with original XaoS `mkfilltable()/filly()` behavior. Bilinear and bicubic reconstruction must use actual nonuniform coordinate spacing.
-7. Precision is runtime-selected. Do not replace the GMP path with a fixed menu of template precisions.
-8. Scalar and SIMD escape counts must stay identical; keep `-ffp-contract=off` unless the numerical contract and tests are deliberately changed.
+7. Keep presentation off the compute coordinator. `Renderer::render()` timing and frame budgets cover mathematical DP/orbit work only; `presentFrame()` may run concurrently on a separate executor and stale display work must be cancellable.
+8. Precision is runtime-selected. Do not replace the GMP path with a fixed menu of template precisions.
+9. Scalar and SIMD escape counts must stay identical; keep `-ffp-contract=off` unless the numerical contract and tests are deliberately changed.
 
 ## Coding style
 
