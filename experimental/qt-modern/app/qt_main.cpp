@@ -6,6 +6,7 @@
 #include <QMenu>
 #include <QKeySequence>
 #include <QCheckBox>
+#include <QColor>
 #include <QClipboard>
 #include <QComboBox>
 #include <QDialog>
