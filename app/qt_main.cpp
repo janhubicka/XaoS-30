@@ -14,6 +14,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QElapsedTimer>
+#include <QEventPoint>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QFrame>
@@ -49,6 +50,7 @@
 #include <optional>
 #include <numbers>
 #include <thread>
+#include <vector>
 
 using namespace xaos;
 namespace {
