@@ -22,6 +22,8 @@ std::span<const FormulaInfo> formulaInfos() noexcept;
 const FormulaInfo& formulaInfo(Formula);
 /// Parses an XaoS short formula name plus the modern julia/ship aliases.
 std::optional<Formula> formulaFromName(std::string_view) noexcept;
+/// Reports whether resumable iteration needs a second complex orbit value.
+bool formulaNeedsAuxiliaryState(Formula) noexcept;
 
 namespace detail {
 
