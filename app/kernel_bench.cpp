@@ -47,6 +47,7 @@ inline DD ddmul(DD a,DD b) {
     return renorm(p,e);
 }
 inline DD ddmul2(DD a) { return ddadd(a,a); }
+inline bool ddGreater4(DD a) { return a.hi>4.0 || (a.hi==4.0 && a.lo>0.0); }
 
 template<size_t N> struct Fixed {
     static_assert(N>=2 && N<=4);
@@ -195,11 +196,13 @@ double timed(const char*name,unsigned bits,unsigned lanes,size_t pixelCount,
 double benchDoubleScalar(const std::vector<Point>&p,uint32_t iterations) {
     double checksum=0;
     for(auto c:p) {
-        double x=0,y=0;
+        double x=0,y=0,xx=0,yy=0;
         for(uint32_t i=0;i<iterations;++i) {
             const double xy=x*y;
-            const double nx=(x*x-y*y)+c.re;
+            const double nx=(xx-yy)+c.re;
             y=2*xy+c.im;x=nx;
+            xx=x*x;yy=y*y;
+            if(xx+yy>4.0) std::abort();
         }
         checksum+=x+y;
     }
@@ -208,30 +211,75 @@ double benchDoubleScalar(const std::vector<Point>&p,uint32_t iterations) {
 double benchDDScalar(const std::vector<Point>&p,uint32_t iterations) {
     double checksum=0;
     for(auto c:p) {
-        DD x{},y{},cr{c.re,0},ci{c.im,0};
+        DD x{},y{},xx{},yy{},cr{c.re,0},ci{c.im,0};
         for(uint32_t i=0;i<iterations;++i) {
-            const DD nx=ddadd(ddmul(ddadd(x,y),ddsub(x,y)),cr);
-            y=ddadd(ddmul2(ddmul(x,y)),ci);x=nx;
+            const DD xy=ddmul(x,y);
+            const DD nx=ddadd(ddsub(xx,yy),cr);
+            y=ddadd(ddmul2(xy),ci);x=nx;
+            xx=ddmul(x,x);yy=ddmul(y,y);
+            if(ddGreater4(ddadd(xx,yy))) std::abort();
         }
         checksum+=x.hi+y.hi;
     }
     return checksum;
 }
 
+template<size_t N> inline bool fixedGreater(const Fixed<N>&a,const Fixed<N>&b) {
+    for(size_t i=N;i-->0;) {
+        if(a.limb[i]!=b.limb[i]) return a.limb[i]>b.limb[i];
+    }
+    return false;
+}
+template<size_t N,bool Mpn> inline Fixed<N> fixedMul(const Fixed<N>&a,const Fixed<N>&b) {
+    if constexpr(Mpn) return mulMpn(a,b); else return mulInline(a,b);
+}
 template<size_t N,bool Mpn>
 double benchFixed(const std::vector<Point>&p,uint32_t iterations) {
     double checksum=0;
+    const Fixed<N> four=Fixed<N>::fromDouble(4.0);
     for(auto c:p) {
-        Fixed<N> x{},y{},cr=Fixed<N>::fromDouble(c.re),ci=Fixed<N>::fromDouble(c.im);
+        Fixed<N> x{},y{},xx{},yy{},cr=Fixed<N>::fromDouble(c.re),ci=Fixed<N>::fromDouble(c.im);
         for(uint32_t i=0;i<iterations;++i) {
-            const auto product=[](const Fixed<N>&a,const Fixed<N>&b) {
-                if constexpr(Mpn) return mulMpn(a,b); else return mulInline(a,b);
-            };
-            const Fixed<N> nx=product(x+y,x-y)+cr;
-            const Fixed<N> xy=product(x,y);
+            const Fixed<N> xy=fixedMul<N,Mpn>(x,y);
+            const Fixed<N> nx=xx-yy+cr;
             y=xy+xy+ci;x=nx;
+            xx=fixedMul<N,Mpn>(x,x);yy=fixedMul<N,Mpn>(y,y);
+            if(fixedGreater(xx+yy,four)) std::abort();
         }
         checksum+=x.toDouble()+y.toDouble();
+    }
+    return checksum;
+}
+template<size_t N,bool Mpn>
+double benchFixed4(const std::vector<Point>&p,uint32_t iterations) {
+    double checksum=0;size_t k=0;
+    const Fixed<N> four=Fixed<N>::fromDouble(4.0);
+    for(;k+4<=p.size();k+=4) {
+        std::array<Fixed<N>,4> x{},y{},xx{},yy{},cr{},ci{};
+        for(size_t lane=0;lane<4;++lane) {
+            cr[lane]=Fixed<N>::fromDouble(p[k+lane].re);
+            ci[lane]=Fixed<N>::fromDouble(p[k+lane].im);
+        }
+        for(uint32_t i=0;i<iterations;++i) {
+            std::array<Fixed<N>,4> xy,nx;
+            for(size_t lane=0;lane<4;++lane) {
+                xy[lane]=fixedMul<N,Mpn>(x[lane],y[lane]);
+                nx[lane]=xx[lane]-yy[lane]+cr[lane];
+            }
+            for(size_t lane=0;lane<4;++lane) {
+                y[lane]=xy[lane]+xy[lane]+ci[lane];x[lane]=nx[lane];
+            }
+            for(size_t lane=0;lane<4;++lane) {
+                xx[lane]=fixedMul<N,Mpn>(x[lane],x[lane]);
+                yy[lane]=fixedMul<N,Mpn>(y[lane],y[lane]);
+                if(fixedGreater(xx[lane]+yy[lane],four)) std::abort();
+            }
+        }
+        for(size_t lane=0;lane<4;++lane) checksum+=x[lane].toDouble()+y[lane].toDouble();
+    }
+    if(k<p.size()) {
+        std::vector<Point> tail(p.begin()+static_cast<std::ptrdiff_t>(k),p.end());
+        checksum+=benchFixed<N,Mpn>(tail,iterations);
     }
     return checksum;
 }
@@ -248,18 +296,22 @@ double benchMpf(const std::vector<Point>&p,uint32_t iterations,mp_bitcnt_t bits,
     double checksum=0;
     for(auto c:p) {
         mpf_set_ui(x.v,0);mpf_set_ui(y.v,0);mpf_set_d(cr.v,c.re);mpf_set_d(ci.v,c.im);
+        mpf_set_ui(a.v,0);mpf_set_ui(b.v,0);
         for(uint32_t i=0;i<iterations;++i) {
             if(twoMul) {
                 mpf_add(a.v,x.v,y.v);mpf_sub(b.v,x.v,y.v);
                 mpf_mul(t.v,a.v,b.v);mpf_add(t.v,t.v,cr.v);
                 mpf_mul(a.v,x.v,y.v);mpf_mul_2exp(a.v,a.v,1);mpf_add(y.v,a.v,ci.v);
                 mpf_set(x.v,t.v);
-            } else {
                 mpf_mul(a.v,x.v,x.v);mpf_mul(b.v,y.v,y.v);
-                mpf_sub(t.v,a.v,b.v);mpf_add(t.v,t.v,cr.v);
-                mpf_mul(a.v,x.v,y.v);mpf_mul_2exp(a.v,a.v,1);mpf_add(y.v,a.v,ci.v);
-                mpf_set(x.v,t.v);
+            } else {
+                mpf_mul(t.v,x.v,y.v);
+                mpf_sub(x.v,a.v,b.v);mpf_add(x.v,x.v,cr.v);
+                mpf_mul_2exp(t.v,t.v,1);mpf_add(y.v,t.v,ci.v);
+                mpf_mul(a.v,x.v,x.v);mpf_mul(b.v,y.v,y.v);
             }
+            mpf_add(t.v,a.v,b.v);
+            if(mpf_cmp_ui(t.v,4)>0) std::abort();
         }
         checksum+=mpf_get_d(x.v)+mpf_get_d(y.v);
     }
@@ -275,11 +327,16 @@ double benchDoubleAVX2(const std::vector<Point>&p,uint32_t iterations) {
     for(;k+4<=p.size();k+=4) {
         for(size_t j=0;j<4;++j){crv[j]=p[k+j].re;civ[j]=p[k+j].im;}
         __m256d x=_mm256_setzero_pd(),y=_mm256_setzero_pd();
+        __m256d xx=_mm256_setzero_pd(),yy=_mm256_setzero_pd();
         const __m256d cr=_mm256_load_pd(crv),ci=_mm256_load_pd(civ);
+        const __m256d four=_mm256_set1_pd(4.0);
         for(uint32_t i=0;i<iterations;++i) {
             const __m256d xy=_mm256_mul_pd(x,y);
-            const __m256d nx=_mm256_add_pd(_mm256_sub_pd(_mm256_mul_pd(x,x),_mm256_mul_pd(y,y)),cr);
+            const __m256d nx=_mm256_add_pd(_mm256_sub_pd(xx,yy),cr);
             y=_mm256_add_pd(_mm256_mul_pd(two,xy),ci);x=nx;
+            xx=_mm256_mul_pd(x,x);yy=_mm256_mul_pd(y,y);
+            if(_mm256_movemask_pd(_mm256_cmp_pd(_mm256_add_pd(xx,yy),four,_CMP_GT_OQ)))
+                std::abort();
         }
         _mm256_store_pd(xo,x);_mm256_store_pd(yo,y);
         for(size_t j=0;j<4;++j)checksum+=xo[j]+yo[j];
@@ -316,11 +373,19 @@ double benchDDAVX2(const std::vector<Point>&p,uint32_t iterations) {
     const __m256d zero=_mm256_setzero_pd();
     for(;k+4<=p.size();k+=4) {
         for(size_t j=0;j<4;++j){crv[j]=p[k+j].re;civ[j]=p[k+j].im;}
-        DD256 x{zero,zero},y{zero,zero},cr{_mm256_load_pd(crv),zero},ci{_mm256_load_pd(civ),zero};
+        DD256 x{zero,zero},y{zero,zero},xx{zero,zero},yy{zero,zero};
+        DD256 cr{_mm256_load_pd(crv),zero},ci{_mm256_load_pd(civ),zero};
+        const __m256d four=_mm256_set1_pd(4.0);
         for(uint32_t i=0;i<iterations;++i) {
-            const DD256 nx=ddadd256(ddmul256(ddadd256(x,y),ddsub256(x,y)),cr);
             const DD256 xy=ddmul256(x,y);
+            const DD256 nx=ddadd256(ddsub256(xx,yy),cr);
             y=ddadd256(ddadd256(xy,xy),ci);x=nx;
+            xx=ddmul256(x,x);yy=ddmul256(y,y);
+            const DD256 mag=ddadd256(xx,yy);
+            const __m256d gt=_mm256_cmp_pd(mag.hi,four,_CMP_GT_OQ);
+            const __m256d eq=_mm256_cmp_pd(mag.hi,four,_CMP_EQ_OQ);
+            const __m256d lo=_mm256_cmp_pd(mag.lo,zero,_CMP_GT_OQ);
+            if(_mm256_movemask_pd(_mm256_or_pd(gt,_mm256_and_pd(eq,lo)))) std::abort();
         }
         _mm256_store_pd(xo,x.hi);_mm256_store_pd(yo,y.hi);
         for(size_t j=0;j<4;++j)checksum+=xo[j]+yo[j];
@@ -355,12 +420,14 @@ double benchDoubleNEON(const std::vector<Point>&p,uint32_t iterations) {
     double checksum=0;size_t k=0;double xo[2],yo[2];
     for(;k+2<=p.size();k+=2) {
         double cv[2]={p[k].re,p[k+1].re},dv[2]={p[k].im,p[k+1].im};
-        auto x=vdupq_n_f64(0),y=vdupq_n_f64(0);
-        const auto cr=vld1q_f64(cv),ci=vld1q_f64(dv),two=vdupq_n_f64(2);
+        auto x=vdupq_n_f64(0),y=vdupq_n_f64(0),xx=vdupq_n_f64(0),yy=vdupq_n_f64(0);
+        const auto cr=vld1q_f64(cv),ci=vld1q_f64(dv),two=vdupq_n_f64(2),four=vdupq_n_f64(4);
         for(uint32_t i=0;i<iterations;++i) {
             const auto xy=vmulq_f64(x,y);
-            const auto nx=vaddq_f64(vsubq_f64(vmulq_f64(x,x),vmulq_f64(y,y)),cr);
+            const auto nx=vaddq_f64(vsubq_f64(xx,yy),cr);
             y=vaddq_f64(vmulq_f64(two,xy),ci);x=nx;
+            xx=vmulq_f64(x,x);yy=vmulq_f64(y,y);
+            if(vmaxvq_u64(vcgtq_f64(vaddq_f64(xx,yy),four))) std::abort();
         }
         vst1q_f64(xo,x);vst1q_f64(yo,y);checksum+=xo[0]+xo[1]+yo[0]+yo[1];
     }
@@ -372,11 +439,19 @@ double benchDDNEON(const std::vector<Point>&p,uint32_t iterations) {
     const auto zero=vdupq_n_f64(0);
     for(;k+2<=p.size();k+=2) {
         double cv[2]={p[k].re,p[k+1].re},dv[2]={p[k].im,p[k+1].im};
-        DD128 x{zero,zero},y{zero,zero},cr{vld1q_f64(cv),zero},ci{vld1q_f64(dv),zero};
+        DD128 x{zero,zero},y{zero,zero},xx{zero,zero},yy{zero,zero};
+        DD128 cr{vld1q_f64(cv),zero},ci{vld1q_f64(dv),zero};
+        const auto four=vdupq_n_f64(4);
         for(uint32_t i=0;i<iterations;++i) {
-            const auto nx=ddadd128(ddmul128(ddadd128(x,y),ddsub128(x,y)),cr);
             const auto xy=ddmul128(x,y);
+            const auto nx=ddadd128(ddsub128(xx,yy),cr);
             y=ddadd128(ddadd128(xy,xy),ci);x=nx;
+            xx=ddmul128(x,x);yy=ddmul128(y,y);
+            const auto mag=ddadd128(xx,yy);
+            const auto gt=vcgtq_f64(mag.hi,four);
+            const auto eq=vceqq_f64(mag.hi,four);
+            const auto lo=vcgtq_f64(mag.lo,zero);
+            if(vmaxvq_u64(vorrq_u64(gt,vandq_u64(eq,lo)))) std::abort();
         }
         vst1q_f64(xo,x.hi);vst1q_f64(yo,y.hi);checksum+=xo[0]+xo[1]+yo[0]+yo[1];
     }
@@ -426,14 +501,17 @@ int main(int argc,char**argv) {
 #endif
     timed("dd-scalar-fma",106,1,count,iterations,[&]{return benchDDScalar(p,iterations);});
     timed("fixed128-inline",124,1,count,iterations,[&]{return benchFixed<2,false>(p,iterations);});
+    timed("fixed128-inline-x4",124,4,count,iterations,[&]{return benchFixed4<2,false>(p,iterations);});
     timed("fixed128-mpn",124,1,count,iterations,[&]{return benchFixed<2,true>(p,iterations);});
     timed("gmp-mpf128-current",128,1,count,iterations,[&]{return benchMpf(p,iterations,128,false);});
     timed("gmp-mpf128-2mul",128,1,count,iterations,[&]{return benchMpf(p,iterations,128,true);});
     timed("fixed192-inline",188,1,count,iterations,[&]{return benchFixed<3,false>(p,iterations);});
+    timed("fixed192-inline-x4",188,4,count,iterations,[&]{return benchFixed4<3,false>(p,iterations);});
     timed("fixed192-mpn",188,1,count,iterations,[&]{return benchFixed<3,true>(p,iterations);});
     timed("gmp-mpf192-current",192,1,count,iterations,[&]{return benchMpf(p,iterations,192,false);});
     timed("gmp-mpf192-2mul",192,1,count,iterations,[&]{return benchMpf(p,iterations,192,true);});
     timed("fixed256-inline",252,1,count,iterations,[&]{return benchFixed<4,false>(p,iterations);});
+    timed("fixed256-inline-x4",252,4,count,iterations,[&]{return benchFixed4<4,false>(p,iterations);});
     timed("fixed256-mpn",252,1,count,iterations,[&]{return benchFixed<4,true>(p,iterations);});
     timed("gmp-mpf256-current",256,1,count,iterations,[&]{return benchMpf(p,iterations,256,false);});
     timed("gmp-mpf256-2mul",256,1,count,iterations,[&]{return benchMpf(p,iterations,256,true);});
