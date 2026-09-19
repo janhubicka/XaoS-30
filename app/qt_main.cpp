@@ -85,12 +85,13 @@ class Canvas final:public QWidget {
     std::condition_variable_any wake_;
     std::optional<Job> pending_;
     std::shared_ptr<Cancellation> active_;
-    std::jthread coordinator_;
+    std::atomic<bool> shutdown_{false};
+    std::thread coordinator_;
     std::mutex presentationMutex_;
     std::condition_variable_any presentationWake_;
     std::optional<PresentationJob> presentationPending_;
     std::shared_ptr<Cancellation> presentationActive_;
-    std::jthread presenter_;
+    std::thread presenter_;
     uint64_t serial_=0,shown_=0,epoch_=1;
     QImage image_,fallback_;
     View imageView_,fallbackView_;
@@ -187,16 +188,18 @@ class Canvas final:public QWidget {
     }
 
     /// Reconstructs display frames independently from the compute coordinator.
-    void presentationLoop(std::stop_token shutdown) {
+    void presentationLoop() {
         ThreadExecutor executor(presentationWorkerCount());
         std::shared_ptr<const DisplayFrame> previous;
-        while(!shutdown.stop_requested()) {
+        while(!shutdown_.load(std::memory_order_relaxed)) {
             PresentationJob job;
             std::shared_ptr<Cancellation> token;
             {
                 std::unique_lock lock(presentationMutex_);
-                if(!presentationWake_.wait(lock,shutdown,[&]{return presentationPending_.has_value();}))
-                    return;
+                presentationWake_.wait(lock,[&]{
+                    return shutdown_.load(std::memory_order_relaxed) || presentationPending_.has_value();
+                });
+                if(shutdown_.load(std::memory_order_relaxed)) return;
                 job=std::move(*presentationPending_);
                 presentationPending_.reset();
                 token=std::make_shared<Cancellation>();
@@ -265,7 +268,7 @@ class Canvas final:public QWidget {
     }
 
     /// Runs the compute loop, coalescing requests and immediately scheduling further refinement.
-    void coordinator(std::stop_token shutdown) {
+    void coordinator() {
         struct DynamicBudget {
             std::array<double,50> calculation{};
             size_t pos=0,count=0;
@@ -294,12 +297,15 @@ class Canvas final:public QWidget {
         } budget;
         Renderer renderer;
         std::unique_ptr<QtExecutor> executor;
-        while(!shutdown.stop_requested()) {
+        while(!shutdown_.load(std::memory_order_relaxed)) {
             Job job;
             std::shared_ptr<Cancellation> token;
             {
                 std::unique_lock lock(mutex_);
-                if(!wake_.wait(lock,shutdown,[&]{return pending_.has_value();})) return;
+                wake_.wait(lock,[&]{
+                    return shutdown_.load(std::memory_order_relaxed) || pending_.has_value();
+                });
+                if(shutdown_.load(std::memory_order_relaxed)) return;
                 job=std::move(*pending_); pending_.reset();
                 token=std::make_shared<Cancellation>();
                 job.request.settings.sliceMilliseconds=budget.next(job.interactive);
@@ -315,7 +321,8 @@ class Canvas final:public QWidget {
                 if(active_==token) active_.reset();
                 // Compute refinement continues immediately; it no longer waits for
                 // interpolation, framebuffer copies, or Qt image publication.
-                if(!frame->stats.complete && !pending_ && !shutdown.stop_requested())
+                if(!frame->stats.complete && !pending_ &&
+                   !shutdown_.load(std::memory_order_relaxed))
                     pending_=job;
                 if(pending_) wake_.notify_one();
             } catch(const std::exception&e) {
@@ -569,14 +576,13 @@ public:
         });
         connect(&idle_,&QTimer::timeout,this,[this]{submit(false);});
         connect(&autopilotTimer_,&QTimer::timeout,this,[this]{autopilotTick();});
-        presenter_=std::jthread([this](std::stop_token s){presentationLoop(s);});
-        coordinator_=std::jthread([this](std::stop_token s){coordinator(s);});
+        presenter_=std::thread([this]{presentationLoop();});
+        coordinator_=std::thread([this]{coordinator();});
     }
     /// Releases resources owned by the Canvas instance.
     ~Canvas() override {
         motion_.stop();idle_.stop();autopilotTimer_.stop();
-        coordinator_.request_stop();
-        presenter_.request_stop();
+        shutdown_.store(true,std::memory_order_relaxed);
         {
             std::lock_guard lock(mutex_);
             pending_.reset();
