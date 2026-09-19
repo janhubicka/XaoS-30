@@ -709,11 +709,9 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         });
     };
 
-    // Classic XaoS observes the frame deadline between complete line operations.
-    // Once a row/column starts, do not let the time slice cut it in half. New user
-    // input may still cancel through the parent token; an incomplete cancelled line
-    // is never promoted to rowReady/colReady.
-    Cancellation lineStop; lineStop.parent=&stop;
+    // Classic XaoS observes interruption only between complete line operations.
+    // A started line is atomic even if the UI requests the next frame meanwhile.
+    Cancellation lineStop;
 
     std::vector<uint8_t> rowReady(static_cast<size_t>(r.height),1),colReady(static_cast<size_t>(r.width),1);
     bool hasNewLines=false;
@@ -767,8 +765,13 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         const auto rowOrder=interlacedOrder(r.height,range);
         std::vector<size_t> row;
         row.reserve(static_cast<size_t>(r.width));
+        int completedRows=0;
+        const int minimumRows=std::min(3,r.height);
         for(int y:rowOrder) {
-            if(workStop.requested()) break;
+            // processqueue() in classic XaoS does not make the calculation
+            // interruptible until enough support exists to produce a reduced-
+            // resolution image. Preserve that invariant for fresh/raster work too.
+            if(workStop.requested() && completedRows>=minimumRows) break;
             row.clear();
             for(int x=0;x<r.width;++x) {
                 const size_t index=f->index(x,y);
@@ -784,8 +787,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) {
                     ready=false;break;
                 }
-            if(ready) rowReady[static_cast<size_t>(y)]=1;
-            if(stop.requested()) break;
+            if(ready) {
+                if(!rowReady[static_cast<size_t>(y)]) ++completedRows;
+                rowReady[static_cast<size_t>(y)]=1;
+            }
         }
         // Columns become usable only when every currently reusable/calculated row
         // has a sample at that coordinate.
@@ -820,8 +825,17 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
             return a.serial<b.serial;
         });
         std::vector<size_t> calculate;
+        int readyRows=static_cast<int>(std::count(rowReady.begin(),rowReady.end(),uint8_t{1}));
+        int readyCols=static_cast<int>(std::count(colReady.begin(),colReady.end(),uint8_t{1}));
+        const int minimumRows=std::min(3,r.height);
+        const int minimumCols=std::min(3,r.width);
         for(const auto&t:tasks) {
-            if(workStop.requested()) break;
+            // Original processqueue() ignores cfilter.interrupt until there are at
+            // least three non-dirty rows and columns. Without this bootstrap a
+            // deadline can leave no source for fill/reconstruction, producing a
+            // black frame or black zoom-out border.
+            if(workStop.requested() && readyRows>=minimumRows && readyCols>=minimumCols)
+                break;
             calculate.clear();
             bool visuallyComplete=true;
             if(t.row) {
@@ -854,7 +868,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 }
                 calculateList(calculate,lineStop);
                 for(int x:positions) if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) { visuallyComplete=false;break; }
-                if(visuallyComplete) rowReady[static_cast<size_t>(y)]=1;
+                if(visuallyComplete && !rowReady[static_cast<size_t>(y)]) {
+                    rowReady[static_cast<size_t>(y)]=1;
+                    ++readyRows;
+                }
             } else {
                 const int x=t.index;
                 std::vector<int> positions;positions.reserve(static_cast<size_t>(r.height));
@@ -881,9 +898,13 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 }
                 calculateList(calculate,lineStop);
                 for(int y:positions) if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) { visuallyComplete=false;break; }
-                if(visuallyComplete) colReady[static_cast<size_t>(x)]=1;
+                if(visuallyComplete && !colReady[static_cast<size_t>(x)]) {
+                    colReady[static_cast<size_t>(x)]=1;
+                    ++readyCols;
+                }
             }
-            if(!visuallyComplete && workStop.requested()) break;
+            if(!visuallyComplete && workStop.requested() &&
+               readyRows>=minimumRows && readyCols>=minimumCols) break;
         }
         // Guesses are preview-only. If input stops, the next same-view slice
         // enters rasterRefine() and turns them into exact resumable orbit state.
