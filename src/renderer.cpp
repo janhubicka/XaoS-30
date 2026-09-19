@@ -759,8 +759,14 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         std::vector<uint8_t> xDirty(colReady.size()),yDirty(rowReady.size());
         for(size_t i=0;i<colReady.size();++i) xDirty[i]=static_cast<uint8_t>(!colReady[i]);
         for(size_t i=0;i<rowReady.size();++i) yDirty[i]=static_cast<uint8_t>(!rowReady[i]);
-        const auto px=linePriorities(f->xs,oldPreviewX,xDirty,step);
-        const auto py=linePriorities(f->ys,oldPreviewY,yDirty,step);
+        const Big xExtent=scale(step,static_cast<double>(r.width));
+        const Big yExtent=scale(step,static_cast<double>(r.height));
+        const Big xBegin=sub(r.view.re,scale(xExtent,.5));
+        const Big xEnd=add(r.view.re,scale(xExtent,.5));
+        const Big yBegin=sub(r.view.im,scale(yExtent,.5));
+        const Big yEnd=add(r.view.im,scale(yExtent,.5));
+        const auto px=linePriorities(f->xs,oldPreviewX,xDirty,step,xBegin,xEnd);
+        const auto py=linePriorities(f->ys,oldPreviewY,yDirty,step,yBegin,yEnd);
         std::vector<LineTask> tasks;
         tasks.reserve(static_cast<size_t>(r.width+r.height));
         size_t serial=0;
