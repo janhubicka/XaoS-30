@@ -823,7 +823,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
             int src=-1;
             if(left<0) src=right<r.width?right:-1;
             else if(right>=r.width) src=left;
-            else src=pixelDistance(f->xs[static_cast<size_t>(x)],f->xs[static_cast<size_t>(left)],step) <
+            else src=pixelDistance(f->xs[static_cast<size_t>(x)],f->xs[static_cast<size_t>(left)],step) <=
                      pixelDistance(f->xs[static_cast<size_t>(right)],f->xs[static_cast<size_t>(x)],step)?left:right;
             if(src>=0) {
                 for(int y=0;y<r.height;++y) copyFill(f->index(x,y),f->index(src,y));
@@ -840,7 +840,19 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
             else src=pixelDistance(f->ys[static_cast<size_t>(y)],f->ys[static_cast<size_t>(down)],step) <
                      pixelDistance(f->ys[static_cast<size_t>(up)],f->ys[static_cast<size_t>(y)],step)?down:up;
             if(src>=0) {
-                for(int x=0;x<r.width;++x) copyFill(f->index(x,y),f->index(x,src));
+                // Classic filly() copies the entire completed source row after
+                // horizontal fill has run on it. Do not preserve earlier column
+                // fills in a dirty row: that produces a checkerboard mixture that
+                // never existed in XaoS and makes nearest reconstruction disagree.
+                for(int x=0;x<r.width;++x) {
+                    const size_t d=f->index(x,y),source=f->index(x,src);
+                    if(f->sampleQuality[source]==static_cast<uint8_t>(DisplayQuality::Missing))
+                        continue;
+                    if(f->sampleQuality[d]!=static_cast<uint8_t>(DisplayQuality::Fill))
+                        ++f->stats.filled;
+                    f->samplePixels[d]=f->samplePixels[source];
+                    f->sampleQuality[d]=static_cast<uint8_t>(DisplayQuality::Fill);
+                }
                 f->previewYs[static_cast<size_t>(y)]=f->previewYs[static_cast<size_t>(src)];
             }
         }
