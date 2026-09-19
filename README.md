@@ -63,10 +63,17 @@ DP slices.
 
 The computation state is a Cartesian grid of completed rows and columns whose
 complex coordinates are generally nonuniform. Display reconstruction is a
-separate step. **Nearest (XaoS)** reproduces the classic separable rule: for each
-missing column choose the nearest completed column in coordinate space, then do
-the same for rows. The original asymmetric tie rule is preserved: columns tie
-to the left source, rows to the higher-index row.
+separate asynchronous stage. Timeout resolution reduction stores only nearest
+row/column source maps, so the compute thread does not copy an entire framebuffer.
+The Qt frontend reconstructs the newest immutable grid on a separate presenter
+thread while the compute pool immediately continues with the next refinement
+slice. Stale presentation jobs are dropped without cancelling useful same-view
+progress.
+
+**Nearest (XaoS)** follows the stored separable source maps: for each missing
+column use the classic run-selected completed column, then do the same for rows.
+The original asymmetric tie rule is preserved: columns tie to the left source,
+rows to the higher-index row.
 **Bilinear** interpolates between the bracketing completed rows/columns at the
 actual nonuniform coordinates. **Bicubic** uses separable nonuniform cubic
 Hermite interpolation, falling back to bilinear and then nearest at sparse
@@ -78,8 +85,10 @@ larger time budget; it does not throw the reusable rows/columns away in order to
 restart on an ideal uniform grid. Guessed or timeout-filled colours remain
 presentation/sample information only and **never become resumable orbit state**,
 so increasing the iteration limit still resumes/recomputes the mathematically
-valid samples. The status bar reports the reconstruction mode, guesses, fills,
-completion and uniformity.
+valid samples. The status bar reports separate compute and presentation times,
+the reconstruction mode, guesses, fills, completion and uniformity. By default
+the GUI reserves a small presentation pool (one worker, or two on larger
+machines) and uses the remaining CPUs for multithreaded fractal computation.
 
 ## Headless examples
 

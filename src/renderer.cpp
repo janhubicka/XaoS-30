@@ -24,7 +24,7 @@ size_t plusChecked(size_t a,size_t b) {
 }
 /// Estimates memory consumed by one frame and optional saved orbit state.
 size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state) {
-    size_t each=sizeof(Count)+2*sizeof(uint32_t)+sizeof(uint8_t);
+    size_t each=sizeof(Count)+sizeof(uint32_t)+sizeof(uint8_t);
     if(state) {
         if(big) each=plusChecked(each,plusChecked(sizeof(std::shared_ptr<const Orbit<Big>>)+sizeof(Orbit<Big>)+32,
                                   multiplyChecked(2,static_cast<size_t>(bits/8)+3*sizeof(mp_limb_t))));
@@ -117,11 +117,15 @@ std::vector<int> exactSources(const std::vector<Big>& target,const std::vector<B
     }
     return source;
 }
-/// Checks whether an old frame can safely serve as a visual fallback.
-bool displayCompatible(const FrameBase&old,const Request&r) {
-    const auto&s=old.request.settings;
+/// Checks whether two requests may share a visual fallback.
+bool displayCompatible(const Request&old,const Request&r) {
+    const auto&s=old.settings;
     return s.formula==r.settings.formula &&
         (s.formula!=Formula::Julia || (s.juliaRe==r.settings.juliaRe && s.juliaIm==r.settings.juliaIm));
+}
+/// Checks whether an old frame can safely serve as a visual fallback.
+bool displayCompatible(const FrameBase&old,const Request&r) {
+    return displayCompatible(old.request,r);
 }
 /// Checks whether an old frame is compatible with exact mathematical state reuse.
 bool compatible(const FrameBase& old,const Request&r,mp_bitcnt_t bits) {
@@ -452,77 +456,6 @@ std::vector<int> reprojectAxis(const Big&newCenter,const Big&newStep,int newSize
     return source;
 }
 
-/// Seeds the output raster from the previous visible frame with edge clamping.
-void seedPreviousDisplay(FrameBase&frame,const FrameBase*old,const Big&step) {
-    frame.displayPixels.assign(frame.samplePixels.size(),0u);
-    if(!old || old->displayPixels.empty() || old->request.width<1 || old->request.height<1)
-        return;
-    const Big oldStep=divide(old->request.view.span.atPrecision(
-        std::max(frame.stats.bits,old->request.view.span.precision())),
-        static_cast<unsigned long>(old->request.width));
-    const auto sx=reprojectAxis(frame.request.view.re,step,frame.request.width,
-                                old->request.view.re,oldStep,old->request.width);
-    const auto sy=reprojectAxis(frame.request.view.im,step,frame.request.height,
-                                old->request.view.im,oldStep,old->request.height);
-    for(int y=0;y<frame.request.height;++y) for(int x=0;x<frame.request.width;++x)
-        frame.displayPixels[frame.index(x,y)]=
-            old->displayAt(sx[static_cast<size_t>(x)],sy[static_cast<size_t>(y)]);
-}
-
-/// Reconstructs the visible raster from the current adaptive row/column grid.
-void postprocess(FrameBase&frame,const Big&step,const std::vector<uint8_t>&rowReady,
-                 const std::vector<uint8_t>&colReady,const FrameBase*old) {
-    const AxisSupport xaxis=buildAxisSupport(frame.xs,colReady,step);
-    const AxisSupport yaxis=buildAxisSupport(frame.ys,rowReady,step);
-    seedPreviousDisplay(frame,old,step);
-    if(xaxis.index.empty() || yaxis.index.empty()) return;
-
-    const auto nearestX=classicColumnSources(frame.xs,colReady,step);
-    const auto nearestY=classicRowSources(frame.ys,rowReady,step);
-    std::vector<LinearPoint> linearX(static_cast<size_t>(frame.request.width));
-    std::vector<LinearPoint> linearY(static_cast<size_t>(frame.request.height));
-    std::vector<CubicPoint> cubicX(static_cast<size_t>(frame.request.width));
-    std::vector<CubicPoint> cubicY(static_cast<size_t>(frame.request.height));
-    for(int x=0;x<frame.request.width;++x) {
-        const double target=xaxis.target[static_cast<size_t>(x)];
-        linearX[static_cast<size_t>(x)]=linearPoint(xaxis,target);
-        cubicX[static_cast<size_t>(x)]=cubicPoint(xaxis,target);
-    }
-    for(int y=0;y<frame.request.height;++y) {
-        const double target=yaxis.target[static_cast<size_t>(y)];
-        linearY[static_cast<size_t>(y)]=linearPoint(yaxis,target);
-        cubicY[static_cast<size_t>(y)]=cubicPoint(yaxis,target);
-    }
-
-    for(int y=0;y<frame.request.height;++y) for(int x=0;x<frame.request.width;++x) {
-        uint32_t color=0;
-        bool ok=false;
-        switch(frame.request.settings.reconstruction) {
-        case Reconstruction::Nearest:
-            ok=gridColor(frame,nearestX[static_cast<size_t>(x)],
-                         nearestY[static_cast<size_t>(y)],color);
-            break;
-        case Reconstruction::Bilinear:
-            ok=bilinearColor(frame,linearX[static_cast<size_t>(x)],
-                             linearY[static_cast<size_t>(y)],color);
-            if(!ok)
-                ok=gridColor(frame,nearestX[static_cast<size_t>(x)],
-                             nearestY[static_cast<size_t>(y)],color);
-            break;
-        case Reconstruction::Bicubic:
-            ok=bicubicColor(frame,cubicX[static_cast<size_t>(x)],
-                            cubicY[static_cast<size_t>(y)],color);
-            if(!ok)
-                ok=bilinearColor(frame,linearX[static_cast<size_t>(x)],
-                                 linearY[static_cast<size_t>(y)],color);
-            if(!ok)
-                ok=gridColor(frame,nearestX[static_cast<size_t>(x)],
-                             nearestY[static_cast<size_t>(y)],color);
-            break;
-        }
-        if(ok) frame.displayPixels[frame.index(x,y)]=color;
-    }
-}
 
 template<class Real,bool Save,class F>
 /// Builds one frame, reusing orbit state and XaoS row/column geometry when safe.
@@ -531,8 +464,6 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                          const std::shared_ptr<const FrameBase>&gridPrevious,
                                          mp_bitcnt_t bits) {
     const auto begin=std::chrono::steady_clock::now();
-    const FrameBase*displayOld=statePrevious.get();
-    if(displayOld && !displayCompatible(*displayOld,r)) displayOld=nullptr;
     const auto*stateOld=dynamic_cast<const Frame<Real,Save>*>(statePrevious.get());
     const FrameBase*gridOld=gridPrevious.get();
     if(stateOld && !compatible(*stateOld,r,bits)) stateOld=nullptr;
@@ -550,7 +481,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     addPreviousBytes(statePrevious);
     if(gridPrevious && gridPrevious!=statePrevious) addPreviousBytes(gridPrevious);
     const size_t axisEntries=multiplyChecked(2,plusChecked(static_cast<size_t>(r.width),static_cast<size_t>(r.height)));
-    bytes=plusChecked(bytes,multiplyChecked(axisEntries,sizeof(Big)+static_cast<size_t>(bits/8)+40));
+    bytes=plusChecked(bytes,multiplyChecked(axisEntries,sizeof(Big)+sizeof(int)+static_cast<size_t>(bits/8)+40));
     bytes=plusChecked(bytes,multiplyChecked(executor.concurrency(),multiplyChecked(12,static_cast<size_t>(bits/8)+64)));
     if(r.settings.memoryBudget && bytes>r.settings.memoryBudget)
         throw std::length_error("estimated renderer memory exceeds budget; use count-only mode, fewer pixels, or a larger budget");
@@ -590,7 +521,6 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->counts.resize(pixels); f->state.resize(pixels);
     f->samplePixels.assign(pixels,0xff000000u);
     f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
-    f->displayPixels.assign(pixels,0u);
 
     std::vector<double> dx,dy;
     if constexpr(!big) {
@@ -621,17 +551,25 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     // not also our true sample coordinate, downgrade it to Fill.
                     if(gridOld && r.settings.sliceMilliseconds && psx>=0 && psy>=0 &&
                        gridOld->request.settings.iterations==r.settings.iterations) {
-                        const size_t ps=static_cast<size_t>(psy)*static_cast<size_t>(gridOld->stride)+static_cast<size_t>(psx);
+                        // Timeout fill is stored as row/column source maps rather
+                        // than materialized pixels. Resolve the reused presentation
+                        // coordinate to its real support sample before copying it.
+                        int resolvedX=psx,resolvedY=psy;
+                        if(gridOld->displayXSource.size()==static_cast<size_t>(gridOld->request.width) &&
+                           gridOld->displayXSource[static_cast<size_t>(psx)]>=0)
+                            resolvedX=gridOld->displayXSource[static_cast<size_t>(psx)];
+                        if(gridOld->displayYSource.size()==static_cast<size_t>(gridOld->request.height) &&
+                           gridOld->displayYSource[static_cast<size_t>(psy)]>=0)
+                            resolvedY=gridOld->displayYSource[static_cast<size_t>(psy)];
+                        const size_t ps=static_cast<size_t>(resolvedY)*static_cast<size_t>(gridOld->stride)+
+                                        static_cast<size_t>(resolvedX);
                         if(gridOld->sampleQuality[ps]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
                             f->samplePixels[d]=gridOld->samplePixels[ps];
-                            // The DP source is already at exactly this new presentation
-                            // coordinate. A timeout-filled old pixel becomes an ordinary
-                            // approximate sample once its collapsed coordinate is selected
-                            // by the next DP pass, just as classic XaoS clears dirty state
-                            // on the reused line. Keep it non-resumable, but do not carry
-                            // "needs resolution refinement" forever.
                             const auto oldQuality=static_cast<DisplayQuality>(gridOld->sampleQuality[ps]);
-                            f->sampleQuality[d]=static_cast<uint8_t>(oldQuality==DisplayQuality::Fill?DisplayQuality::Guess:oldQuality);
+                            const bool approximate=resolvedX!=psx || resolvedY!=psy ||
+                                                   oldQuality==DisplayQuality::Fill;
+                            f->sampleQuality[d]=static_cast<uint8_t>(
+                                approximate?DisplayQuality::Guess:oldQuality);
                         }
                     }
                     const FrameBase*countOld=nullptr;
@@ -986,54 +924,62 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
             rasterRefine();
     }
 
-    // XaoS's interruptible renderer never exposes holes: when the time budget is
-    // exhausted, copy nearby already-rendered samples into remaining gaps. These
-    // colours are presentation-only and are replaced by later exact/guessed work.
+    // Resolution reduction is represented only by source maps. This keeps
+    // timeout handling O(width+height): presentation follows these maps later
+    // instead of copying a full framebuffer on the compute thread.
+    f->displayXSource.assign(static_cast<size_t>(r.width),-1);
+    f->displayYSource.assign(static_cast<size_t>(r.height),-1);
+    for(int x=0;x<r.width;++x) if(colReady[static_cast<size_t>(x)])
+        f->displayXSource[static_cast<size_t>(x)]=x;
+    for(int y=0;y<r.height;++y) if(rowReady[static_cast<size_t>(y)])
+        f->displayYSource[static_cast<size_t>(y)]=y;
+
     if(r.settings.sliceMilliseconds && r.settings.dynamicFill) {
-        const auto columnSource=classicColumnSources(f->xs,colReady,step);
-        const auto rowSource=classicRowSources(f->ys,rowReady,step);
-        auto storeFill=[&](size_t d,size_t src) {
-            if(f->sampleQuality[src]==static_cast<uint8_t>(DisplayQuality::Missing)) return;
-            if(f->sampleQuality[d]!=static_cast<uint8_t>(DisplayQuality::Fill))
-                ++f->stats.filled;
-            f->samplePixels[d]=f->samplePixels[src];
-            f->sampleQuality[d]=static_cast<uint8_t>(DisplayQuality::Fill);
-        };
-
-        // mkfilltable() chooses one source for a whole contiguous run of dirty
-        // columns. Fill those columns only on completed rows; filly() later copies
-        // completed rows wholesale into dirty rows.
-        for(int x=0;x<r.width;++x) if(!colReady[static_cast<size_t>(x)]) {
-            const int src=columnSource[static_cast<size_t>(x)];
-            if(src<0) continue;
-            for(int y=0;y<r.height;++y) if(rowReady[static_cast<size_t>(y)])
-                storeFill(f->index(x,y),f->index(src,y));
-            f->previewXs[static_cast<size_t>(x)]=f->previewXs[static_cast<size_t>(src)];
+        f->displayXSource=classicColumnSources(f->xs,colReady,step);
+        f->displayYSource=classicRowSources(f->ys,rowReady,step);
+        if(!f->previewXs.empty()) for(int x=0;x<r.width;++x) {
+            const int src=f->displayXSource[static_cast<size_t>(x)];
+            if(src>=0 && src!=x) f->previewXs[static_cast<size_t>(x)]=f->previewXs[static_cast<size_t>(src)];
         }
-
-        for(int y=0;y<r.height;++y) if(!rowReady[static_cast<size_t>(y)]) {
-            const int src=rowSource[static_cast<size_t>(y)];
-            if(src<0) continue;
-            for(int x=0;x<r.width;++x)
-                storeFill(f->index(x,y),f->index(x,src));
-            f->previewYs[static_cast<size_t>(y)]=f->previewYs[static_cast<size_t>(src)];
+        if(!f->previewYs.empty()) for(int y=0;y<r.height;++y) {
+            const int src=f->displayYSource[static_cast<size_t>(y)];
+            if(src>=0 && src!=y) f->previewYs[static_cast<size_t>(y)]=f->previewYs[static_cast<size_t>(src)];
         }
     }
 
+    const uint64_t mappedX=static_cast<uint64_t>(std::count_if(
+        f->displayXSource.begin(),f->displayXSource.end(),[](int source){return source>=0;}));
+    const uint64_t mappedY=static_cast<uint64_t>(std::count_if(
+        f->displayYSource.begin(),f->displayYSource.end(),[](int source){return source>=0;}));
+    uint64_t identityX=0,identityY=0;
+    for(int x=0;x<r.width;++x)
+        identityX+=f->displayXSource[static_cast<size_t>(x)]==x;
+    for(int y=0;y<r.height;++y)
+        identityY+=f->displayYSource[static_cast<size_t>(y)]==y;
+    f->stats.filled=mappedX*mappedY-identityX*identityY;
     for(auto&s:stats) {
         f->stats.reused+=s.reused; f->stats.started+=s.started; f->stats.resumed+=s.resumed; f->stats.steps+=s.steps;
     }
-    uint64_t visualPending=0;
     for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
         const size_t i=f->index(x,y);
         if(!f->counts[i].known(r.settings.iterations)) ++f->stats.pending;
-        const auto q=static_cast<DisplayQuality>(f->sampleQuality[i]);
-        if(q==DisplayQuality::Missing || q==DisplayQuality::Fill) ++visualPending;
     }
-    // Guessed samples are deliberately considered finished for an interactive
-    // frame, matching the classic zoomer. They remain non-resumable and will be
-    // recalculated if the iteration limit/formula/precision requires it later.
-    f->stats.complete=r.settings.sliceMilliseconds?visualPending==0:f->stats.pending==0;
+    bool reducedResolution=false,unsupportedDisplay=false;
+    for(int x=0;x<r.width;++x) {
+        const int source=f->displayXSource[static_cast<size_t>(x)];
+        reducedResolution|=source>=0 && source!=x;
+        unsupportedDisplay|=source<0;
+    }
+    for(int y=0;y<r.height;++y) {
+        const int source=f->displayYSource[static_cast<size_t>(y)];
+        reducedResolution|=source>=0 && source!=y;
+        unsupportedDisplay|=source<0;
+    }
+    // Guessed samples are finished interactive samples, but a reduced-resolution
+    // source map remains incomplete so idle slices keep refining the grid.
+    f->stats.complete=r.settings.sliceMilliseconds
+        ? !reducedResolution && !unsupportedDisplay
+        : f->stats.pending==0;
     if(!f->previewXs.empty() || !f->previewYs.empty())
         f->stats.uniform=f->stats.uniform && f->previewXs==f->xs && f->previewYs==f->ys;
     f->stats.gridRows=static_cast<uint32_t>(std::count(rowReady.begin(),rowReady.end(),uint8_t{1}));
@@ -1041,7 +987,9 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->stats.reusableGrid=
         f->stats.gridRows>=static_cast<uint32_t>(std::min(3,r.height)) &&
         f->stats.gridColumns>=static_cast<uint32_t>(std::min(3,r.width));
-    postprocess(*f,step,rowReady,colReady,displayOld);
+    // Compute timing deliberately ends before any display reconstruction. The GUI
+    // uses this number to budget future orbit/refinement work independently from
+    // presentation cost.
     f->stats.milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
     return f;
 }
@@ -1091,21 +1039,129 @@ std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,con
     return result;
 }
 
+/// Reconstructs an immutable grid frame into a visible raster using a separate executor.
+std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&executor,
+                                                 const Cancellation&stop,
+                                                 const DisplayFrame*previous) {
+    if(frame.request.width<1 || frame.request.height<1 || !executor.concurrency())
+        throw std::invalid_argument("invalid presentation frame or executor");
+    const auto begin=std::chrono::steady_clock::now();
+    auto out=std::make_shared<DisplayFrame>();
+    out->request=frame.request;
+    const size_t width=static_cast<size_t>(frame.request.width);
+    const size_t height=static_cast<size_t>(frame.request.height);
+    out->pixels.assign(multiplyChecked(width,height),0xff000000u);
+
+    std::vector<uint8_t> colReady(width),rowReady(height);
+    for(int x=0;x<frame.request.width;++x)
+        colReady[static_cast<size_t>(x)]=
+            frame.displayXSource.size()==width &&
+            frame.displayXSource[static_cast<size_t>(x)]==x;
+    for(int y=0;y<frame.request.height;++y)
+        rowReady[static_cast<size_t>(y)]=
+            frame.displayYSource.size()==height &&
+            frame.displayYSource[static_cast<size_t>(y)]==y;
+
+    const Big step=divide(frame.request.view.span.atPrecision(
+        std::max(frame.stats.bits,frame.request.view.span.precision())),
+        static_cast<unsigned long>(frame.request.width));
+    const AxisSupport xaxis=buildAxisSupport(frame.xs,colReady,step);
+    const AxisSupport yaxis=buildAxisSupport(frame.ys,rowReady,step);
+
+    std::vector<int> nearestX(width,-1),nearestY(height,-1);
+    if(frame.displayXSource.size()==width) nearestX=frame.displayXSource;
+    if(frame.displayYSource.size()==height) nearestY=frame.displayYSource;
+
+    std::vector<LinearPoint> linearX,linearY;
+    std::vector<CubicPoint> cubicX,cubicY;
+    if(frame.request.settings.reconstruction!=Reconstruction::Nearest) {
+        linearX.resize(width); linearY.resize(height);
+        for(int x=0;x<frame.request.width;++x)
+            linearX[static_cast<size_t>(x)]=linearPoint(xaxis,xaxis.target.empty()?0.0:xaxis.target[static_cast<size_t>(x)]);
+        for(int y=0;y<frame.request.height;++y)
+            linearY[static_cast<size_t>(y)]=linearPoint(yaxis,yaxis.target.empty()?0.0:yaxis.target[static_cast<size_t>(y)]);
+    }
+    if(frame.request.settings.reconstruction==Reconstruction::Bicubic) {
+        cubicX.resize(width); cubicY.resize(height);
+        for(int x=0;x<frame.request.width;++x)
+            cubicX[static_cast<size_t>(x)]=cubicPoint(xaxis,xaxis.target.empty()?0.0:xaxis.target[static_cast<size_t>(x)]);
+        for(int y=0;y<frame.request.height;++y)
+            cubicY[static_cast<size_t>(y)]=cubicPoint(yaxis,yaxis.target.empty()?0.0:yaxis.target[static_cast<size_t>(y)]);
+    }
+
+    std::vector<int> fallbackX,fallbackY;
+    if(previous && displayCompatible(previous->request,frame.request) &&
+       previous->request.width>0 && previous->request.height>0 &&
+       previous->pixels.size()==static_cast<size_t>(previous->request.width)*
+                                static_cast<size_t>(previous->request.height)) {
+        const Big oldStep=divide(previous->request.view.span.atPrecision(
+            std::max(frame.stats.bits,previous->request.view.span.precision())),
+            static_cast<unsigned long>(previous->request.width));
+        fallbackX=reprojectAxis(frame.request.view.re,step,frame.request.width,
+                                previous->request.view.re,oldStep,previous->request.width);
+        fallbackY=reprojectAxis(frame.request.view.im,step,frame.request.height,
+                                previous->request.view.im,oldStep,previous->request.height);
+    }
+
+    std::atomic<int> nextRow{0};
+    executor.run([&](size_t) {
+        while(!stop.requested(false)) {
+            const int y=nextRow.fetch_add(1,std::memory_order_relaxed);
+            if(y>=frame.request.height) break;
+            const size_t outputRow=static_cast<size_t>(frame.request.height-1-y)*width;
+            for(int x=0;x<frame.request.width;++x) {
+                uint32_t color=0;
+                bool ok=false;
+                const int nx=nearestX[static_cast<size_t>(x)];
+                const int ny=nearestY[static_cast<size_t>(y)];
+                switch(frame.request.settings.reconstruction) {
+                case Reconstruction::Nearest:
+                    ok=gridColor(frame,nx,ny,color);
+                    break;
+                case Reconstruction::Bilinear:
+                    if(!linearX.empty() && !linearY.empty())
+                        ok=bilinearColor(frame,linearX[static_cast<size_t>(x)],
+                                        linearY[static_cast<size_t>(y)],color);
+                    if(!ok) ok=gridColor(frame,nx,ny,color);
+                    break;
+                case Reconstruction::Bicubic:
+                    if(!cubicX.empty() && !cubicY.empty())
+                        ok=bicubicColor(frame,cubicX[static_cast<size_t>(x)],
+                                       cubicY[static_cast<size_t>(y)],color);
+                    if(!ok && !linearX.empty() && !linearY.empty())
+                        ok=bilinearColor(frame,linearX[static_cast<size_t>(x)],
+                                        linearY[static_cast<size_t>(y)],color);
+                    if(!ok) ok=gridColor(frame,nx,ny,color);
+                    break;
+                }
+                if(!ok && !fallbackX.empty() && !fallbackY.empty())
+                    color=previous->at(fallbackX[static_cast<size_t>(x)],
+                                       fallbackY[static_cast<size_t>(y)]),ok=true;
+                out->pixels[outputRow+static_cast<size_t>(x)]=
+                    ok?color:0xff000000u;
+            }
+        }
+    });
+    out->milliseconds=std::chrono::duration<double,std::milli>(
+        std::chrono::steady_clock::now()-begin).count();
+    return out;
+}
+
 /// Maps a completed iteration count to its visible colour.
 uint32_t pixelColor(Count c,uint32_t limit) noexcept {
     if(c.status!=Status::Escaped || c.iterations>limit) return 0xff000000u;
     return classicIterationColor(c.iterations);
 }
 
-/// Writes the reconstructed frame to a binary PPM image.
-void writePPM(const FrameBase&f,const std::string&path) {
+/// Writes a reconstructed frame to a binary PPM image.
+void writePPM(const DisplayFrame&f,const std::string&path) {
     std::ofstream out(path,std::ios::binary);
     if(!out) throw std::runtime_error("cannot open output: "+path);
     out<<"P6\n"<<f.request.width<<' '<<f.request.height<<"\n255\n";
     std::vector<char> row(static_cast<size_t>(f.request.width)*3);
     for(int y=f.request.height-1;y>=0;--y) {
         for(int x=0;x<f.request.width;++x) {
-            const auto color=f.displayAt(x,y);
+            const auto color=f.at(x,y);
             row[static_cast<size_t>(x)*3]=static_cast<char>((color>>16)&255);
             row[static_cast<size_t>(x)*3+1]=static_cast<char>((color>>8)&255);
             row[static_cast<size_t>(x)*3+2]=static_cast<char>(color&255);
@@ -1113,5 +1169,13 @@ void writePPM(const FrameBase&f,const std::string&path) {
         out.write(row.data(),static_cast<std::streamsize>(row.size()));
     }
     if(!out) throw std::runtime_error("failed writing output: "+path);
+}
+
+/// Reconstructs and writes a grid frame using a temporary presentation executor.
+void writePPM(const FrameBase&f,const std::string&path) {
+    ThreadExecutor executor(std::min<size_t>(4,defaultWorkerCount()));
+    Cancellation stop;
+    auto display=presentFrame(f,executor,stop);
+    writePPM(*display,path);
 }
 }
