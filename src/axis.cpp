@@ -68,11 +68,8 @@ double axisPixelDistance(const Big&a,const Big&b,const Big&step) {
 }
 
 /// Classifies motion using the exact viewport-containment cases from XaoS newpositions().
-AxisMotion classifyAxisMotion(const std::vector<Big>&current,const std::vector<Big>*old,
-                              const Big&step) {
-    if(!old || old->size()!=current.size() || current.empty()) return AxisMotion::Neutral;
-    const Big begin=sub(current.front(),scale(step,.5));
-    const Big end=add(current.back(),scale(step,.5));
+AxisMotion classifyAxisMotion(const Big&begin,const Big&end,const std::vector<Big>*old) {
+    if(!old || old->empty()) return AxisMotion::Neutral;
 
     // This is mkrealloc_table()'s yend logic verbatim in geometric form:
     //   1: the new viewport lies strictly inside the old one (zoom in);
@@ -84,11 +81,12 @@ AxisMotion classifyAxisMotion(const std::vector<Big>&current,const std::vector<B
 
 /// Computes the original XaoS new-line significance prices before global sorting.
 std::vector<double> linePriorities(const std::vector<Big>&current,const std::vector<Big>*old,
-                                   const std::vector<uint8_t>&dirty,const Big&step) {
+                                   const std::vector<uint8_t>&dirty,const Big&step,
+                                   const Big&begin,const Big&end) {
     const int n=static_cast<int>(current.size());
     if(dirty.size()!=current.size()) throw std::invalid_argument("line-priority axis size mismatch");
     std::vector<double> base(static_cast<size_t>(n),1.0),price(static_cast<size_t>(n),1.0);
-    const auto motion=classifyAxisMotion(current,old,step);
+    const auto motion=classifyAxisMotion(begin,end,old);
 
     if(old && old->size()==current.size()) {
         for(int i=0;i<n;++i) if(dirty[static_cast<size_t>(i)]) {
