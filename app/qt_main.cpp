@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "xaos/autopilot.hpp"
+#include "xaos/formulae.hpp"
 #include "xaos/renderer.hpp"
 #include "qt_executor.hpp"
 #include <QApplication>
@@ -89,7 +90,7 @@ class Canvas final:public QWidget {
     Autopilot autopilotEngine_;
     std::shared_ptr<const DisplayFrame> latestDisplay_;
     Statistics latestDisplayStats_;
-    double autopilotStep_=0;
+    double autopilotStep_=0,zoomSpeedScale_=1.0;
     bool autopilotEnabled_=false;
     QPointF pointer_{.5,.5},lastDrag_;
     int direction_=0;
@@ -124,8 +125,8 @@ class Canvas final:public QWidget {
         }
 
         pointer_=mapDisplayFocus(*latestDisplay_,decision.focusX,decision.focusY);
-        constexpr double speedup=.0018; // original STEP
-        constexpr double maximum=.024;  // original MAXSTEP
+        const double speedup=.0018*zoomSpeedScale_; // original STEP times user speed
+        const double maximum=.024*zoomSpeedScale_;  // original MAXSTEP times user speed
         const double mul=seconds/.05;    // original FRAMERATE=20 time multiplier
 
         if(decision.control==AutopilotControl::ZoomIn)
@@ -357,7 +358,7 @@ protected:
         p.fillRect(rect(),Qt::black);
         drawView(p,fallback_,fallbackView_);drawView(p,image_,imageView_);
         p.setPen(Qt::white);
-        p.drawText(12,22,"Hold left/right: zoom   |   Middle drag: pan   |   Wheel: zoom   |   Ctrl++: autopilot");
+        p.drawText(12,22,"Hold left/right: zoom   |   Middle drag: pan   |   Wheel: zoom   |   A: autopilot");
     }
     /// Submits a new render request after the canvas size changes.
     void resizeEvent(QResizeEvent*e) override { QWidget::resizeEvent(e); submit(false,true); }
@@ -412,7 +413,8 @@ public:
             const double seconds=std::min<qint64>(motionClock_.restart(),100)/1000.;
             try {
                 view.zoom(pointer_.x()/std::max(1,width()),pointer_.y()/std::max(1,height()),
-                          std::exp(-direction_*seconds*.75),std::max(1,width()),std::max(1,height()));submit(true);
+                          std::exp(-direction_*seconds*.75*zoomSpeedScale_),
+                          std::max(1,width()),std::max(1,height()));submit(true);
             }catch(const std::exception&e){motion_.stop();if(onStatus)onStatus(e.what());}
         });
         connect(&idle_,&QTimer::timeout,this,[this]{submit(false);});
@@ -500,6 +502,16 @@ public:
     /// Reports whether automatic fractal exploration is enabled.
     bool autopilotEnabled() const noexcept { return autopilotEnabled_; }
 
+    /// Adjusts XaoS zoom acceleration/max-step by the historical 1.05 factor.
+    void adjustZoomSpeed(bool faster) {
+        constexpr double factor=1.05;
+        zoomSpeedScale_=std::clamp(faster?zoomSpeedScale_*factor:zoomSpeedScale_/factor,
+                                   1.0/1024.0,1024.0);
+        if(onStatus) onStatus(QString("Zoom speed: %1x").arg(zoomSpeedScale_,0,'f',3));
+    }
+    /// Returns the current zoom speed multiplier relative to XaoS defaults.
+    double zoomSpeedScale() const noexcept { return zoomSpeedScale_; }
+
     /// Returns the number of compute workers, excluding presentation workers.
     size_t workerCount() const noexcept { return threads_; }
     /// Changes the worker count and requests a new render.
@@ -552,7 +564,10 @@ public:
         canvas=new Canvas(this);setCentralWidget(canvas);
         setWindowTitle("XaoS Modern — reusable orbits / arbitrary precision");
         auto*bar=addToolBar("Rendering");bar->setMovable(false);
-        auto*formula=new QComboBox(bar);formula->addItems({"Mandelbrot","Julia","Burning ship"});bar->addWidget(formula);
+        auto*formula=new QComboBox(bar);
+        for(const auto&info:formulaInfos())
+            formula->addItem(QString::fromLatin1(info.name),static_cast<int>(info.formula));
+        bar->addWidget(formula);
         bar->addWidget(new QLabel("  Iterations ",bar));iterations=new QSpinBox(bar);iterations->setRange(1,2000000000);iterations->setValue(512);bar->addWidget(iterations);
         auto*states=new QCheckBox("Save orbits",bar);states->setChecked(true);bar->addWidget(states);
         bar->addWidget(new QLabel("  Reconstruction ",bar));
@@ -562,9 +577,12 @@ public:
         bar->addWidget(new QLabel("  Workers ",bar));auto*threads=new QSpinBox(bar);threads->setRange(1,1024);
         threads->setValue(static_cast<int>(canvas->workerCount()));bar->addWidget(threads);
         auto*autopilot=bar->addAction("Autopilot");autopilot->setCheckable(true);
-        autopilot->setShortcut(QKeySequence("Ctrl++"));
+        autopilot->setShortcut(QKeySequence(Qt::Key_A));
         auto*coords=bar->addAction("Coordinates / bits");auto*reset=bar->addAction("Reset");
-        connect(formula,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int i){canvas->settings.formula=static_cast<Formula>(i);canvas->submit(false,true);});
+        connect(formula,qOverload<int>(&QComboBox::currentIndexChanged),this,[this,formula](int i){
+            canvas->settings.formula=static_cast<Formula>(formula->itemData(i).toInt());
+            canvas->submit(false,true);
+        });
         connect(iterations,qOverload<int>(&QSpinBox::valueChanged),this,[this](int n){canvas->settings.iterations=static_cast<uint32_t>(n);canvas->submit(false,true);});
         connect(states,&QCheckBox::toggled,this,[this](bool b){canvas->settings.saveState=b;canvas->submit();});
         connect(reconstruction,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int i){
@@ -579,6 +597,10 @@ public:
         auto*quit=file->addAction("Quit");quit->setShortcut(QKeySequence::Quit);connect(quit,&QAction::triggered,this,&QWidget::close);
         auto*more=new QAction(this);more->setShortcut(QKeySequence(Qt::Key_I));addAction(more);
         connect(more,&QAction::triggered,this,[this]{iterations->setValue(iterations->value()>1000000000?2000000000:iterations->value()*2);});
+        auto*faster=new QAction(this);faster->setShortcut(QKeySequence(Qt::Key_Up));addAction(faster);
+        auto*slower=new QAction(this);slower->setShortcut(QKeySequence(Qt::Key_Down));addAction(slower);
+        connect(faster,&QAction::triggered,canvas,[this]{canvas->adjustZoomSpeed(true);});
+        connect(slower,&QAction::triggered,canvas,[this]{canvas->adjustZoomSpeed(false);});
         auto*stop=new QAction(this);stop->setShortcut(QKeySequence(Qt::Key_Escape));addAction(stop);connect(stop,&QAction::triggered,canvas,&Canvas::stopZoom);
         canvas->onStatus=[this](const QString&s){statusBar()->showMessage(s);};
         statusBar()->showMessage("Calculating; move the pointer and hold left to zoom.");
