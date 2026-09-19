@@ -410,6 +410,8 @@ void rapidZoomDisplayTests() {
         CHECK(fullyVisible(*frame));
         CHECK(uniqueAxis(frame->previewXs)>=static_cast<size_t>(std::min(3,r.width)));
         CHECK(uniqueAxis(frame->previewYs)>=static_cast<size_t>(std::min(3,r.height)));
+        if(frame->stats.reused>0)
+            CHECK(frame->stats.started<static_cast<uint64_t>(r.width*r.height)/2);
         sawReuse|=frame->stats.reused>0;
         uint64_t missing=0;
         for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x)
@@ -428,6 +430,8 @@ void rapidZoomDisplayTests() {
         CHECK(fullyVisible(*frame));
         CHECK(uniqueAxis(frame->previewXs)>=static_cast<size_t>(std::min(3,r.width)));
         CHECK(uniqueAxis(frame->previewYs)>=static_cast<size_t>(std::min(3,r.height)));
+        if(frame->stats.reused>0)
+            CHECK(frame->stats.started<static_cast<uint64_t>(r.width*r.height)/2);
     }
     CHECK(frame->displayAt(0,0)!=0u);
     CHECK(frame->displayAt(r.width-1,r.height-1)!=0u);
@@ -441,6 +445,8 @@ void rapidZoomDisplayTests() {
     for(int k=0;k<5;++k) {
         frame=renderer.render(r,pool,go);
         CHECK(fullyVisible(*frame));
+        if(frame->stats.reused>0)
+            CHECK(frame->stats.started<static_cast<uint64_t>(r.width*r.height)/2);
         idleReuse|=frame->stats.reused>0;
         bestFilled=std::min(bestFilled,frame->stats.filled);
     }
