@@ -58,7 +58,10 @@ struct FrameBase {
     virtual ~FrameBase()=default;
     Request request;
     int stride=0;
-    std::vector<Big> xs,ys; // EXACT sample coordinates; ys run bottom -> top
+    // Exact row/column coordinates in the view's rotated screen basis; ys run
+    // bottom -> top. View::complexFromAxes() converts an intersection back to the
+    // mathematical complex plane.
+    std::vector<Big> xs,ys;
     // Presentation coordinates mirror classic XaoS's xpos/ypos tables. Timeout
     // fill collapses an unresolved line onto the coordinate it copied. The next
     // DP pass therefore sees the lost resolution and schedules it again, while
