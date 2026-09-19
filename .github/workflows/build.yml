@@ -84,6 +84,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="-fexperimental-library" \
             -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" \
             -DGMP_INCLUDE_DIR="$(brew --prefix gmp)/include" \
             -DGMP_LIBRARY="$(brew --prefix gmp)/lib/libgmp.dylib"
@@ -105,10 +106,17 @@ jobs:
           gmp_link="$(otool -L "$executable" | awk '/libgmp/{print $1; exit}')"
           test -n "$gmp_link"
           gmp_name="$(basename "$gmp_link")"
-          cp "$gmp_link" "$frameworks/$gmp_name"
-          chmod 755 "$frameworks/$gmp_name"
-          install_name_tool -id "@rpath/$gmp_name" "$frameworks/$gmp_name"
-          install_name_tool -change "$gmp_link" "@executable_path/../Frameworks/$gmp_name" "$executable"
+          case "$gmp_link" in
+            @executable_path/*|@rpath/*)
+              test -f "$frameworks/$gmp_name"
+              ;;
+            *)
+              cp "$gmp_link" "$frameworks/$gmp_name"
+              chmod 755 "$frameworks/$gmp_name"
+              install_name_tool -id "@rpath/$gmp_name" "$frameworks/$gmp_name"
+              install_name_tool -change "$gmp_link" "@executable_path/../Frameworks/$gmp_name" "$executable"
+              ;;
+          esac
 
           codesign --force --deep --sign - "$app"
           codesign --verify --deep --strict "$app"
