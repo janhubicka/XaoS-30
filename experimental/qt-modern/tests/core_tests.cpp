@@ -309,6 +309,14 @@ void resolutionFeedbackTests() {
     Cancellation interrupted; interrupted.cancelled.store(true);
     auto coarse=renderer.render(r,pool,interrupted);
     CHECK(!coarse->stats.complete); CHECK(coarse->stats.filled>0);
+    // Nearest reconstruction must exactly reproduce classic mkfilltable/filly:
+    // missing columns are copied from the nearest completed column in coordinate
+    // space, then missing rows from the nearest completed row.
+    for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
+        const size_t i=coarse->index(x,y);
+        if(coarse->qualityAt(x,y)==DisplayQuality::Fill)
+            CHECK(coarse->displayAt(x,y)==coarse->samplePixels[i]);
+    }
     auto unique=[](const std::vector<Big>&axis) {
         size_t n=axis.empty()?0:1;
         for(size_t i=1;i<axis.size();++i) if(!(axis[i]==axis[i-1])) ++n;
@@ -342,6 +350,40 @@ void resolutionFeedbackTests() {
     CHECK(exact->previewYs.empty());
 }
 
+
+void reconstructionTests() {
+    ThreadExecutor pool(4); Cancellation go;
+    auto make=[&](Reconstruction reconstruction) {
+        Renderer renderer;
+        Request r; r.width=128; r.height=80; r.settings.iterations=500;
+        r.settings.analytic=false; r.settings.solidGuessRange=0;
+        r.settings.reconstruction=reconstruction;
+        r.view=View::parse("-0.743643887037151","0.13182590420533","0.035",r.width);
+        auto base=renderer.render(r,pool,go); CHECK(base->stats.complete);
+        r.view.zoom(.43,.57,.963,r.width,r.height);
+        r.settings.sliceMilliseconds=20;
+        Cancellation stopped; stopped.cancelled.store(true);
+        return renderer.render(r,pool,stopped);
+    };
+    auto nearest=make(Reconstruction::Nearest);
+    auto bilinear=make(Reconstruction::Bilinear);
+    auto bicubic=make(Reconstruction::Bicubic);
+    CHECK(nearest->stats.filled>0);
+    sameCounts(*nearest,*bilinear);
+    sameCounts(*nearest,*bicubic);
+    CHECK(nearest->samplePixels==bilinear->samplePixels);
+    CHECK(nearest->samplePixels==bicubic->samplePixels);
+    CHECK(nearest->sampleQuality==bilinear->sampleQuality);
+    CHECK(nearest->sampleQuality==bicubic->sampleQuality);
+    bool nearestVsLinear=false,linearVsCubic=false;
+    for(int y=0;y<nearest->request.height;++y) for(int x=0;x<nearest->request.width;++x) {
+        nearestVsLinear |= nearest->displayAt(x,y)!=bilinear->displayAt(x,y);
+        linearVsCubic |= bilinear->displayAt(x,y)!=bicubic->displayAt(x,y);
+    }
+    CHECK(nearestVsLinear);
+    CHECK(linearVsCubic);
+}
+
 void failureTests() {
     ThreadExecutor pool(2);Renderer renderer;Request r;Cancellation stop;
     r.width=0;rejects([&]{renderer.render(r,pool,stop);});r.width=32;r.height=20;
@@ -361,7 +403,8 @@ int main() {
           {"scalar/AVX2 bit identity",simdTests},{"counts/state/resume/limit decrease",resumeTests},
           {"zoom coordinates and exact refinement",zoomTests},{"deep zoom and cache invalidation",deepTests},
           {"cancellation and resumption",cancellationTests},{"solid guessing and preview refinement",previewTests},
-          {"timeout fill feeds next DP resolution pass",resolutionFeedbackTests},{"validation and exception barriers",failureTests}}) {
+          {"timeout fill feeds next DP resolution pass",resolutionFeedbackTests},{"grid reconstruction modes",reconstructionTests},
+          {"validation and exception barriers",failureTests}}) {
             test();std::cout<<"PASS "<<name<<'\n';
         }
         std::cout<<"PASS "<<checks<<" checks; AVX2 available="<<hasAVX2()<<'\n';
