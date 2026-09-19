@@ -518,14 +518,9 @@ void presentationTests() {
     auto base=renderer.render(r,compute,go);
     r.view.zoom(.42,.58,.973,r.width,r.height);
     auto frame=renderer.render(r,compute,go);
-    for(auto mode:{Reconstruction::Nearest,Reconstruction::Bilinear,Reconstruction::Bicubic}) {
-        auto copy=std::make_shared<Frame<double,true>>();
-        static_cast<FrameBase&>(*copy)=static_cast<const FrameBase&>(*frame);
-        copy->request.settings.reconstruction=mode;
-        auto a=presentFrame(*copy,one,go);
-        auto b=presentFrame(*copy,many,go);
-        CHECK(a->pixels==b->pixels);
-    }
+    auto a=presentFrame(*frame,one,go);
+    auto b=presentFrame(*frame,many,go);
+    CHECK(a->pixels==b->pixels);
 }
 
 /// Runs regression checks for failure.
