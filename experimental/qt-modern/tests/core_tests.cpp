@@ -384,6 +384,60 @@ void reconstructionTests() {
     CHECK(linearVsCubic);
 }
 
+
+void rapidZoomDisplayTests() {
+    ThreadExecutor pool(4); Cancellation go; Renderer renderer;
+    Request r; r.width=192; r.height=120; r.settings.iterations=1400;
+    r.settings.analytic=false; r.settings.solidGuessRange=0;
+    auto frame=renderer.render(r,pool,go); CHECK(frame->stats.complete);
+
+    auto fullyVisible=[](const FrameBase&f) {
+        for(int y=0;y<f.request.height;++y) for(int x=0;x<f.request.width;++x)
+            if((f.displayAt(x,y)>>24)!=0xffu) return false;
+        return true;
+    };
+    bool sawSparse=false,sawReuse=false;
+    r.settings.sliceMilliseconds=2;
+    for(int k=0;k<8;++k) {
+        r.view.zoom(.37,.61,.975,r.width,r.height);
+        frame=renderer.render(r,pool,go);
+        CHECK(fullyVisible(*frame));
+        sawReuse|=frame->stats.reused>0;
+        uint64_t missing=0;
+        for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x)
+            missing+=frame->qualityAt(x,y)==DisplayQuality::Missing;
+        sawSparse|=missing>0 || frame->stats.filled>0;
+    }
+    CHECK(sawReuse);
+    CHECK(sawSparse);
+
+    // Zooming out exposes area outside the previous viewport. It must be
+    // reconstructed/clamped immediately rather than appearing as a black/empty
+    // square around the old frame while the new boundary lines are calculated.
+    for(int k=0;k<8;++k) {
+        r.view.zoom(.63,.39,1.028,r.width,r.height);
+        frame=renderer.render(r,pool,go);
+        CHECK(fullyVisible(*frame));
+    }
+    CHECK(frame->displayAt(0,0)!=0u);
+    CHECK(frame->displayAt(r.width-1,r.height-1)!=0u);
+
+    // With motion stopped, repeated bounded passes must refine the existing grid
+    // rather than replace it with a fresh raster. Reuse should persist and the
+    // number of timeout-filled samples should not increase indefinitely.
+    const auto beforeFilled=frame->stats.filled;
+    uint64_t bestFilled=beforeFilled;
+    bool idleReuse=false;
+    for(int k=0;k<5;++k) {
+        frame=renderer.render(r,pool,go);
+        CHECK(fullyVisible(*frame));
+        idleReuse|=frame->stats.reused>0;
+        bestFilled=std::min(bestFilled,frame->stats.filled);
+    }
+    CHECK(idleReuse);
+    CHECK(bestFilled<=beforeFilled);
+}
+
 void failureTests() {
     ThreadExecutor pool(2);Renderer renderer;Request r;Cancellation stop;
     r.width=0;rejects([&]{renderer.render(r,pool,stop);});r.width=32;r.height=20;
@@ -404,6 +458,7 @@ int main() {
           {"zoom coordinates and exact refinement",zoomTests},{"deep zoom and cache invalidation",deepTests},
           {"cancellation and resumption",cancellationTests},{"solid guessing and preview refinement",previewTests},
           {"timeout fill feeds next DP resolution pass",resolutionFeedbackTests},{"grid reconstruction modes",reconstructionTests},
+          {"rapid zoom display and idle refinement",rapidZoomDisplayTests},
           {"validation and exception barriers",failureTests}}) {
             test();std::cout<<"PASS "<<name<<'\n';
         }
