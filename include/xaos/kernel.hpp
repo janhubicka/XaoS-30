@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <cmath>
+#include <type_traits>
 
 namespace xaos {
 enum class Formula {
