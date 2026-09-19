@@ -91,8 +91,10 @@ class Canvas final:public QWidget {
     void queuePresentation(std::shared_ptr<const FrameBase> frame,uint64_t serial) {
         {
             std::lock_guard lock(presentationMutex_);
-            if(presentationActive_)
-                presentationActive_->cancelled.store(true,std::memory_order_relaxed);
+            // Refinement slices of the same request should not starve display:
+            // let the active presentation finish, while replacing only the
+            // pending frame with the newest grid. New user requests are cancelled
+            // eagerly by submit(), which also clears this pending slot.
             presentationPending_=PresentationJob{std::move(frame),serial};
         }
         presentationWake_.notify_one();
