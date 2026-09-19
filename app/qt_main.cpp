@@ -114,8 +114,10 @@ class Canvas final:public QWidget {
     void restoreFormulaDefault() {
         const auto&info=formulaInfo(settings.formula);
         const mp_bitcnt_t p=std::max<mp_bitcnt_t>(128,settings.minimumPrecision);
+        const double aspect=static_cast<double>(std::max(1,height()))/std::max(1,width());
+        const double span=std::max(info.horizontalSpan,info.verticalSpan/aspect);
         view={Big::fromDouble(info.centerRe,p),Big::fromDouble(info.centerIm,p),
-              Big::fromDouble(info.horizontalSpan,p)};
+              Big::fromDouble(span,p)};
         settings.juliaRe=Big::fromDouble(info.seedRe,p);
         settings.juliaIm=Big::fromDouble(info.seedIm,p);
         autopilotEngine_.reset();autopilotStep_=0;latestDisplay_.reset();
