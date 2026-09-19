@@ -16,6 +16,8 @@
 #include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QImage>
 #include <QGestureEvent>
 #include <QLabel>
@@ -33,16 +35,19 @@
 #include <QStatusBar>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTransform>
 #include <QWheelEvent>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <charconv>
 #include <condition_variable>
 #include <functional>
 #include <optional>
 #include <numbers>
+#include <thread>
 
 using namespace xaos;
 namespace {
@@ -82,12 +87,13 @@ class Canvas final:public QWidget {
     std::condition_variable_any wake_;
     std::optional<Job> pending_;
     std::shared_ptr<Cancellation> active_;
-    std::jthread coordinator_;
+    std::atomic<bool> shutdown_{false};
+    std::thread coordinator_;
     std::mutex presentationMutex_;
     std::condition_variable_any presentationWake_;
     std::optional<PresentationJob> presentationPending_;
     std::shared_ptr<Cancellation> presentationActive_;
-    std::jthread presenter_;
+    std::thread presenter_;
     uint64_t serial_=0,shown_=0,epoch_=1;
     QImage image_,fallback_;
     View imageView_,fallbackView_;
@@ -101,6 +107,7 @@ class Canvas final:public QWidget {
     QPointF pointer_{.5,.5},lastDrag_;
     int direction_=0;
     bool dragging_=false;
+    bool mobileUi_=false;
     bool nativeGestureActive_=false,gestureChanged_=false;
     size_t threads_=std::max<size_t>(1,defaultWorkerCount()-presentationWorkerCount());
     /// Maps a target selected in a displayed source frame into the current viewport.
@@ -183,16 +190,18 @@ class Canvas final:public QWidget {
     }
 
     /// Reconstructs display frames independently from the compute coordinator.
-    void presentationLoop(std::stop_token shutdown) {
+    void presentationLoop() {
         ThreadExecutor executor(presentationWorkerCount());
         std::shared_ptr<const DisplayFrame> previous;
-        while(!shutdown.stop_requested()) {
+        while(!shutdown_.load(std::memory_order_relaxed)) {
             PresentationJob job;
             std::shared_ptr<Cancellation> token;
             {
                 std::unique_lock lock(presentationMutex_);
-                if(!presentationWake_.wait(lock,shutdown,[&]{return presentationPending_.has_value();}))
-                    return;
+                presentationWake_.wait(lock,[&]{
+                    return shutdown_.load(std::memory_order_relaxed) || presentationPending_.has_value();
+                });
+                if(shutdown_.load(std::memory_order_relaxed)) return;
                 job=std::move(*presentationPending_);
                 presentationPending_.reset();
                 token=std::make_shared<Cancellation>();
@@ -261,7 +270,7 @@ class Canvas final:public QWidget {
     }
 
     /// Runs the compute loop, coalescing requests and immediately scheduling further refinement.
-    void coordinator(std::stop_token shutdown) {
+    void coordinator() {
         struct DynamicBudget {
             std::array<double,50> calculation{};
             size_t pos=0,count=0;
@@ -290,12 +299,15 @@ class Canvas final:public QWidget {
         } budget;
         Renderer renderer;
         std::unique_ptr<QtExecutor> executor;
-        while(!shutdown.stop_requested()) {
+        while(!shutdown_.load(std::memory_order_relaxed)) {
             Job job;
             std::shared_ptr<Cancellation> token;
             {
                 std::unique_lock lock(mutex_);
-                if(!wake_.wait(lock,shutdown,[&]{return pending_.has_value();})) return;
+                wake_.wait(lock,[&]{
+                    return shutdown_.load(std::memory_order_relaxed) || pending_.has_value();
+                });
+                if(shutdown_.load(std::memory_order_relaxed)) return;
                 job=std::move(*pending_); pending_.reset();
                 token=std::make_shared<Cancellation>();
                 job.request.settings.sliceMilliseconds=budget.next(job.interactive);
@@ -311,7 +323,8 @@ class Canvas final:public QWidget {
                 if(active_==token) active_.reset();
                 // Compute refinement continues immediately; it no longer waits for
                 // interpolation, framebuffer copies, or Qt image publication.
-                if(!frame->stats.complete && !pending_ && !shutdown.stop_requested())
+                if(!frame->stats.complete && !pending_ &&
+                   !shutdown_.load(std::memory_order_relaxed))
                     pending_=job;
                 if(pending_) wake_.notify_one();
             } catch(const std::exception&e) {
@@ -479,8 +492,10 @@ protected:
         p.setRenderHint(QPainter::SmoothPixmapTransform,false);
         p.fillRect(rect(),Qt::black);
         drawView(p,fallback_,fallbackView_);drawView(p,image_,imageView_);
-        p.setPen(Qt::white);
-        p.drawText(12,22,"Hold left/right: zoom   |   Middle drag: pan   |   Wheel/pinch: zoom   |   Two-finger twist: rotate   |   A: autopilot");
+        if(!mobileUi_) {
+            p.setPen(Qt::white);
+            p.drawText(12,22,"Hold left/right: zoom   |   Middle drag: pan   |   Wheel/pinch: zoom   |   Two-finger twist: rotate   |   A: autopilot");
+        }
     }
     /// Submits a new render request after the canvas size changes.
     void resizeEvent(QResizeEvent*e) override { QWidget::resizeEvent(e); submit(false,true); }
@@ -488,6 +503,9 @@ protected:
     void mousePressEvent(QMouseEvent*e) override {
         if(autopilotEnabled_) {e->accept();return;}
         pointer_=e->position();
+        if(mobileUi_ && e->button()==Qt::LeftButton) {
+            dragging_=true;lastDrag_=pointer_;e->accept();return;
+        }
         if(e->button()==Qt::MiddleButton) {dragging_=true;lastDrag_=pointer_;}
         else if(e->button()==Qt::LeftButton || e->button()==Qt::RightButton) {
             direction_=e->button()==Qt::LeftButton?1:-1;motionClock_.restart();motion_.start();
@@ -496,8 +514,12 @@ protected:
     /// Stops the active mouse interaction and schedules idle refinement.
     void mouseReleaseEvent(QMouseEvent*e) override {
         if(autopilotEnabled_) {e->accept();return;}
-        if(e->button()==Qt::MiddleButton) dragging_=false;
-        if(e->button()==Qt::LeftButton || e->button()==Qt::RightButton) {direction_=0;motion_.stop();idle_.start();}
+        if(e->button()==Qt::MiddleButton || (mobileUi_ && e->button()==Qt::LeftButton)) {
+            dragging_=false;idle_.start();
+        }
+        if(!mobileUi_ && (e->button()==Qt::LeftButton || e->button()==Qt::RightButton)) {
+            direction_=0;motion_.stop();idle_.start();
+        }
     }
     /// Updates the zoom focus or pans while the middle button is held.
     void mouseMoveEvent(QMouseEvent*e) override {
@@ -507,6 +529,19 @@ protected:
             auto d=pointer_-lastDrag_;lastDrag_=pointer_;
             try {view.pan(d.x(),d.y(),std::max(1,width()));submit(true);} catch(const std::exception&ex){if(onStatus)onStatus(ex.what());}
         }
+    }
+    /// Double-tap/double-click zooms into the touched point in the mobile UI.
+    void mouseDoubleClickEvent(QMouseEvent*e) override {
+        if(!mobileUi_ || autopilotEnabled_ || e->button()!=Qt::LeftButton) {
+            QWidget::mouseDoubleClickEvent(e);return;
+        }
+        pointer_=e->position();
+        try {
+            view.zoom(pointer_.x()/std::max(1,width()),pointer_.y()/std::max(1,height()),
+                      .5,std::max(1,width()),std::max(1,height()));
+            submit(true);
+        } catch(const std::exception&ex) { if(onStatus) onStatus(ex.what()); }
+        e->accept();
     }
     /// Applies a stepped pointer-centred zoom from the mouse wheel.
     void wheelEvent(QWheelEvent*e) override {
@@ -543,14 +578,13 @@ public:
         });
         connect(&idle_,&QTimer::timeout,this,[this]{submit(false);});
         connect(&autopilotTimer_,&QTimer::timeout,this,[this]{autopilotTick();});
-        presenter_=std::jthread([this](std::stop_token s){presentationLoop(s);});
-        coordinator_=std::jthread([this](std::stop_token s){coordinator(s);});
+        presenter_=std::thread([this]{presentationLoop();});
+        coordinator_=std::thread([this]{coordinator();});
     }
     /// Releases resources owned by the Canvas instance.
     ~Canvas() override {
         motion_.stop();idle_.stop();autopilotTimer_.stop();
-        coordinator_.request_stop();
-        presenter_.request_stop();
+        shutdown_.store(true,std::memory_order_relaxed);
         {
             std::lock_guard lock(mutex_);
             pending_.reset();
@@ -643,6 +677,10 @@ public:
     /// Returns the current zoom speed multiplier relative to XaoS defaults.
     double zoomSpeedScale() const noexcept { return zoomSpeedScale_; }
 
+    /// Switches interaction hints and one-finger behavior for the phone layout.
+    void setMobileUi(bool enabled) { mobileUi_=enabled;update(); }
+    /// Returns whether phone-oriented interaction is enabled.
+    bool mobileUi() const noexcept { return mobileUi_; }
     /// Returns the number of compute workers, excluding presentation workers.
     size_t workerCount() const noexcept { return threads_; }
     /// Changes the worker count and requests a new render.
@@ -693,19 +731,180 @@ public:
     }
 };
 class Window final:public QMainWindow {
+    bool mobile_=false;
+    QSpinBox*iterations_=nullptr;
+    QLabel*mobileBadge_=nullptr;
+    QFrame*mobileDock_=nullptr;
+    QToolButton*mobileExplore_=nullptr;
+    QToolButton*mobileFormula_=nullptr;
+    QToolButton*mobileDetail_=nullptr;
+    QToolButton*mobileQuality_=nullptr;
+    QMenu*mobileFormulaMenu_=nullptr;
+    QMenu*mobileMoreMenu_=nullptr;
+
+    QString qualityName() const {
+        switch(canvas->settings.reconstruction) {
+        case Reconstruction::Nearest:return "CRISP";
+        case Reconstruction::Bilinear:return "LINEAR";
+        case Reconstruction::Bicubic:return "CUBIC";
+        }
+        return "CRISP";
+    }
+    void refreshMobileChrome() {
+        if(!mobile_) return;
+        const auto&info=formulaInfo(canvas->settings.formula);
+        mobileBadge_->setText(QString(" XaoS 30  ·  %1 ").arg(QString::fromLatin1(info.name)));
+        mobileFormula_->setText(QString::fromLatin1(info.shortName).toUpper()+"\nFORMULA");
+        mobileDetail_->setText(QString::number(canvas->settings.iterations)+"\nDETAIL");
+        mobileQuality_->setText(qualityName()+"\nLOOK");
+        mobileExplore_->setText(canvas->autopilotEnabled()?"STOP\nEXPLORE":"EXPLORE\nAUTO");
+        mobileExplore_->setChecked(canvas->autopilotEnabled());
+        mobileBadge_->adjustSize();
+        layoutMobileChrome();
+    }
+    void layoutMobileChrome() {
+        if(!mobile_ || !mobileDock_ || !mobileBadge_) return;
+        const int w=canvas->width(),h=canvas->height();
+        const int margin=std::clamp(w/28,12,22);
+        const int dockHeight=std::clamp(h/10,68,88);
+        mobileDock_->setGeometry(margin,h-dockHeight-margin,std::max(120,w-2*margin),dockHeight);
+        mobileBadge_->adjustSize();
+        mobileBadge_->move(margin,margin);
+        mobileDock_->raise();mobileBadge_->raise();
+    }
+    QToolButton* mobileButton(const QString&text,QWidget*parent) {
+        auto*b=new QToolButton(parent);
+        b->setText(text);
+        b->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        b->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Expanding);
+        b->setMinimumWidth(46);
+        b->setCursor(Qt::PointingHandCursor);
+        return b;
+    }
+    void buildMobileUi() {
+        canvas->setMobileUi(true);
+        menuBar()->hide();statusBar()->hide();
+        for(auto*bar:findChildren<QToolBar*>()) bar->hide();
+
+        mobileBadge_=new QLabel(canvas);
+        mobileBadge_->setAttribute(Qt::WA_StyledBackground,true);
+        mobileBadge_->setStyleSheet(
+            "QLabel{color:white;background:rgba(8,10,16,190);"
+            "border:1px solid rgba(255,255,255,36);border-radius:16px;"
+            "padding:7px 12px;font-size:14px;font-weight:650;}");
+
+        mobileDock_=new QFrame(canvas);
+        mobileDock_->setAttribute(Qt::WA_StyledBackground,true);
+        mobileDock_->setStyleSheet(
+            "QFrame{background:rgba(8,10,16,214);border:1px solid rgba(255,255,255,38);"
+            "border-radius:24px;}"
+            "QToolButton{color:rgba(255,255,255,225);background:transparent;border:0;"
+            "border-radius:15px;padding:7px 5px;font-size:10px;font-weight:650;}"
+            "QToolButton:pressed{background:rgba(92,220,255,42);}"
+            "QToolButton:checked{color:rgb(102,232,255);background:rgba(92,220,255,34);}"
+            "QMenu{color:white;background:rgb(20,22,30);border:1px solid rgb(55,60,72);"
+            "padding:8px;font-size:15px;}QMenu::item{padding:11px 24px;border-radius:8px;}"
+            "QMenu::item:selected{background:rgb(45,74,86);}");
+
+        auto*layout=new QHBoxLayout(mobileDock_);
+        layout->setContentsMargins(8,7,8,7);layout->setSpacing(2);
+        mobileExplore_=mobileButton("EXPLORE\nAUTO",mobileDock_);
+        mobileExplore_->setCheckable(true);
+        mobileFormula_=mobileButton("MANDEL\nFORMULA",mobileDock_);
+        mobileDetail_=mobileButton("512\nDETAIL",mobileDock_);
+        mobileQuality_=mobileButton("CRISP\nLOOK",mobileDock_);
+        auto*reset=mobileButton("RESET\nVIEW",mobileDock_);
+        auto*more=mobileButton("MORE\n···",mobileDock_);
+        for(auto*b:{mobileExplore_,mobileFormula_,mobileDetail_,mobileQuality_,reset,more})
+            layout->addWidget(b);
+
+        mobileFormulaMenu_=new QMenu(mobileFormula_);
+        for(const auto&info:formulaInfos()) {
+            auto*a=mobileFormulaMenu_->addAction(QString::fromLatin1(info.name));
+            const auto formula=info.formula;
+            connect(a,&QAction::triggered,this,[this,formula]{
+                canvas->setFormula(formula);refreshMobileChrome();
+            });
+        }
+        mobileFormula_->setMenu(mobileFormulaMenu_);
+        mobileFormula_->setPopupMode(QToolButton::InstantPopup);
+
+        mobileMoreMenu_=new QMenu(more);
+        auto*coordinates=mobileMoreMenu_->addAction("Coordinates & precision");
+        auto*level=mobileMoreMenu_->addAction("Level rotation");
+        auto*saveState=mobileMoreMenu_->addAction("Save orbit state");
+        saveState->setCheckable(true);saveState->setChecked(canvas->settings.saveState);
+        auto*save=mobileMoreMenu_->addAction("Save frame as PNG");
+        mobileMoreMenu_->addSeparator();
+        auto*help=mobileMoreMenu_->addAction("Gesture guide");
+        more->setMenu(mobileMoreMenu_);more->setPopupMode(QToolButton::InstantPopup);
+
+        connect(mobileExplore_,&QToolButton::clicked,this,[this](bool checked){
+            canvas->setAutopilot(checked);refreshMobileChrome();
+        });
+        connect(mobileDetail_,&QToolButton::clicked,this,[this]{
+            static constexpr std::array<uint32_t,7> levels{{128,256,512,1024,2048,4096,8192}};
+            auto it=std::upper_bound(levels.begin(),levels.end(),canvas->settings.iterations);
+            setIterations(it==levels.end()?levels.front():*it);
+        });
+        connect(mobileQuality_,&QToolButton::clicked,this,[this]{
+            const int next=(static_cast<int>(canvas->settings.reconstruction)+1)%3;
+            canvas->settings.reconstruction=static_cast<Reconstruction>(next);
+            canvas->submit(false,true);refreshMobileChrome();
+        });
+        connect(reset,&QToolButton::clicked,canvas,[this]{canvas->reset();refreshMobileChrome();});
+        connect(coordinates,&QAction::triggered,canvas,&Canvas::coordinates);
+        connect(level,&QAction::triggered,this,[this]{
+            const double delta=-canvas->view.rotation;
+            if(delta!=0) {
+                canvas->view.rotate(.5,.5,delta,std::max(1,canvas->width()),std::max(1,canvas->height()));
+                canvas->submit(true);
+            }
+        });
+        connect(saveState,&QAction::toggled,this,[this](bool on){
+            canvas->settings.saveState=on;canvas->submit();
+        });
+        connect(save,&QAction::triggered,canvas,&Canvas::saveImage);
+        connect(help,&QAction::triggered,this,[this]{
+            QMessageBox::information(this,"Explore XaoS",
+                "One finger drags the plane.\n"
+                "Pinch with two fingers to zoom.\n"
+                "Twist two fingers to rotate.\n"
+                "Double-tap to dive in.\n\n"
+                "Explore lets XaoS choose the next interesting boundary automatically.");
+        });
+        canvas->onAutopilotChanged=[this](bool){refreshMobileChrome();};
+        canvas->onStatus=[this](const QString&s){
+            if(mobileBadge_) mobileBadge_->setToolTip(s);
+        };
+        refreshMobileChrome();
+    }
+
+protected:
+    void resizeEvent(QResizeEvent*event) override {
+        QMainWindow::resizeEvent(event);
+        layoutMobileChrome();
+    }
+
 public:
-    Canvas*canvas;
-    QSpinBox*iterations;
-    /// Constructs a Window instance.
-    Window() {
+    Canvas*canvas=nullptr;
+    /// Constructs a desktop or phone-focused window.
+    explicit Window(bool mobile=false):mobile_(mobile) {
         canvas=new Canvas(this);setCentralWidget(canvas);
+        setWindowTitle("XaoS 30");
+        if(mobile_) {
+            buildMobileUi();
+            return;
+        }
+
         setWindowTitle("XaoS Modern — reusable orbits / arbitrary precision");
         auto*bar=addToolBar("Rendering");bar->setMovable(false);
         auto*formula=new QComboBox(bar);
         for(const auto&info:formulaInfos())
             formula->addItem(QString::fromLatin1(info.name),static_cast<int>(info.formula));
         bar->addWidget(formula);
-        bar->addWidget(new QLabel("  Iterations ",bar));iterations=new QSpinBox(bar);iterations->setRange(1,2000000000);iterations->setValue(512);bar->addWidget(iterations);
+        bar->addWidget(new QLabel("  Iterations ",bar));
+        iterations_=new QSpinBox(bar);iterations_->setRange(1,2000000000);iterations_->setValue(512);bar->addWidget(iterations_);
         auto*states=new QCheckBox("Save orbits",bar);states->setChecked(true);bar->addWidget(states);
         bar->addWidget(new QLabel("  Reconstruction ",bar));
         auto*reconstruction=new QComboBox(bar);
@@ -719,7 +918,9 @@ public:
         connect(formula,qOverload<int>(&QComboBox::currentIndexChanged),this,[this,formula](int i){
             canvas->setFormula(static_cast<Formula>(formula->itemData(i).toInt()));
         });
-        connect(iterations,qOverload<int>(&QSpinBox::valueChanged),this,[this](int n){canvas->settings.iterations=static_cast<uint32_t>(n);canvas->submit(false,true);});
+        connect(iterations_,qOverload<int>(&QSpinBox::valueChanged),this,[this](int n){
+            canvas->settings.iterations=static_cast<uint32_t>(n);canvas->submit(false,true);
+        });
         connect(states,&QCheckBox::toggled,this,[this](bool b){canvas->settings.saveState=b;canvas->submit();});
         connect(reconstruction,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int i){
             canvas->settings.reconstruction=static_cast<Reconstruction>(i);canvas->submit(false,true);
@@ -732,7 +933,7 @@ public:
         connect(save,&QAction::triggered,canvas,&Canvas::saveImage);
         auto*quit=file->addAction("Quit");quit->setShortcut(QKeySequence::Quit);connect(quit,&QAction::triggered,this,&QWidget::close);
         auto*more=new QAction(this);more->setShortcut(QKeySequence(Qt::Key_I));addAction(more);
-        connect(more,&QAction::triggered,this,[this]{iterations->setValue(iterations->value()>1000000000?2000000000:iterations->value()*2);});
+        connect(more,&QAction::triggered,this,[this]{setIterations(canvas->settings.iterations>1000000000?2000000000:canvas->settings.iterations*2);});
         auto*faster=new QAction(this);faster->setShortcut(QKeySequence(Qt::Key_Up));addAction(faster);
         auto*slower=new QAction(this);slower->setShortcut(QKeySequence(Qt::Key_Down));addAction(slower);
         connect(faster,&QAction::triggered,canvas,[this]{canvas->adjustZoomSpeed(true);});
@@ -742,20 +943,37 @@ public:
         statusBar()->showMessage("Calculating; move the pointer and hold left to zoom.");
         resize(1100,800);
     }
+
+    void setIterations(uint32_t iterations) {
+        iterations=std::clamp<uint32_t>(iterations,1,2000000000u);
+        if(iterations_) {
+            iterations_->setValue(static_cast<int>(iterations));
+        } else {
+            canvas->settings.iterations=iterations;
+            canvas->submit(false,true);
+            refreshMobileChrome();
+        }
+    }
+    bool mobileUi() const noexcept { return mobile_; }
 };
 }
 /// Starts the Qt desktop application and optional smoke test.
 int main(int argc,char**argv) {
-    QApplication app(argc,argv);QApplication::setApplicationName("XaoS Modern");
-    Window window;
+    QApplication app(argc,argv);QApplication::setApplicationName("XaoS 30");
+#ifdef Q_OS_ANDROID
+    const bool mobile=true;
+#else
+    const bool mobile=app.arguments().contains("--mobile-ui");
+#endif
+    Window window(mobile);
     const bool smoke=app.arguments().contains("--smoke-test");
     if(smoke) {
-        window.resize(520,360);
-        window.iterations->setValue(64);
+        window.resize(mobile?390:520,mobile?760:360);
+        window.setIterations(64);
         window.canvas->settings.reconstruction=Reconstruction::Bicubic;
         window.canvas->setThreads(2);
     }
-    window.show();
+    if(mobile && !smoke) window.showFullScreen(); else window.show();
     if(smoke) {
         struct SmokeState {
             int zoomTicks=0,publishedAtStart=0;
@@ -789,7 +1007,7 @@ int main(int argc,char**argv) {
                 std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));
             window.canvas->submit(true);
         });
-        QTimer::singleShot(1000,&window,[&window]{window.iterations->setValue(128);});
+        QTimer::singleShot(1000,&window,[&window]{window.setIterations(128);});
         QTimer::singleShot(1400,&window,[&window]{window.canvas->settings.minimumPrecision=128;window.canvas->submit(false,true);});
         QTimer::singleShot(1900,&window,[&window]{window.canvas->settings.saveState=false;window.canvas->submit();});
         QTimer::singleShot(2400,&window,[&window]{window.canvas->setAutopilot(true);});
