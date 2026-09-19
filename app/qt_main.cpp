@@ -33,6 +33,7 @@
 #include <cmath>
 #include <charconv>
 #include <condition_variable>
+#include <cstring>
 #include <functional>
 #include <optional>
 
@@ -45,26 +46,38 @@ template<class T> T readInteger(const QString&text) {
     if(e!=std::errc{} || p!=s.data()+s.size()) throw std::invalid_argument("invalid integer");
     return n;
 }
-/// Converts a rendered frame into a Qt image for publication on the UI thread.
-QImage makeImage(const FrameBase&f) {
+/// Returns a small presentation pool that leaves most CPUs available for orbit work.
+size_t presentationWorkerCount() noexcept {
+    const size_t cpus=defaultWorkerCount();
+    return cpus>=8?2:1;
+}
+
+/// Copies a reconstructed display frame into Qt's top-to-bottom image storage.
+QImage makeImage(const DisplayFrame&f) {
     QImage image(f.request.width,f.request.height,QImage::Format_ARGB32_Premultiplied);
     if(image.isNull()) throw std::bad_alloc();
-    // This QImage has a single owner until publication. No worker paints it.
+    const size_t bytes=static_cast<size_t>(f.request.width)*sizeof(uint32_t);
     for(int row=0;row<f.request.height;++row) {
-        auto*data=reinterpret_cast<QRgb*>(image.scanLine(row));
         const int y=f.request.height-1-row;
-        for(int x=0;x<f.request.width;++x)
-            data[x]=f.displayAt(x,y);
+        std::memcpy(image.scanLine(row),
+                    f.pixels.data()+static_cast<size_t>(y)*static_cast<size_t>(f.request.width),
+                    bytes);
     }
     return image;
 }
 class Canvas final:public QWidget {
     struct Job { Request request; size_t threads; uint64_t serial; bool interactive; };
+    struct PresentationJob { std::shared_ptr<const FrameBase> frame; uint64_t serial; };
     std::mutex mutex_;
     std::condition_variable_any wake_;
     std::optional<Job> pending_;
     std::shared_ptr<Cancellation> active_;
     std::jthread coordinator_;
+    std::mutex presentationMutex_;
+    std::condition_variable_any presentationWake_;
+    std::optional<PresentationJob> presentationPending_;
+    std::shared_ptr<Cancellation> presentationActive_;
+    std::jthread presenter_;
     uint64_t serial_=0,shown_=0;
     QImage image_,fallback_;
     View imageView_,fallbackView_;
@@ -73,34 +86,110 @@ class Canvas final:public QWidget {
     QPointF pointer_{.5,.5},lastDrag_;
     int direction_=0;
     bool dragging_=false;
-    size_t threads_=defaultWorkerCount();
-    /// Runs the render-coordination loop, coalescing requests and publishing completed frames.
+    size_t threads_=std::max<size_t>(1,defaultWorkerCount()-presentationWorkerCount());
+    /// Queues the newest computed grid for asynchronous presentation.
+    void queuePresentation(std::shared_ptr<const FrameBase> frame,uint64_t serial) {
+        {
+            std::lock_guard lock(presentationMutex_);
+            if(presentationActive_)
+                presentationActive_->cancelled.store(true,std::memory_order_relaxed);
+            presentationPending_=PresentationJob{std::move(frame),serial};
+        }
+        presentationWake_.notify_one();
+    }
+
+    /// Reconstructs display frames independently from the compute coordinator.
+    void presentationLoop(std::stop_token shutdown) {
+        ThreadExecutor executor(presentationWorkerCount());
+        std::shared_ptr<const DisplayFrame> previous;
+        while(!shutdown.stop_requested()) {
+            PresentationJob job;
+            std::shared_ptr<Cancellation> token;
+            {
+                std::unique_lock lock(presentationMutex_);
+                if(!presentationWake_.wait(lock,shutdown,[&]{return presentationPending_.has_value();}))
+                    return;
+                job=std::move(*presentationPending_);
+                presentationPending_.reset();
+                token=std::make_shared<Cancellation>();
+                presentationActive_=token;
+            }
+            try {
+                auto display=presentFrame(*job.frame,executor,*token,previous.get());
+                if(token->cancelled.load(std::memory_order_relaxed)) continue;
+                QElapsedTimer copyTimer; copyTimer.start();
+                auto image=makeImage(*display);
+                const double copyMs=static_cast<double>(copyTimer.nsecsElapsed())/1.0e6;
+                previous=display;
+                const auto stats=job.frame->stats;
+                const auto view=job.frame->request.view;
+                const auto reconstruction=job.frame->request.settings.reconstruction;
+                const double presentationMs=display->milliseconds+copyMs;
+                QMetaObject::invokeMethod(this,
+                    [this,image=std::move(image),view,stats,reconstruction,presentationMs,id=job.serial] {
+                        if(id<shown_) return;
+                        shown_=id;
+                        fallback_=image_; fallbackView_=imageView_;
+                        image_=image; imageView_=view;
+                        if(stats.complete) ++completedFrames;
+                        const char* mode="nearest";
+                        switch(reconstruction) {
+                        case Reconstruction::Nearest: mode="nearest"; break;
+                        case Reconstruction::Bilinear: mode="bilinear"; break;
+                        case Reconstruction::Bicubic: mode="bicubic"; break;
+                        }
+                        if(onStatus) onStatus(
+                            QString("%1%2 | %3 bits | compute %4 ms | present %5 ms | reused %6 resumed %7 | %8 | %9%10")
+                                .arg(QString::fromStdString(stats.backend)).arg(stats.simd?" / AVX2":"")
+                                .arg(static_cast<qulonglong>(stats.bits))
+                                .arg(stats.milliseconds,0,'f',1).arg(presentationMs,0,'f',1)
+                                .arg(static_cast<qulonglong>(stats.reused))
+                                .arg(static_cast<qulonglong>(stats.resumed))
+                                .arg(QString::fromLatin1(mode))
+                                .arg(stats.uniform?"uniform samples":"adaptive preview")
+                                .arg(stats.complete?QString{}:QString(" / refining (guess %1, fill %2)")
+                                    .arg(static_cast<qulonglong>(stats.solidGuessed))
+                                    .arg(static_cast<qulonglong>(stats.filled))));
+                        update();
+                    },Qt::QueuedConnection);
+            } catch(const std::exception&e) {
+                if(token->cancelled.load(std::memory_order_relaxed)) continue;
+                const QString message=QString::fromUtf8(e.what());
+                QMetaObject::invokeMethod(this,[this,message,id=job.serial] {
+                    if(id==serial_ && onStatus) onStatus("Presentation error: "+message);
+                },Qt::QueuedConnection);
+            }
+            std::lock_guard lock(presentationMutex_);
+            if(presentationActive_==token) presentationActive_.reset();
+        }
+    }
+
+    /// Runs the compute loop, coalescing requests and immediately scheduling further refinement.
     void coordinator(std::stop_token shutdown) {
         struct DynamicBudget {
-            std::array<double,50> calculation{},overhead{};
+            std::array<double,50> calculation{};
             size_t pos=0,count=0;
-            double average(const std::array<double,50>&a,double fallback) const {
+            /// Returns the recent average compute time.
+            double average(double fallback) const {
                 if(!count) return fallback;
-                double sum=0; for(size_t i=0;i<count;++i) sum+=a[i]; return sum/static_cast<double>(count);
+                double sum=0; for(size_t i=0;i<count;++i) sum+=calculation[i];
+                return sum/static_cast<double>(count);
             }
+            /// Chooses the next orbit/refinement budget without charging presentation time.
             unsigned next(bool interactive) const {
-                const double calc=average(calculation,40.0),other=average(overhead,2.0);
-                // ui_helper.cpp's classic dynamic-resolution policy: start from
-                // five times recent work; under animation tighten to 3x above
-                // 25 FPS, clamp animation to >=15 FPS, idle to about 3 FPS,
-                // never request faster than 30 FPS, and subtract UI overhead.
+                const double calc=average(40.0);
                 double ms=calc*5.0;
                 if(interactive) {
                     if(ms>1000.0/25.0) ms=calc*3.0;
                     ms=std::min(ms,1000.0/15.0);
                 } else ms=1000.0/3.0;
                 ms=std::max(ms,1000.0/30.0);
-                ms-=other;
-                ms=std::max(ms,10.0);
-                return static_cast<unsigned>(std::lround(ms));
+                return static_cast<unsigned>(std::lround(std::max(ms,10.0)));
             }
-            void observe(double calc,double other) {
-                calculation[pos]=calc;overhead[pos]=other;pos=(pos+1)%calculation.size();count=std::min(calculation.size(),count+1);
+            /// Records only mathematical compute/refinement time.
+            void observe(double calc) {
+                calculation[pos]=calc; pos=(pos+1)%calculation.size();
+                count=std::min(calculation.size(),count+1);
             }
         } budget;
         Renderer renderer;
@@ -111,55 +200,31 @@ class Canvas final:public QWidget {
             {
                 std::unique_lock lock(mutex_);
                 if(!wake_.wait(lock,shutdown,[&]{return pending_.has_value();})) return;
-                job=std::move(*pending_);pending_.reset();
+                job=std::move(*pending_); pending_.reset();
                 token=std::make_shared<Cancellation>();
                 job.request.settings.sliceMilliseconds=budget.next(job.interactive);
                 active_=token;
             }
             try {
-                if(!executor || executor->concurrency()!=job.threads) executor=std::make_unique<QtExecutor>(job.threads);
+                if(!executor || executor->concurrency()!=job.threads)
+                    executor=std::make_unique<QtExecutor>(job.threads);
                 auto frame=renderer.render(job.request,*executor,*token);
-                QElapsedTimer imageTimer;imageTimer.start();
-                auto image=makeImage(*frame); const auto imageMs=static_cast<double>(imageTimer.nsecsElapsed())/1.0e6;
-                const auto stats=frame->stats;
-                budget.observe(stats.milliseconds,imageMs);
-                const auto view=frame->request.view;
-                const auto reconstruction=frame->request.settings.reconstruction;
-                // No QWidget access on this thread. QObject drops queued calls on
-                // destruction; our destructor also joins this coordinator first.
-                QMetaObject::invokeMethod(this,[this,image=std::move(image),view,stats,reconstruction,id=job.serial] {
-                    if(id<shown_) return;
-                    shown_=id;
-                    fallback_=image_;fallbackView_=imageView_;
-                    image_=image;imageView_=view;
-                    if(stats.complete) ++completedFrames;
-                    const char* mode="nearest";
-                    switch(reconstruction) {
-                    case Reconstruction::Nearest: mode="nearest"; break;
-                    case Reconstruction::Bilinear: mode="bilinear"; break;
-                    case Reconstruction::Bicubic: mode="bicubic"; break;
-                    }
-                    if(onStatus) onStatus(QString("%1%2  |  %3 bits  |  %4 ms  |  reused %5  resumed %6  |  %7  |  %8%9")
-                        .arg(QString::fromStdString(stats.backend)).arg(stats.simd?" / AVX2":"")
-                        .arg(static_cast<qulonglong>(stats.bits)).arg(stats.milliseconds,0,'f',1)
-                        .arg(static_cast<qulonglong>(stats.reused)).arg(static_cast<qulonglong>(stats.resumed))
-                        .arg(QString::fromLatin1(mode))
-                        .arg(stats.uniform?"uniform samples":"adaptive preview")
-                        .arg(stats.complete?QString{}:QString(" / refining (guess %1, fill %2)")
-                            .arg(static_cast<qulonglong>(stats.solidGuessed)).arg(static_cast<qulonglong>(stats.filled))));
-                    update();
-                },Qt::QueuedConnection);
+                budget.observe(frame->stats.milliseconds);
+                queuePresentation(frame,job.serial);
                 std::lock_guard lock(mutex_);
                 if(active_==token) active_.reset();
-                // Continue the same view in bounded slices when input has stopped.
-                // Count-only kernels finish each orbit before their time-budget yield.
-                if(!frame->stats.complete && !pending_ && !shutdown.stop_requested()) pending_=job;
+                // Compute refinement continues immediately; it no longer waits for
+                // interpolation, framebuffer copies, or Qt image publication.
+                if(!frame->stats.complete && !pending_ && !shutdown.stop_requested())
+                    pending_=job;
+                if(pending_) wake_.notify_one();
             } catch(const std::exception&e) {
                 const QString message=QString::fromUtf8(e.what());
                 QMetaObject::invokeMethod(this,[this,message,id=job.serial] {
                     if(id==serial_ && onStatus) onStatus("Render error: "+message);
                 },Qt::QueuedConnection);
-                std::lock_guard lock(mutex_);if(active_==token) active_.reset();
+                std::lock_guard lock(mutex_);
+                if(active_==token) active_.reset();
             }
         }
     }
@@ -266,15 +331,29 @@ public:
             }catch(const std::exception&e){motion_.stop();if(onStatus)onStatus(e.what());}
         });
         connect(&idle_,&QTimer::timeout,this,[this]{submit(false);});
+        presenter_=std::jthread([this](std::stop_token s){presentationLoop(s);});
         coordinator_=std::jthread([this](std::stop_token s){coordinator(s);});
     }
     /// Releases resources owned by the Canvas instance.
     ~Canvas() override {
         motion_.stop();idle_.stop();
         coordinator_.request_stop();
-        {std::lock_guard lock(mutex_);pending_.reset();if(active_)active_->cancelled.store(true,std::memory_order_relaxed);}
+        presenter_.request_stop();
+        {
+            std::lock_guard lock(mutex_);
+            pending_.reset();
+            if(active_) active_->cancelled.store(true,std::memory_order_relaxed);
+        }
+        {
+            std::lock_guard lock(presentationMutex_);
+            presentationPending_.reset();
+            if(presentationActive_)
+                presentationActive_->cancelled.store(true,std::memory_order_relaxed);
+        }
         wake_.notify_all();
+        presentationWake_.notify_all();
         if(coordinator_.joinable()) coordinator_.join();
+        if(presenter_.joinable()) presenter_.join();
     }
     /// Queues the newest render request and cancels obsolete work.
     void submit(bool interactive=false) {
@@ -292,10 +371,18 @@ public:
             std::lock_guard lock(mutex_);
             if(active_) active_->cancelled.store(true,std::memory_order_relaxed);
             pending_=Job{std::move(request),threads_,++serial_,interactive};
+            {
+                std::lock_guard presentationLock(presentationMutex_);
+                if(presentationActive_)
+                    presentationActive_->cancelled.store(true,std::memory_order_relaxed);
+                presentationPending_.reset();
+            }
         }
         wake_.notify_one();update();
         if(interactive) idle_.start();
     }
+    /// Returns the number of compute workers, excluding presentation workers.
+    size_t workerCount() const noexcept { return threads_; }
     /// Changes the worker count and requests a new render.
     void setThreads(size_t n) {threads_=n;submit();}
     /// Restores the default fractal view and requests a render.
@@ -354,7 +441,7 @@ public:
         reconstruction->addItems({"Nearest (XaoS)","Bilinear","Bicubic"});
         bar->addWidget(reconstruction);
         bar->addWidget(new QLabel("  Workers ",bar));auto*threads=new QSpinBox(bar);threads->setRange(1,1024);
-        threads->setValue(static_cast<int>(defaultWorkerCount()));bar->addWidget(threads);
+        threads->setValue(static_cast<int>(canvas->workerCount()));bar->addWidget(threads);
         auto*coords=bar->addAction("Coordinates / bits");auto*reset=bar->addAction("Reset");
         connect(formula,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int i){canvas->settings.formula=static_cast<Formula>(i);canvas->submit();});
         connect(iterations,qOverload<int>(&QSpinBox::valueChanged),this,[this](int n){canvas->settings.iterations=static_cast<uint32_t>(n);canvas->submit();});
