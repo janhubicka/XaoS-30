@@ -493,6 +493,13 @@ public:
         wake_.notify_one();update();
         if(interactive) idle_.start();
     }
+    /// Selects a formula, restores its XaoS default view/seed, and invalidates old state.
+    void setFormula(Formula formula) {
+        settings.formula=formula;
+        restoreFormulaDefault();
+        submit(false,true);
+    }
+
     /// Enables or disables the XaoS-style automatic fractal explorer.
     void setAutopilot(bool enabled) {
         if(autopilotEnabled_==enabled) return;
@@ -591,9 +598,7 @@ public:
         autopilot->setShortcut(QKeySequence(Qt::Key_A));
         auto*coords=bar->addAction("Coordinates / bits");auto*reset=bar->addAction("Reset");
         connect(formula,qOverload<int>(&QComboBox::currentIndexChanged),this,[this,formula](int i){
-            canvas->settings.formula=static_cast<Formula>(formula->itemData(i).toInt());
-            canvas->restoreFormulaDefault();
-            canvas->submit(false,true);
+            canvas->setFormula(static_cast<Formula>(formula->itemData(i).toInt()));
         });
         connect(iterations,qOverload<int>(&QSpinBox::valueChanged),this,[this](int n){canvas->settings.iterations=static_cast<uint32_t>(n);canvas->submit(false,true);});
         connect(states,&QCheckBox::toggled,this,[this](bool b){canvas->settings.saveState=b;canvas->submit();});
