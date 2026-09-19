@@ -69,8 +69,6 @@ template<class R> bool less(const R&a,double b) {
 template<class R> bool greater(const R&a,double b) {
     return NumberOps<R>::gt(a,NumberOps<R>::value(b,a));
 }
-template<class R> bool less(const R&a,const R&b) { return NumberOps<R>::lt(a,b); }
-template<class R> bool greater(const R&a,const R&b) { return NumberOps<R>::gt(a,b); }
 
 template<class R> void cmul(const R&ar,const R&ai,const R&br,const R&bi,R&rr,R&ri) {
     auto ac=NumberOps<R>::mul(ar,br),bd=NumberOps<R>::mul(ai,bi);
@@ -224,7 +222,7 @@ private:
             return !(less(x,0.0)&&greater(y,0.0)&&
                      less(O::add(O::scale(x,-1),O::scale(y,1.732050808)),1.732050808));
         case Formula::Beryl:
-            return less(m,9.0) || less(mag2(a,b),O::scale(m,4));
+            return less(m,9.0) || O::lt(mag2(a,b),O::scale(m,4));
         case Formula::Circle7:
             return less(m,1.0);
         case Formula::Clock:
