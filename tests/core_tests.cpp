@@ -286,9 +286,10 @@ void previewTests() {
     // Solid guesses are finished display samples in the classic zoomer; they do
     // not force an exact per-pixel recomputation merely because motion stopped.
     CHECK(preview->stats.complete);
+    auto previewDisplay=presentFrame(*preview,pool,stop);
     uint64_t guesses=0;
     for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
-        CHECK(preview->displayAt(x,y)==0xff000000u);
+        CHECK(previewDisplay->at(x,y)==0xff000000u);
         if(preview->qualityAt(x,y)==DisplayQuality::Guess) {
             ++guesses;
             CHECK(!preview->at(x,y).known(r.settings.iterations));
@@ -323,13 +324,16 @@ void resolutionFeedbackTests() {
     Cancellation interrupted; interrupted.cancelled.store(true);
     auto coarse=renderer.render(r,pool,interrupted);
     CHECK(!coarse->stats.complete); CHECK(coarse->stats.filled>0);
-    // Nearest reconstruction must exactly reproduce classic mkfilltable/filly:
-    // missing columns are copied from the nearest completed column in coordinate
-    // space, then missing rows from the nearest completed row.
+    // Timeout reduction is now O(width+height): it records source maps and
+    // does not copy presentation pixels into the mathematical grid.
+    CHECK(std::none_of(coarse->sampleQuality.begin(),coarse->sampleQuality.end(),
+                       [](uint8_t q){return q==static_cast<uint8_t>(DisplayQuality::Fill);}));
+    auto coarseDisplay=presentFrame(*coarse,pool,go);
     for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
-        const size_t i=coarse->index(x,y);
-        if(coarse->qualityAt(x,y)==DisplayQuality::Fill)
-            CHECK(coarse->displayAt(x,y)==coarse->samplePixels[i]);
+        const int sx=coarse->displayXSource[static_cast<size_t>(x)];
+        const int sy=coarse->displayYSource[static_cast<size_t>(y)];
+        if(sx>=0 && sy>=0)
+            CHECK(coarseDisplay->at(x,y)==coarse->samplePixels[coarse->index(sx,sy)]);
     }
     auto unique=[](const std::vector<Big>&axis) {
         size_t n=axis.empty()?0:1;
@@ -390,10 +394,13 @@ void reconstructionTests() {
     CHECK(nearest->samplePixels==bicubic->samplePixels);
     CHECK(nearest->sampleQuality==bilinear->sampleQuality);
     CHECK(nearest->sampleQuality==bicubic->sampleQuality);
+    auto nearestDisplay=presentFrame(*nearest,pool,go);
+    auto bilinearDisplay=presentFrame(*bilinear,pool,go);
+    auto bicubicDisplay=presentFrame(*bicubic,pool,go);
     bool nearestVsLinear=false,linearVsCubic=false;
     for(int y=0;y<nearest->request.height;++y) for(int x=0;x<nearest->request.width;++x) {
-        nearestVsLinear |= nearest->displayAt(x,y)!=bilinear->displayAt(x,y);
-        linearVsCubic |= bilinear->displayAt(x,y)!=bicubic->displayAt(x,y);
+        nearestVsLinear |= nearestDisplay->at(x,y)!=bilinearDisplay->at(x,y);
+        linearVsCubic |= bilinearDisplay->at(x,y)!=bicubicDisplay->at(x,y);
     }
     CHECK(nearestVsLinear);
     CHECK(linearVsCubic);
@@ -440,10 +447,11 @@ void rapidZoomDisplayTests() {
     Request r; r.width=192; r.height=120; r.settings.iterations=1400;
     r.settings.analytic=false; r.settings.solidGuessRange=0;
     auto frame=renderer.render(r,pool,go); CHECK(frame->stats.complete);
+    std::shared_ptr<const DisplayFrame> shown=presentFrame(*frame,pool,go);
 
-    auto fullyVisible=[](const FrameBase&f) {
+    auto fullyVisible=[](const DisplayFrame&f) {
         for(int y=0;y<f.request.height;++y) for(int x=0;x<f.request.width;++x)
-            if((f.displayAt(x,y)>>24)!=0xffu) return false;
+            if((f.at(x,y)>>24)!=0xffu) return false;
         return true;
     };
     auto uniqueAxis=[](const std::vector<Big>&axis) {
@@ -457,7 +465,8 @@ void rapidZoomDisplayTests() {
     for(int k=0;k<8;++k) {
         r.view.zoom(.37,.61,.975,r.width,r.height);
         frame=renderer.render(r,pool,go);
-        CHECK(fullyVisible(*frame));
+        shown=presentFrame(*frame,pool,go,shown.get());
+        CHECK(fullyVisible(*shown));
         CHECK(uniqueAxis(frame->previewXs)>=static_cast<size_t>(std::min(3,r.width)));
         CHECK(uniqueAxis(frame->previewYs)>=static_cast<size_t>(std::min(3,r.height)));
         if(frame->stats.reused>0)
@@ -472,14 +481,15 @@ void rapidZoomDisplayTests() {
     for(int k=0;k<8;++k) {
         r.view.zoom(.63,.39,1.028,r.width,r.height);
         frame=renderer.render(r,pool,go);
-        CHECK(fullyVisible(*frame));
+        shown=presentFrame(*frame,pool,go,shown.get());
+        CHECK(fullyVisible(*shown));
         CHECK(uniqueAxis(frame->previewXs)>=static_cast<size_t>(std::min(3,r.width)));
         CHECK(uniqueAxis(frame->previewYs)>=static_cast<size_t>(std::min(3,r.height)));
         if(frame->stats.reused>0)
             CHECK(frame->stats.started<static_cast<uint64_t>(r.width*r.height)/2);
     }
-    CHECK(frame->displayAt(0,0)!=0u);
-    CHECK(frame->displayAt(r.width-1,r.height-1)!=0u);
+    CHECK(shown->at(0,0)!=0u);
+    CHECK(shown->at(r.width-1,r.height-1)!=0u);
 
     // With motion stopped, repeated bounded passes must refine the existing grid
     // rather than replace it with a fresh raster. Reuse should persist and the
@@ -489,7 +499,8 @@ void rapidZoomDisplayTests() {
     bool idleReuse=false;
     for(int k=0;k<5;++k) {
         frame=renderer.render(r,pool,go);
-        CHECK(fullyVisible(*frame));
+        shown=presentFrame(*frame,pool,go,shown.get());
+        CHECK(fullyVisible(*shown));
         if(frame->stats.reused>0)
             CHECK(frame->stats.started<static_cast<uint64_t>(r.width*r.height)/2);
         idleReuse|=frame->stats.reused>0;
@@ -497,6 +508,24 @@ void rapidZoomDisplayTests() {
     }
     CHECK(idleReuse);
     CHECK(bestFilled<=beforeFilled);
+}
+
+/// Runs regression checks for presentation threading.
+void presentationTests() {
+    ThreadExecutor compute(4),one(1),many(4); Cancellation go; Renderer renderer;
+    Request r; r.width=211; r.height=137; r.settings.iterations=700;
+    r.settings.analytic=false; r.settings.sliceMilliseconds=4;
+    auto base=renderer.render(r,compute,go);
+    r.view.zoom(.42,.58,.973,r.width,r.height);
+    auto frame=renderer.render(r,compute,go);
+    for(auto mode:{Reconstruction::Nearest,Reconstruction::Bilinear,Reconstruction::Bicubic}) {
+        auto copy=std::make_shared<Frame<double,true>>();
+        static_cast<FrameBase&>(*copy)=static_cast<const FrameBase&>(*frame);
+        copy->request.settings.reconstruction=mode;
+        auto a=presentFrame(*copy,one,go);
+        auto b=presentFrame(*copy,many,go);
+        CHECK(a->pixels==b->pixels);
+    }
 }
 
 /// Runs regression checks for failure.
@@ -523,6 +552,7 @@ int main() {
           {"timeout fill feeds next DP resolution pass",resolutionFeedbackTests},{"grid reconstruction modes",reconstructionTests},
           {"split orbit/grid cache lifetime",splitCacheTests},
           {"rapid zoom display and idle refinement",rapidZoomDisplayTests},
+          {"parallel presentation equivalence",presentationTests},
           {"validation and exception barriers",failureTests}}) {
             test();std::cout<<"PASS "<<name<<'\n';
         }
