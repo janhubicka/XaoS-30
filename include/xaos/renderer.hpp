@@ -108,11 +108,12 @@ template<class Real,bool Save> struct Frame final:FrameBase { Storage<Save,Real>
 
 struct DisplayFrame {
     Request request;
-    std::vector<uint32_t> pixels; // bottom-to-top, tightly packed
+    std::vector<uint32_t> pixels; // top-to-bottom, tightly packed for zero-copy QImage wrapping
     double milliseconds=0;
-    /// Returns one reconstructed display pixel.
+    /// Returns one reconstructed display pixel in renderer bottom-to-top coordinates.
     uint32_t at(int x,int y) const {
-        return pixels[static_cast<size_t>(y)*static_cast<size_t>(request.width)+static_cast<size_t>(x)];
+        const size_t row=static_cast<size_t>(request.height-1-y);
+        return pixels[row*static_cast<size_t>(request.width)+static_cast<size_t>(x)];
     }
 };
 
