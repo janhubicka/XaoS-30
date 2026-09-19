@@ -236,14 +236,16 @@ struct CubicPoint {
     bool valid=false;
 };
 
-int nearestSource(const AxisSupport&axis,double target) {
+int nearestSource(const AxisSupport&axis,double target,bool preferHighOnTie) {
     if(axis.index.empty()) return -1;
     auto it=std::lower_bound(axis.position.begin(),axis.position.end(),target);
     if(it==axis.position.begin()) return axis.index.front();
     if(it==axis.position.end()) return axis.index.back();
     const size_t hi=static_cast<size_t>(it-axis.position.begin()),lo=hi-1;
-    return target-axis.position[lo] <= axis.position[hi]-target
-        ? axis.index[lo] : axis.index[hi]; // classic XaoS chooses left on a tie
+    const double lowDistance=target-axis.position[lo];
+    const double highDistance=axis.position[hi]-target;
+    if(lowDistance==highDistance) return preferHighOnTie?axis.index[hi]:axis.index[lo];
+    return lowDistance<highDistance?axis.index[lo]:axis.index[hi];
 }
 
 LinearPoint linearPoint(const AxisSupport&axis,double target) {
@@ -370,13 +372,13 @@ void postprocess(FrameBase&frame,const Big&step,const std::vector<uint8_t>&rowRe
     std::vector<CubicPoint> cubicY(static_cast<size_t>(frame.request.height));
     for(int x=0;x<frame.request.width;++x) {
         const double target=xaxis.target[static_cast<size_t>(x)];
-        nearestX[static_cast<size_t>(x)]=nearestSource(xaxis,target);
+        nearestX[static_cast<size_t>(x)]=nearestSource(xaxis,target,false);
         linearX[static_cast<size_t>(x)]=linearPoint(xaxis,target);
         cubicX[static_cast<size_t>(x)]=cubicPoint(xaxis,target);
     }
     for(int y=0;y<frame.request.height;++y) {
         const double target=yaxis.target[static_cast<size_t>(y)];
-        nearestY[static_cast<size_t>(y)]=nearestSource(yaxis,target);
+        nearestY[static_cast<size_t>(y)]=nearestSource(yaxis,target,true);
         linearY[static_cast<size_t>(y)]=linearPoint(yaxis,target);
         cubicY[static_cast<size_t>(y)]=cubicPoint(yaxis,target);
     }
