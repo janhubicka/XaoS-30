@@ -22,10 +22,10 @@ enum class AxisMotion { Neutral, ZoomIn, ZoomOut };
 double axisPixelDistance(const Big&,const Big&,const Big& step);
 
 /// Classifies motion using the exact viewport-containment cases from XaoS newpositions().
-AxisMotion classifyAxisMotion(const std::vector<Big>&current,const std::vector<Big>*old,
-                              const Big&step);
+AxisMotion classifyAxisMotion(const Big&begin,const Big&end,const std::vector<Big>*old);
 
 /// Computes the original XaoS new-line significance prices before global sorting.
 std::vector<double> linePriorities(const std::vector<Big>&current,const std::vector<Big>*old,
-                                   const std::vector<uint8_t>&dirty,const Big&step);
+                                   const std::vector<uint8_t>&dirty,const Big&step,
+                                   const Big&begin,const Big&end);
 }
