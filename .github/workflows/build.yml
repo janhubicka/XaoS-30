@@ -63,3 +63,109 @@ jobs:
         env:
           TSAN_OPTIONS: halt_on_error=1
         run: ctest --test-dir build --output-on-failure
+
+  macos-binaries:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install ninja qt gmp
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" \
+            -DGMP_INCLUDE_DIR="$(brew --prefix gmp)/include" \
+            -DGMP_LIBRARY="$(brew --prefix gmp)/lib/libgmp.dylib"
+      - name: Build
+        run: cmake --build build
+      - name: Core tests
+        run: ctest --test-dir build --output-on-failure
+      - name: Install app bundle
+        run: cmake --install build --prefix package
+      - name: Deploy Qt and GMP
+        run: |
+          set -euo pipefail
+          app="package/xaos-modern.app"
+          "$(brew --prefix qt)/bin/macdeployqt" "$app" -always-overwrite
+
+          executable="$app/Contents/MacOS/xaos-modern"
+          frameworks="$app/Contents/Frameworks"
+          mkdir -p "$frameworks"
+          gmp_link="$(otool -L "$executable" | awk '/libgmp/{print $1; exit}')"
+          test -n "$gmp_link"
+          gmp_name="$(basename "$gmp_link")"
+          cp "$gmp_link" "$frameworks/$gmp_name"
+          chmod 755 "$frameworks/$gmp_name"
+          install_name_tool -id "@rpath/$gmp_name" "$frameworks/$gmp_name"
+          install_name_tool -change "$gmp_link" "@executable_path/../Frameworks/$gmp_name" "$executable"
+
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          if otool -L "$executable" | grep -E '/opt/homebrew|/usr/local/(opt|Cellar)'; then
+            echo "App bundle still references Homebrew libraries"
+            exit 1
+          fi
+      - name: Archive app bundle
+        run: tar -czf "XaoS-30-macos-${{ matrix.arch }}.tar.gz" -C package xaos-modern.app
+      - name: Upload macOS binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: XaoS-30-macos-${{ matrix.arch }}
+          path: XaoS-30-macos-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  windows-binaries:
+    name: Windows x86_64
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-gmp
+      - name: Configure
+        shell: msys2 {0}
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        shell: msys2 {0}
+        run: cmake --build build
+      - name: Core tests
+        shell: msys2 {0}
+        run: ctest --test-dir build --output-on-failure
+      - name: Install and deploy
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cmake --install build --prefix package
+          windeployqt6 --release --no-translations package/bin/xaos-modern.exe
+          cp /ucrt64/bin/libgmp-10.dll package/bin/
+      - name: Packaged GUI smoke test
+        shell: pwsh
+        run: .\package\bin\xaos-modern.exe --smoke-test
+      - name: Archive Windows binaries
+        shell: pwsh
+        run: Compress-Archive -Path package\bin\* -DestinationPath XaoS-30-windows-x86_64.zip
+      - name: Upload Windows binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: XaoS-30-windows-x86_64
+          path: XaoS-30-windows-x86_64.zip
+          if-no-files-found: error
