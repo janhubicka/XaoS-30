@@ -502,33 +502,38 @@ int main(int argc,char**argv) {
     }
     window.show();
     if(smoke) {
+        struct SmokeState {
+            int zoomTicks=0,publishedAtStart=0;
+            bool publishedDuringMotion=false;
+        };
+        auto state=std::make_shared<SmokeState>();
         auto*continuous=new QTimer(&window);
         continuous->setInterval(8);
-        int zoomTicks=0,publishedAtStart=0;
-        bool publishedDuringMotion=false;
-        QObject::connect(continuous,&QTimer::timeout,&window,[&] {
-            publishedDuringMotion|=window.canvas->publishedFrames>publishedAtStart;
+        QObject::connect(continuous,&QTimer::timeout,&window,[&window,state,continuous] {
+            state->publishedDuringMotion|=
+                window.canvas->publishedFrames>state->publishedAtStart;
             window.canvas->view.zoom(.37,.61,.997,
                 std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));
             window.canvas->submit(true);
-            if(++zoomTicks>=80) {
-                publishedDuringMotion|=window.canvas->publishedFrames>publishedAtStart;
+            if(++state->zoomTicks>=80) {
+                state->publishedDuringMotion|=
+                    window.canvas->publishedFrames>state->publishedAtStart;
                 continuous->stop();
             }
         });
-        QTimer::singleShot(150,&window,[&] {
-            publishedAtStart=window.canvas->publishedFrames;
+        QTimer::singleShot(150,&window,[&window,state,continuous] {
+            state->publishedAtStart=window.canvas->publishedFrames;
             window.canvas->view.zoom(.37,.61,.997,
                 std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));
             window.canvas->submit(true);
-            zoomTicks=1;
+            state->zoomTicks=1;
             continuous->start();
         });
-        QTimer::singleShot(1000,&window,[&]{window.iterations->setValue(128);});
-        QTimer::singleShot(1400,&window,[&]{window.canvas->settings.minimumPrecision=128;window.canvas->submit(false,true);});
-        QTimer::singleShot(1900,&window,[&]{window.canvas->settings.saveState=false;window.canvas->submit();});
-        QTimer::singleShot(4000,&window,[&]{
-            const bool ok=window.canvas->completedFrames && publishedDuringMotion;
+        QTimer::singleShot(1000,&window,[&window]{window.iterations->setValue(128);});
+        QTimer::singleShot(1400,&window,[&window]{window.canvas->settings.minimumPrecision=128;window.canvas->submit(false,true);});
+        QTimer::singleShot(1900,&window,[&window]{window.canvas->settings.saveState=false;window.canvas->submit();});
+        QTimer::singleShot(4000,&window,[&window,&app,state]{
+            const bool ok=window.canvas->completedFrames && state->publishedDuringMotion;
             app.exit(ok?0:2);
         });
     }
