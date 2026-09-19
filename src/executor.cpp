@@ -21,11 +21,12 @@ size_t defaultWorkerCount() noexcept {
 ThreadExecutor::ThreadExecutor(size_t count) {
     if(count<1||count>1024) throw std::invalid_argument("worker count must be between 1 and 1024");
     threads_.reserve(count);
-    for(size_t id=0;id<count;++id) threads_.emplace_back([this,id](std::stop_token stop) {
+    for(size_t id=0;id<count;++id) threads_.emplace_back([this,id] {
         size_t seen=0;
         while(true) {
             std::unique_lock lock(mutex_);
-            if(!wake_.wait(lock,stop,[&]{return generation_!=seen;})) return;
+            wake_.wait(lock,[&]{return stopping_ || generation_!=seen;});
+            if(stopping_) return;
             seen=generation_;
             auto work=work_;
             lock.unlock();
@@ -38,7 +39,10 @@ ThreadExecutor::ThreadExecutor(size_t count) {
 }
 /// Releases resources owned by the ThreadExecutor instance.
 ThreadExecutor::~ThreadExecutor() {
-    for(auto&t:threads_) t.request_stop();
+    {
+        std::lock_guard lock(mutex_);
+        stopping_=true;
+    }
     wake_.notify_all();
     for(auto&t:threads_) if(t.joinable()) t.join();
 }
