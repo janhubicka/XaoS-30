@@ -1129,7 +1129,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->stats.milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
     return f;
 }
-
+} // namespace
 
 /// Validates a request, selects numeric/storage backends, and updates renderer caches.
 std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,const Cancellation&s) {
