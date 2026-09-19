@@ -85,39 +85,59 @@ struct FrameBase {
     /// Returns the adaptive-grid quality marker at one image coordinate.
     DisplayQuality qualityAt(int x,int y) const { return static_cast<DisplayQuality>(sampleQuality[index(x,y)]); }
 };
-template<bool Save,class Real> struct Storage;
-template<class Real> struct Storage<false,Real> {
-    /// Resizes the storage policy to cover the requested number of samples.
-    void resize(size_t,bool=false) {}
-    /// Copies resumable state for one sample between compatible storage objects.
+template<bool Save,class Real,class F> struct Storage;
+
+template<class Real,class F> struct Storage<false,Real,F> {
+    /// Resizes the count-only policy. It intentionally stores no orbit fields.
+    void resize(size_t) {}
+    /// Count-only frames never copy resumable orbit state.
     void copy(size_t,const Storage&,size_t) {}
 };
-template<> struct Storage<true,double> {
+
+template<unsigned Scalars> struct DoubleStateStorage;
+template<> struct DoubleStateStorage<2> {
+    using State=OrbitScalars<double,2>;
+    AlignedVector<double> x,y;
+    void resize(size_t n) { x.resize(n);y.resize(n); }
+    void copy(size_t d,const DoubleStateStorage&s,size_t i) { x[d]=s.x[i];y[d]=s.y[i]; }
+    State load(size_t i) const { State s;s.x=x[i];s.y=y[i];return s; }
+    template<class Kernel> void store(size_t i,const Kernel&k) { x[i]=k.x;y[i]=k.y; }
+};
+template<> struct DoubleStateStorage<3> {
+    using State=OrbitScalars<double,3>;
+    AlignedVector<double> x,y,a;
+    void resize(size_t n) { x.resize(n);y.resize(n);a.resize(n); }
+    void copy(size_t d,const DoubleStateStorage&s,size_t i) { x[d]=s.x[i];y[d]=s.y[i];a[d]=s.a[i]; }
+    State load(size_t i) const { State s;s.x=x[i];s.y=y[i];s.a=a[i];return s; }
+    template<class Kernel> void store(size_t i,const Kernel&k) { x[i]=k.x;y[i]=k.y;a[i]=k.a; }
+};
+template<> struct DoubleStateStorage<4> {
+    using State=OrbitScalars<double,4>;
     AlignedVector<double> x,y,a,b;
-    /// Resizes primary state for every formula and auxiliary state only when required.
-    void resize(size_t n,bool auxiliary=false) {
-        x.resize(n); y.resize(n);
-        if(auxiliary) { a.resize(n); b.resize(n); }
-        else { a.clear(); b.clear(); }
+    void resize(size_t n) { x.resize(n);y.resize(n);a.resize(n);b.resize(n); }
+    void copy(size_t d,const DoubleStateStorage&s,size_t i) {
+        x[d]=s.x[i];y[d]=s.y[i];a[d]=s.a[i];b[d]=s.b[i];
     }
-    /// Copies resumable state for one sample between compatible storage objects.
-    void copy(size_t d,const Storage&s,size_t i) {
-        x[d]=s.x[i]; y[d]=s.y[i];
-        if(!a.empty()) {
-            a[d]=s.a.empty()?0:s.a[i];
-            b[d]=s.b.empty()?0:s.b[i];
-        }
+    State load(size_t i) const { State s;s.x=x[i];s.y=y[i];s.a=a[i];s.b=b[i];return s; }
+    template<class Kernel> void store(size_t i,const Kernel&k) {
+        x[i]=k.x;y[i]=k.y;a[i]=k.a;b[i]=k.b;
     }
 };
-template<> struct Storage<true,Big> {
-    // Only unfinished orbits allocate limbs. Reused states are shared read-only.
-    std::vector<std::shared_ptr<const Orbit<Big>>> orbit;
-    /// Resizes the storage policy to cover the requested number of samples.
-    void resize(size_t n,bool=false) { orbit.resize(n); }
-    /// Copies resumable state for one sample between compatible storage objects.
-    void copy(size_t d,const Storage&s,size_t i) { orbit[d]=s.orbit[i]; }
+template<class F> struct Storage<true,double,F>:DoubleStateStorage<F::stateScalars> {};
+
+template<unsigned Scalars> struct BigStateStorage {
+    using State=OrbitScalars<Big,Scalars>;
+    // Only unfinished orbits allocate limbs. The object itself contains exactly
+    // the scalar fields required by this formula.
+    std::vector<std::shared_ptr<const State>> orbit;
+    void resize(size_t n) { orbit.resize(n); }
+    void copy(size_t d,const BigStateStorage&s,size_t i) { orbit[d]=s.orbit[i]; }
 };
-template<class Real,bool Save> struct Frame final:FrameBase { Storage<Save,Real> state; };
+template<class F> struct Storage<true,Big,F>:BigStateStorage<F::stateScalars> {};
+
+template<class Real,bool Save,class F> struct Frame final:FrameBase {
+    Storage<Save,Real,F> state;
+};
 
 struct DisplayFrame {
     Request request;
