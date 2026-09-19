@@ -396,6 +396,9 @@ double benchDDAVX2(const std::vector<Point>&p,uint32_t iterations) {
 #endif
 
 #ifdef XAOS_BENCH_NEON
+inline bool anyMask(uint64x2_t mask) {
+    return (vgetq_lane_u64(mask,0)|vgetq_lane_u64(mask,1))!=0;
+}
 struct DD128 { float64x2_t hi,lo; };
 inline DD128 ddadd128(DD128 a,DD128 b) {
     const auto s=vaddq_f64(a.hi,b.hi);
@@ -427,7 +430,7 @@ double benchDoubleNEON(const std::vector<Point>&p,uint32_t iterations) {
             const auto nx=vaddq_f64(vsubq_f64(xx,yy),cr);
             y=vaddq_f64(vmulq_f64(two,xy),ci);x=nx;
             xx=vmulq_f64(x,x);yy=vmulq_f64(y,y);
-            if(vmaxvq_u64(vcgtq_f64(vaddq_f64(xx,yy),four))) std::abort();
+            if(anyMask(vcgtq_f64(vaddq_f64(xx,yy),four))) std::abort();
         }
         vst1q_f64(xo,x);vst1q_f64(yo,y);checksum+=xo[0]+xo[1]+yo[0]+yo[1];
     }
@@ -451,7 +454,7 @@ double benchDDNEON(const std::vector<Point>&p,uint32_t iterations) {
             const auto gt=vcgtq_f64(mag.hi,four);
             const auto eq=vceqq_f64(mag.hi,four);
             const auto lo=vcgtq_f64(mag.lo,zero);
-            if(vmaxvq_u64(vorrq_u64(gt,vandq_u64(eq,lo)))) std::abort();
+            if(anyMask(vorrq_u64(gt,vandq_u64(eq,lo)))) std::abort();
         }
         vst1q_f64(xo,x.hi);vst1q_f64(yo,y.hi);checksum+=xo[0]+xo[1]+yo[0]+yo[1];
     }
