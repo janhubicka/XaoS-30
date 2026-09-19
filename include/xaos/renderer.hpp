@@ -85,24 +85,32 @@ struct FrameBase {
 template<bool Save,class Real> struct Storage;
 template<class Real> struct Storage<false,Real> {
     /// Resizes the storage policy to cover the requested number of samples.
-    void resize(size_t) {}
+    void resize(size_t,bool=false) {}
     /// Copies resumable state for one sample between compatible storage objects.
     void copy(size_t,const Storage&,size_t) {}
 };
 template<> struct Storage<true,double> {
     AlignedVector<double> x,y,a,b;
-    /// Resizes the storage policy to cover the requested number of samples.
-    void resize(size_t n) { x.resize(n); y.resize(n); a.resize(n); b.resize(n); }
+    /// Resizes primary state for every formula and auxiliary state only when required.
+    void resize(size_t n,bool auxiliary=false) {
+        x.resize(n); y.resize(n);
+        if(auxiliary) { a.resize(n); b.resize(n); }
+        else { a.clear(); b.clear(); }
+    }
     /// Copies resumable state for one sample between compatible storage objects.
     void copy(size_t d,const Storage&s,size_t i) {
-        x[d]=s.x[i]; y[d]=s.y[i]; a[d]=s.a[i]; b[d]=s.b[i];
+        x[d]=s.x[i]; y[d]=s.y[i];
+        if(!a.empty()) {
+            a[d]=s.a.empty()?0:s.a[i];
+            b[d]=s.b.empty()?0:s.b[i];
+        }
     }
 };
 template<> struct Storage<true,Big> {
     // Only unfinished orbits allocate limbs. Reused states are shared read-only.
     std::vector<std::shared_ptr<const Orbit<Big>>> orbit;
     /// Resizes the storage policy to cover the requested number of samples.
-    void resize(size_t n) { orbit.resize(n); }
+    void resize(size_t n,bool=false) { orbit.resize(n); }
     /// Copies resumable state for one sample between compatible storage objects.
     void copy(size_t d,const Storage&s,size_t i) { orbit[d]=s.orbit[i]; }
 };
