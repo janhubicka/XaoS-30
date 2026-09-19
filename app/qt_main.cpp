@@ -90,6 +90,10 @@ class Canvas final:public QWidget {
     /// Queues the newest computed grid for asynchronous presentation.
     void queuePresentation(std::shared_ptr<const FrameBase> frame,uint64_t serial) {
         {
+            std::lock_guard stateLock(mutex_);
+            if(serial<serial_) return; // computation was superseded while finishing a safe line
+        }
+        {
             std::lock_guard lock(presentationMutex_);
             // Refinement slices of the same request should not starve display:
             // let the active presentation finish, while replacing only the
