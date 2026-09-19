@@ -4,6 +4,7 @@
 #include <memory>
 #include <new>
 #include <string>
+#include <stdexcept>
 #include <vector>
 #include <variant>
 namespace xaos {
