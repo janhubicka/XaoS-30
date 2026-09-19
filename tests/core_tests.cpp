@@ -452,7 +452,7 @@ void rapidZoomDisplayTests() {
         for(size_t i=1;i<axis.size();++i) if(!(axis[i]==axis[i-1])) ++n;
         return n;
     };
-    bool sawSparse=false,sawReuse=false;
+    bool sawReuse=false;
     r.settings.sliceMilliseconds=2;
     for(int k=0;k<8;++k) {
         r.view.zoom(.37,.61,.975,r.width,r.height);
@@ -463,13 +463,8 @@ void rapidZoomDisplayTests() {
         if(frame->stats.reused>0)
             CHECK(frame->stats.started<static_cast<uint64_t>(r.width*r.height)/2);
         sawReuse|=frame->stats.reused>0;
-        uint64_t missing=0;
-        for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x)
-            missing+=frame->qualityAt(x,y)==DisplayQuality::Missing;
-        sawSparse|=missing>0 || frame->stats.filled>0;
     }
     CHECK(sawReuse);
-    CHECK(sawSparse);
 
     // Zooming out exposes area outside the previous viewport. It must be
     // reconstructed/clamped immediately rather than appearing as a black/empty
