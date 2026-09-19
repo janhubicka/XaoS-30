@@ -66,6 +66,35 @@ void axisTests() {
     rejects([]{matchAxis(std::vector<double>{1,0},3);});
     rejects([]{matchAxis({},0);});
     rejects([]{matchAxis({},3,0);});
+
+    // Original XaoS newpositions()/addprices() directional policy. Use isolated
+    // dirty lines so the recursive midpoint/span multiplier does not obscure the
+    // movement-dependent base price.
+    constexpr int count=21;
+    constexpr int focus=6;
+    std::vector<Big> current,zoomInOld,zoomOutOld;
+    current.reserve(count); zoomInOld.reserve(count); zoomOutOld.reserve(count);
+    for(int i=0;i<count;++i) {
+        current.push_back(Big::fromDouble(static_cast<double>(i),128));
+        zoomInOld.push_back(Big::fromDouble(focus+(i-focus)/.8,128));
+        zoomOutOld.push_back(Big::fromDouble(focus+(i-focus)/1.25,128));
+    }
+    const Big one=Big::fromDouble(1.0,128);
+    CHECK(classifyAxisMotion(current,&zoomInOld,one)==AxisMotion::ZoomIn);
+    CHECK(classifyAxisMotion(current,&zoomOutOld,one)==AxisMotion::ZoomOut);
+
+    std::vector<uint8_t> dirty(count);
+    for(int i:{0,6,12,18,20}) dirty[static_cast<size_t>(i)]=1;
+    const auto inPrice=linePriorities(current,&zoomInOld,dirty,one);
+    CHECK(inPrice[focus]>inPrice[0]);
+    CHECK(inPrice[focus]>inPrice[12]);
+    CHECK(inPrice[focus]>inPrice[20]);
+
+    const auto outPrice=linePriorities(current,&zoomOutOld,dirty,one);
+    CHECK(outPrice[0]>outPrice[6]);
+    CHECK(outPrice[20]>outPrice[12]);
+    CHECK(outPrice[0]>100.0*outPrice[6]);
+    CHECK(outPrice[20]>100.0*outPrice[12]);
 }
 /// Runs regression checks for numeric.
 void numericTests() {
