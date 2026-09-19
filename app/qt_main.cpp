@@ -118,10 +118,19 @@ class Canvas final:public QWidget {
             }
             try {
                 auto display=presentFrame(*job.frame,executor,*token,previous.get());
-                if(token->cancelled.load(std::memory_order_relaxed)) continue;
+                if(token->cancelled.load(std::memory_order_relaxed)) {
+                    std::lock_guard lock(presentationMutex_);
+                    if(presentationActive_==token) presentationActive_.reset();
+                    continue;
+                }
                 QElapsedTimer copyTimer; copyTimer.start();
                 auto image=makeImage(*display);
                 const double copyMs=static_cast<double>(copyTimer.nsecsElapsed())/1.0e6;
+                if(token->cancelled.load(std::memory_order_relaxed)) {
+                    std::lock_guard lock(presentationMutex_);
+                    if(presentationActive_==token) presentationActive_.reset();
+                    continue;
+                }
                 previous=display;
                 const auto stats=job.frame->stats;
                 const auto view=job.frame->request.view;
@@ -129,7 +138,7 @@ class Canvas final:public QWidget {
                 const double presentationMs=display->milliseconds+copyMs;
                 QMetaObject::invokeMethod(this,
                     [this,image=std::move(image),view,stats,reconstruction,presentationMs,id=job.serial] {
-                        if(id<shown_) return;
+                        if(id<serial_ || id<shown_) return;
                         shown_=id;
                         fallback_=image_; fallbackView_=imageView_;
                         image_=image; imageView_=view;
