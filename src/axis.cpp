@@ -77,8 +77,8 @@ AxisMotion classifyAxisMotion(const std::vector<Big>&current,const std::vector<B
     // This is mkrealloc_table()'s yend logic verbatim in geometric form:
     //   1: the new viewport lies strictly inside the old one (zoom in);
     //   2: the old sample extent lies strictly inside the new viewport (zoom out).
-    if(begin>(*old)[0] && end<old->back()) return AxisMotion::ZoomIn;
-    if((*old)[0]>begin && old->back()<end) return AxisMotion::ZoomOut;
+    if((*old)[0]<begin && end<old->back()) return AxisMotion::ZoomIn;
+    if(begin<(*old)[0] && old->back()<end) return AxisMotion::ZoomOut;
     return AxisMotion::Neutral;
 }
 
