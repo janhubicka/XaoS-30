@@ -27,8 +27,8 @@ size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state) {
     size_t each=sizeof(Count)+sizeof(uint32_t)+sizeof(uint8_t);
     if(state) {
         if(big) each=plusChecked(each,plusChecked(sizeof(std::shared_ptr<const Orbit<Big>>)+sizeof(Orbit<Big>)+32,
-                                  multiplyChecked(2,static_cast<size_t>(bits/8)+3*sizeof(mp_limb_t))));
-        else each+=2*sizeof(double);
+                                  multiplyChecked(4,static_cast<size_t>(bits/8)+3*sizeof(mp_limb_t))));
+        else each+=4*sizeof(double);
     }
     return multiplyChecked(each,pixels);
 }
