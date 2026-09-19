@@ -198,8 +198,11 @@ void numericTests() {
     rotated.zoom(u,vv,.83,320,200);
     mapped=rotated.complexToScreen(anchor.first,anchor.second,320,200);
     CHECK(std::abs(mapped.first-u)<5e-5);CHECK(std::abs(mapped.second-vv)<5e-5);
-    CHECK((std::is_empty_v<Storage<false,double>>));
-    CHECK((std::is_empty_v<Storage<false,Big>>));
+    CHECK((std::is_empty_v<Storage<false,double,Mandelbrot>>));
+    CHECK((std::is_empty_v<Storage<false,Big,Mandelbrot>>));
+    CHECK((FormulaTag<Formula::Mandelbrot>::stateScalars==2));
+    CHECK((FormulaTag<Formula::Newton>::stateScalars==3));
+    CHECK((FormulaTag<Formula::Phoenix>::stateScalars==4));
 }
 /// Runs every registered fixed formula through native and arbitrary-precision renderers.
 void formulaTests() {
@@ -237,11 +240,23 @@ void formulaTests() {
     // Independent one-step checks for formula families whose XaoS defaults use
     // fixed Julia-like seeds rather than "pixel as c".
     auto oneStep=[](Formula formula,double cx,double cy) {
-        detail::GenericFormulaKernel<double> kernel;
-        Cancellation stop;
-        Count result=kernel.run(formula,cx,cy,{},nullptr,1,stop,false);
-        CHECK(result.iterations==1 || result.status==Status::Escaped);
-        return std::array<double,4>{kernel.x,kernel.y,kernel.a,kernel.b};
+        auto run=[&]<Formula Value>() {
+            using F=FormulaTag<Value>;
+            static_assert(F::generic);
+            detail::FixedFormulaKernel<double,F> kernel;
+            Cancellation stop;
+            Count result=kernel.run(cx,cy,{},nullptr,1,stop,false);
+            CHECK(result.iterations==1 || result.status==Status::Escaped);
+            return std::array<double,4>{kernel.x,kernel.y,kernel.a,kernel.b};
+        };
+        switch(formula) {
+        case Formula::Barnsley1:return run.template operator()<Formula::Barnsley1>();
+        case Formula::Phoenix:return run.template operator()<Formula::Phoenix>();
+        case Formula::Lambda:return run.template operator()<Formula::Lambda>();
+        case Formula::Beryl:return run.template operator()<Formula::Beryl>();
+        case Formula::SymmetricBarnsley:return run.template operator()<Formula::SymmetricBarnsley>();
+        default: throw std::invalid_argument("formula not covered by one-step regression");
+        }
     };
     auto close=[](double a,double b){CHECK(std::abs(a-b)<1.e-10);};
 
