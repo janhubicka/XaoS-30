@@ -144,61 +144,6 @@ bool previewKnown(uint8_t q) noexcept {
     return q!=static_cast<uint8_t>(DisplayQuality::Missing);
 }
 
-/// Measures arbitrary-precision coordinate distance in pixel units.
-double pixelDistance(const Big&a,const Big&b,const Big&step) {
-    const double d=div(sub(a,b),step).toDouble();
-    return std::isfinite(d)?std::abs(d):1.e12;
-}
-
-enum class MovementMode { Neutral, ZoomIn, ZoomOut };
-/// Classifies an axis update as zoom-in, zoom-out, or neutral motion.
-MovementMode movementMode(const std::vector<Big>&now,const std::vector<Big>*old,const Big&step) {
-    if(!old || old->size()!=now.size() || now.empty()) return MovementMode::Neutral;
-    const Big low=sub(now.front(),scale(step,.5)),high=add(now.back(),scale(step,.5));
-    if((*old)[0]<low && high<old->back()) return MovementMode::ZoomIn;
-    if(low<(*old)[0] && old->back()<high) return MovementMode::ZoomOut;
-    return MovementMode::Neutral;
-}
-
-/// Computes XaoS-style significance priorities for missing rows or columns.
-std::vector<double> linePriorities(const std::vector<Big>&now,const std::vector<Big>*old,
-                                   const std::vector<uint8_t>&dirty,const Big&step) {
-    const int n=static_cast<int>(now.size());
-    std::vector<double> base(static_cast<size_t>(n),1.0),price(static_cast<size_t>(n),1.0);
-    const auto mode=movementMode(now,old,step);
-    if(old && old->size()==now.size()) {
-        for(int i=0;i<n;++i) if(dirty[static_cast<size_t>(i)]) {
-            const double d=pixelDistance((*old)[static_cast<size_t>(i)],now[static_cast<size_t>(i)],step);
-            if(mode==MovementMode::ZoomIn) base[static_cast<size_t>(i)]=1.0/(1.0+d);
-            else if(mode==MovementMode::ZoomOut) {
-                base[static_cast<size_t>(i)]=d;
-                if(i==0 || i==n-1) base[static_cast<size_t>(i)]*=500.0;
-            }
-        }
-    }
-    price=base;
-    // Port of zoom.cpp:addprices(): recursively prefer the midpoint of every
-    // contiguous block of newly-created lines, then the midpoints of its halves.
-    std::function<void(int,int)> addPrices=[&](int left,int boundary) {
-        while(left<boundary) {
-            const int mid=left+(boundary-left)/2;
-            const double span=pixelDistance(now[static_cast<size_t>(boundary)],now[static_cast<size_t>(mid)],step);
-            price[static_cast<size_t>(mid)]=span*base[static_cast<size_t>(mid)];
-            addPrices(left,mid);
-            left=mid+1;
-        }
-    };
-    int i=0;
-    while(i<n) {
-        if(!dirty[static_cast<size_t>(i)]) { ++i; continue; }
-        const int start=i;
-        while(i<n && dirty[static_cast<size_t>(i)]) ++i;
-        const int boundary=i<n?i:i-1;
-        if(start<boundary) addPrices(start,boundary);
-    }
-    return price;
-}
-
 /// Builds the classic interlaced row-refinement order.
 std::vector<int> interlacedOrder(int n,int range) {
     range=std::clamp(range,1,16);
