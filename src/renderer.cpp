@@ -698,7 +698,12 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
                             Orbit<double> orbit{}; const Orbit<double>*saved=nullptr;
                             if constexpr(Save) {
-                                if(before.iterations) { orbit={f->state.x[index],f->state.y[index],f->state.a[index],f->state.b[index]}; saved=&orbit; }
+                                if(before.iterations) {
+                                    orbit={f->state.x[index],f->state.y[index],
+                                           f->state.a.empty()?0:f->state.a[index],
+                                           f->state.b.empty()?0:f->state.b[index]};
+                                    saved=&orbit;
+                                }
                             }
                             lanes[used]=prepareLane<F>(dx[static_cast<size_t>(x)],dy[static_cast<size_t>(y)],
                                 juliaReal,juliaImag,before,saved,r.settings.analytic);
@@ -713,7 +718,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             stat.steps+=l.count.iterations-starts[j];
                             if(!Save && l.count.status==Status::Pending && l.count.iterations<f->counts[index].iterations) continue;
                             f->counts[index]=l.count;
-                            if constexpr(Save) { f->state.x[index]=l.x;f->state.y[index]=l.y;f->state.a[index]=0;f->state.b[index]=0; }
+                            if constexpr(Save) {
+                                f->state.x[index]=l.x;f->state.y[index]=l.y;
+                                if(!f->state.a.empty()) { f->state.a[index]=0;f->state.b[index]=0; }
+                            }
                             if(l.count.known(r.settings.iterations)) {
                                 f->samplePixels[index]=pixelColor(l.count,r.settings.iterations);
                                 f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
