@@ -66,18 +66,19 @@ struct FrameBase {
     std::vector<Big> previewXs,previewYs;
     AlignedVector<Count> counts;
     // Adaptive-grid samples are deliberately separate from count/orbit state. A
-    // guessed or timeout-filled colour must never become resumable mathematical
-    // state. The final display raster below is a pure post-processing product.
+    // guessed colour must never become resumable mathematical state.
     AlignedVector<uint32_t> samplePixels;
     AlignedVector<uint8_t> sampleQuality;
-    AlignedVector<uint32_t> displayPixels;
+    // Timeout resolution reduction is represented by lightweight source maps,
+    // not by copying a full framebuffer. Identity entries are completed grid
+    // lines; other entries point directly at the completed line used for display.
+    // -1 means no current-grid source exists and presentation should use fallback.
+    std::vector<int> displayXSource,displayYSource;
     Statistics stats;
     /// Converts image coordinates into the padded linear frame index.
     size_t index(int x,int y) const { return static_cast<size_t>(y)*static_cast<size_t>(stride)+static_cast<size_t>(x); }
     /// Returns the mathematical iteration state stored at one pixel.
     Count at(int x,int y) const { return counts[index(x,y)]; }
-    /// Returns the reconstructed display pixel at one image coordinate.
-    uint32_t displayAt(int x,int y) const { return displayPixels[index(x,y)]; }
     /// Returns the adaptive-grid quality marker at one image coordinate.
     DisplayQuality qualityAt(int x,int y) const { return static_cast<DisplayQuality>(sampleQuality[index(x,y)]); }
 };
@@ -104,6 +105,17 @@ template<> struct Storage<true,Big> {
     void copy(size_t d,const Storage&s,size_t i) { orbit[d]=s.orbit[i]; }
 };
 template<class Real,bool Save> struct Frame final:FrameBase { Storage<Save,Real> state; };
+
+struct DisplayFrame {
+    Request request;
+    std::vector<uint32_t> pixels; // bottom-to-top, tightly packed
+    double milliseconds=0;
+    /// Returns one reconstructed display pixel.
+    uint32_t at(int x,int y) const {
+        return pixels[static_cast<size_t>(y)*static_cast<size_t>(request.width)+static_cast<size_t>(x)];
+    }
+};
+
 class Renderer {
     // Mathematical state and display-grid state have different lifetimes. A
     // cancelled frame can contain resumable z_n values while still lacking the
@@ -120,6 +132,11 @@ public:
 // recalculating orbits. Output is packed 0xFFRRGGBB; unresolved/inside is black.
 /// Maps a completed iteration count to its visible colour.
 uint32_t pixelColor(Count count,uint32_t limit) noexcept;
-/// Writes the reconstructed frame to a binary PPM image.
+/// Reconstructs an immutable grid frame into a visible raster using a separate executor.
+std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&,Executor&,const Cancellation&,
+                                                 const DisplayFrame* previous=nullptr);
+/// Writes a reconstructed frame to a binary PPM image.
+void writePPM(const DisplayFrame&,const std::string& path);
+/// Reconstructs and writes a grid frame using a temporary presentation executor.
 void writePPM(const FrameBase&,const std::string& path);
 }
