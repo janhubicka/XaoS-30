@@ -138,7 +138,7 @@ class Canvas final:public QWidget {
     void sampleTouchVelocity(const QPointF&panDelta,double zoomLog,double rotation) {
         if(!touchSampleClock_.isValid()) {touchSampleClock_.restart();return;}
         const double seconds=std::clamp(touchSampleClock_.restart()/1000.0,.004,.08);
-        constexpr double mix=.38;
+        constexpr double mix=.55;
         QPointF pan=panDelta/seconds;
         const double speed=std::hypot(pan.x(),pan.y());
         if(speed>5000) pan*=5000.0/speed;
@@ -886,16 +886,9 @@ public:
                 pointer_=touchMomentumAnchor_;
                 if(changed) submit(true);
 
-                // Frax-like "throw" motion coasts for a while rather than stopping
-                // abruptly, but still converges so a still image can refine.
-                const double decay=std::exp(-1.65*seconds);
-                touchPanVelocity_*=decay;
-                touchZoomVelocity_*=decay;
-                touchRotationVelocity_*=decay;
-                if(!hasTouchMomentum()) {
-                    stopTouchMomentum(false);
-                    submit(false);
-                }
+                // Frax Motion keeps the release velocity until the user taps
+                // to stop it. This is deliberately not inertial scrolling friction:
+                // a thrown pan/pinch/twist is an animation state in its own right.
             } catch(const std::exception&e) {
                 stopTouchMomentum(false);
                 if(onStatus) onStatus(e.what());
