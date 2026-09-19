@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cmath>
 #include <fstream>
+#include <functional>
 #include <numeric>
 #include <type_traits>
 
@@ -612,133 +613,104 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         workStop.deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(r.settings.sliceMilliseconds);
     const double juliaReal=r.settings.juliaRe.toDouble(),juliaImag=r.settings.juliaIm.toDouble();
 
-    using BigScratch=std::conditional_t<F::generic,detail::FixedFormulaKernel<Big,F>,BigKernel<F>>;
-    std::vector<std::unique_ptr<BigScratch>> bigScratch;
-    if constexpr(big) {
-        bigScratch.reserve(executor.concurrency());
-        for(size_t i=0;i<executor.concurrency();++i) bigScratch.push_back(std::make_unique<BigScratch>(bits));
-    }
+    using CalculateList=std::function<void(const std::vector<size_t>&,const Cancellation&)>;
+    auto makeCalculateList=[&]<class F>() -> CalculateList {
+        using BigScratch=std::conditional_t<F::generic,detail::FixedFormulaKernel<Big,F>,BigKernel<F>>;
+        auto bigScratch=std::make_shared<std::vector<std::unique_ptr<BigScratch>>>();
+        if constexpr(big) {
+            bigScratch->reserve(executor.concurrency());
+            for(size_t i=0;i<executor.concurrency();++i)
+                bigScratch->push_back(std::make_unique<BigScratch>(bits));
+        }
+        auto state=[&] {
+            if constexpr(Save) return &f->state.template get<F>();
+            else return static_cast<void*>(nullptr);
+        }();
 
-    auto calculateList=[&](const std::vector<size_t>&list,const Cancellation&calculationStop) {
-        if(list.empty()) return;
-        std::atomic<size_t> next{0};
-        executor.run([&](size_t worker) {
-            auto&stat=stats.at(worker);
-            if constexpr(big) {
-                auto&scratch=*bigScratch.at(worker);
-                constexpr size_t chunk=8;
-                while(!calculationStop.requested()) {
-                    const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
-                    if(first>=list.size()) break;
-                    const size_t last=std::min(first+chunk,list.size());
-                    for(size_t k=first;k<last && !calculationStop.requested();++k) {
-                        const size_t index=list[k];
-                        const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
-                        const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
-                        Count before=f->counts[index];
-                        if(before.known(r.settings.iterations)) {
-                            f->samplePixels[index]=pixelColor(before,r.settings.iterations);
-                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
-                            continue;
-                        }
-                        const FormulaOrbit<Big,F>*saved=nullptr;
-                        if constexpr(Save) saved=f->state.orbit[index].get();
-                        const uint32_t startIterations=saved?before.iterations:0;
-                        Count result;
-                        if(r.view.rotation==0) {
-                            if constexpr(F::generic)
-                                result=scratch.run(f->xs[static_cast<size_t>(x)],f->ys[static_cast<size_t>(y)],
-                                                   before,saved,r.settings.iterations,calculationStop,Save);
-                            else
-                                result=scratch.run(f->xs[static_cast<size_t>(x)],f->ys[static_cast<size_t>(y)],
-                                                   r.settings.juliaRe,r.settings.juliaIm,before,saved,
-                                                   r.settings.iterations,calculationStop,Save,r.settings.analytic);
-                        } else {
-                            Big real=add(bxReal[static_cast<size_t>(x)],byReal[static_cast<size_t>(y)]);
-                            Big imag=add(bxImag[static_cast<size_t>(x)],byImag[static_cast<size_t>(y)]);
-                            if constexpr(F::generic)
-                                result=scratch.run(real,imag,before,saved,
-                                                   r.settings.iterations,calculationStop,Save);
-                            else
-                                result=scratch.run(real,imag,r.settings.juliaRe,r.settings.juliaIm,before,saved,
-                                                   r.settings.iterations,calculationStop,Save,r.settings.analytic);
-                        }
-                        stat.steps+=result.iterations-startIterations;
-                        if(saved && startIterations) ++stat.resumed; else ++stat.started;
-                        if(!Save && result.status==Status::Pending &&
-                           result.iterations<before.iterations) continue;
-                        f->counts[index]=result;
-                        if constexpr(Save) {
-                            if(result.status!=Status::Pending) {
-                                f->state.orbit[index].reset();
-                            } else if(result.iterations>startIterations) {
-                                auto orbit=std::make_shared<FormulaOrbit<Big,F>>(bits);
-                                orbit->x=scratch.x;orbit->y=scratch.y;
-                                if constexpr(F::stateScalars>=3) orbit->a=scratch.a;
-                                if constexpr(F::stateScalars>=4) orbit->b=scratch.b;
-                                f->state.orbit[index]=std::move(orbit);
+        // This lambda is the only substantial body instantiated per formula.
+        // Formula selection and storage alternative resolution have both happened
+        // before it is called; the pixel and iteration loops contain neither.
+        return [&,state,bigScratch](const std::vector<size_t>&list,
+                                    const Cancellation&calculationStop) {
+            if(list.empty()) return;
+            std::atomic<size_t> next{0};
+            executor.run([&](size_t worker) {
+                auto&stat=stats.at(worker);
+                if constexpr(big) {
+                    auto&scratch=*bigScratch->at(worker);
+                    constexpr size_t chunk=8;
+                    while(!calculationStop.requested()) {
+                        const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
+                        if(first>=list.size()) break;
+                        const size_t last=std::min(first+chunk,list.size());
+                        for(size_t k=first;k<last && !calculationStop.requested();++k) {
+                            const size_t index=list[k];
+                            const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
+                            const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
+                            Count before=f->counts[index];
+                            if(before.known(r.settings.iterations)) {
+                                f->samplePixels[index]=pixelColor(before,r.settings.iterations);
+                                f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                                continue;
+                            }
+                            const FormulaOrbit<Big,F>*saved=nullptr;
+                            if constexpr(Save) saved=state->orbit[index].get();
+                            const uint32_t startIterations=saved?before.iterations:0;
+                            Count result;
+                            if(r.view.rotation==0) {
+                                if constexpr(F::generic)
+                                    result=scratch.run(f->xs[static_cast<size_t>(x)],
+                                                       f->ys[static_cast<size_t>(y)],
+                                                       before,saved,r.settings.iterations,
+                                                       calculationStop,Save);
+                                else
+                                    result=scratch.run(f->xs[static_cast<size_t>(x)],
+                                                       f->ys[static_cast<size_t>(y)],
+                                                       r.settings.juliaRe,r.settings.juliaIm,
+                                                       before,saved,r.settings.iterations,
+                                                       calculationStop,Save,r.settings.analytic);
+                            } else {
+                                Big real=add(bxReal[static_cast<size_t>(x)],byReal[static_cast<size_t>(y)]);
+                                Big imag=add(bxImag[static_cast<size_t>(x)],byImag[static_cast<size_t>(y)]);
+                                if constexpr(F::generic)
+                                    result=scratch.run(real,imag,before,saved,r.settings.iterations,
+                                                       calculationStop,Save);
+                                else
+                                    result=scratch.run(real,imag,r.settings.juliaRe,r.settings.juliaIm,
+                                                       before,saved,r.settings.iterations,
+                                                       calculationStop,Save,r.settings.analytic);
+                            }
+                            stat.steps+=result.iterations-startIterations;
+                            if(saved && startIterations) ++stat.resumed; else ++stat.started;
+                            if(!Save && result.status==Status::Pending &&
+                               result.iterations<before.iterations) continue;
+                            f->counts[index]=result;
+                            if constexpr(Save) {
+                                if(result.status!=Status::Pending) {
+                                    state->orbit[index].reset();
+                                } else if(result.iterations>startIterations) {
+                                    auto orbit=std::make_shared<FormulaOrbit<Big,F>>(bits);
+                                    orbit->x=scratch.x;orbit->y=scratch.y;
+                                    if constexpr(F::stateScalars>=3) orbit->a=scratch.a;
+                                    if constexpr(F::stateScalars>=4) orbit->b=scratch.b;
+                                    state->orbit[index]=std::move(orbit);
+                                }
+                            }
+                            if(result.known(r.settings.iterations)) {
+                                f->samplePixels[index]=pixelColor(result,r.settings.iterations);
+                                f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                             }
                         }
-                        if(result.known(r.settings.iterations)) {
-                            f->samplePixels[index]=pixelColor(result,r.settings.iterations);
-                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
-                        }
                     }
-                }
-            } else if constexpr(F::generic) {
-                detail::FixedFormulaKernel<double,F> scratch;
-                const size_t chunk=list.size()>512?64:8;
-                while(!calculationStop.requested()) {
-                    const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
-                    if(first>=list.size()) break;
-                    const size_t last=std::min(first+chunk,list.size());
-                    for(size_t k=first;k<last && !calculationStop.requested();++k) {
-                        const size_t index=list[k];
-                        Count before=f->counts[index];
-                        if(before.known(r.settings.iterations)) {
-                            f->samplePixels[index]=pixelColor(before,r.settings.iterations);
-                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
-                            continue;
-                        }
-                        const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
-                        const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
-                        FormulaOrbit<double,F> orbit{};
-                        const FormulaOrbit<double,F>*saved=nullptr;
-                        if constexpr(Save) {
-                            if(before.iterations) {
-                                orbit=f->state.load(index);
-                                saved=&orbit;
-                            }
-                        }
-                        const uint32_t startIterations=saved?before.iterations:0;
-                        Count result=scratch.run(doubleRealAt(x,y),doubleImagAt(x,y),
-                                                 before,saved,r.settings.iterations,calculationStop,Save);
-                        stat.steps+=result.iterations-startIterations;
-                        if(saved && startIterations) ++stat.resumed; else ++stat.started;
-                        if(!Save && result.status==Status::Pending &&
-                           result.iterations<before.iterations) continue;
-                        f->counts[index]=result;
-                        if constexpr(Save) f->state.store(index,scratch);
-                        if(result.known(r.settings.iterations)) {
-                            f->samplePixels[index]=pixelColor(result,r.settings.iterations);
-                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
-                        }
-                    }
-                }
-            } else {
-                std::array<Lane,4> lanes{};
-                std::array<size_t,4> indexes{};
-                std::array<uint32_t,4> starts{};
-                const size_t chunk=list.size()>512?64:4;
-                while(!calculationStop.requested()) {
-                    const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
-                    if(first>=list.size()) break;
-                    const size_t last=std::min(first+chunk,list.size());
-                    size_t k=first;
-                    while(k<last && !calculationStop.requested()) {
-                        size_t used=0;
-                        while(used<4 && k<last) {
-                            const size_t index=list[k++];
+                } else if constexpr(F::generic) {
+                    detail::FixedFormulaKernel<double,F> scratch;
+                    const size_t chunk=list.size()>512?64:8;
+                    while(!calculationStop.requested()) {
+                        const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
+                        if(first>=list.size()) break;
+                        const size_t last=std::min(first+chunk,list.size());
+                        for(size_t k=first;k<last && !calculationStop.requested();++k) {
+                            const size_t index=list[k];
                             Count before=f->counts[index];
                             if(before.known(r.settings.iterations)) {
                                 f->samplePixels[index]=pixelColor(before,r.settings.iterations);
@@ -751,35 +723,123 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             const FormulaOrbit<double,F>*saved=nullptr;
                             if constexpr(Save) {
                                 if(before.iterations) {
-                                    orbit=f->state.load(index);
+                                    orbit=state->load(index);
                                     saved=&orbit;
                                 }
                             }
-                            lanes[used]=prepareLane<F>(doubleRealAt(x,y),doubleImagAt(x,y),
-                                juliaReal,juliaImag,before,saved,r.settings.analytic);
-                            indexes[used]=index;starts[used]=saved?before.iterations:0;
-                            if(saved && before.iterations) ++stat.resumed; else ++stat.started;
-                            ++used;
-                        }
-                        if(!used) continue;
-                        iterateFour(lanes,used,r.settings.iterations,calculationStop,Save,F::ship,r.settings.simd);
-                        for(size_t j=0;j<used;++j) {
-                            const size_t index=indexes[j]; auto&l=lanes[j];
-                            stat.steps+=l.count.iterations-starts[j];
-                            if(!Save && l.count.status==Status::Pending &&
-                               l.count.iterations<f->counts[index].iterations) continue;
-                            f->counts[index]=l.count;
-                            if constexpr(Save) f->state.store(index,l);
-                            if(l.count.known(r.settings.iterations)) {
-                                f->samplePixels[index]=pixelColor(l.count,r.settings.iterations);
+                            const uint32_t startIterations=saved?before.iterations:0;
+                            Count result=scratch.run(doubleRealAt(x,y),doubleImagAt(x,y),
+                                                     before,saved,r.settings.iterations,
+                                                     calculationStop,Save);
+                            stat.steps+=result.iterations-startIterations;
+                            if(saved && startIterations) ++stat.resumed; else ++stat.started;
+                            if(!Save && result.status==Status::Pending &&
+                               result.iterations<before.iterations) continue;
+                            f->counts[index]=result;
+                            if constexpr(Save) state->store(index,scratch);
+                            if(result.known(r.settings.iterations)) {
+                                f->samplePixels[index]=pixelColor(result,r.settings.iterations);
                                 f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                             }
                         }
                     }
+                } else {
+                    std::array<Lane,4> lanes{};
+                    std::array<size_t,4> indexes{};
+                    std::array<uint32_t,4> starts{};
+                    const size_t chunk=list.size()>512?64:4;
+                    while(!calculationStop.requested()) {
+                        const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
+                        if(first>=list.size()) break;
+                        const size_t last=std::min(first+chunk,list.size());
+                        size_t k=first;
+                        while(k<last && !calculationStop.requested()) {
+                            size_t used=0;
+                            while(used<4 && k<last) {
+                                const size_t index=list[k++];
+                                Count before=f->counts[index];
+                                if(before.known(r.settings.iterations)) {
+                                    f->samplePixels[index]=pixelColor(before,r.settings.iterations);
+                                    f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                                    continue;
+                                }
+                                const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
+                                const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
+                                FormulaOrbit<double,F> orbit{};
+                                const FormulaOrbit<double,F>*saved=nullptr;
+                                if constexpr(Save) {
+                                    if(before.iterations) {
+                                        orbit=state->load(index);
+                                        saved=&orbit;
+                                    }
+                                }
+                                lanes[used]=prepareLane<F>(doubleRealAt(x,y),doubleImagAt(x,y),
+                                    juliaReal,juliaImag,before,saved,r.settings.analytic);
+                                indexes[used]=index;starts[used]=saved?before.iterations:0;
+                                if(saved && before.iterations) ++stat.resumed; else ++stat.started;
+                                ++used;
+                            }
+                            if(!used) continue;
+                            iterateFour(lanes,used,r.settings.iterations,calculationStop,
+                                        Save,F::ship,r.settings.simd);
+                            for(size_t j=0;j<used;++j) {
+                                const size_t index=indexes[j];auto&lane=lanes[j];
+                                stat.steps+=lane.count.iterations-starts[j];
+                                if(!Save && lane.count.status==Status::Pending &&
+                                   lane.count.iterations<f->counts[index].iterations) continue;
+                                f->counts[index]=lane.count;
+                                if constexpr(Save) state->store(index,lane);
+                                if(lane.count.known(r.settings.iterations)) {
+                                    f->samplePixels[index]=pixelColor(lane.count,r.settings.iterations);
+                                    f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                                }
+                            }
+                        }
+                    }
                 }
-            }
-        });
+            });
+        };
     };
+
+    CalculateList calculateList;
+    switch(r.settings.formula) {
+#define XAOS_BIND_FORMULA(Name) \
+    case Formula::Name: calculateList=makeCalculateList.template operator()<FormulaTag<Formula::Name>>();break
+    XAOS_BIND_FORMULA(Mandelbrot);
+    XAOS_BIND_FORMULA(Julia);
+    XAOS_BIND_FORMULA(BurningShip);
+    XAOS_BIND_FORMULA(Mandelbrot3);
+    XAOS_BIND_FORMULA(Mandelbrot4);
+    XAOS_BIND_FORMULA(Mandelbrot5);
+    XAOS_BIND_FORMULA(Mandelbrot6);
+    XAOS_BIND_FORMULA(Newton);
+    XAOS_BIND_FORMULA(Newton4);
+    XAOS_BIND_FORMULA(Barnsley1);
+    XAOS_BIND_FORMULA(Barnsley2);
+    XAOS_BIND_FORMULA(Barnsley3);
+    XAOS_BIND_FORMULA(Octo);
+    XAOS_BIND_FORMULA(Phoenix);
+    XAOS_BIND_FORMULA(Magnet);
+    XAOS_BIND_FORMULA(Magnet2);
+    XAOS_BIND_FORMULA(Triceratops);
+    XAOS_BIND_FORMULA(Catseye);
+    XAOS_BIND_FORMULA(Mandelbar);
+    XAOS_BIND_FORMULA(Lambda);
+    XAOS_BIND_FORMULA(Manowar);
+    XAOS_BIND_FORMULA(Spider);
+    XAOS_BIND_FORMULA(Sierpinski);
+    XAOS_BIND_FORMULA(SierpinskiCarpet);
+    XAOS_BIND_FORMULA(KochSnowflake);
+    XAOS_BIND_FORMULA(SpidronHornflake);
+    XAOS_BIND_FORMULA(Mandelbrot9);
+    XAOS_BIND_FORMULA(Beryl);
+    XAOS_BIND_FORMULA(GoldenSierpinski);
+    XAOS_BIND_FORMULA(Circle7);
+    XAOS_BIND_FORMULA(Clock);
+    XAOS_BIND_FORMULA(SymmetricBarnsley);
+    XAOS_BIND_FORMULA(SierpinskiCarpet4);
+#undef XAOS_BIND_FORMULA
+    }
 
     // Ignore only the renderer's internal frame deadline once a line starts.
     // External cancellation (new UI input, shutdown, explicit caller deadline)
