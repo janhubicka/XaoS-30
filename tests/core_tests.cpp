@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "xaos/autopilot.hpp"
 #include "xaos/axis.hpp"
 #include "xaos/renderer.hpp"
 #include "xaos/palette.hpp"
@@ -107,6 +108,58 @@ void axisTests() {
     const auto nonuniformPrice=linePriorities(nonuniform,&zoomInOld,dirty,one,begin,end);
     CHECK(nonuniformPrice[focus]>nonuniformPrice[12]);
 }
+/// Runs regression checks for the XaoS-style autopilot.
+void autopilotTests() {
+    auto makeFrame=[](int width,int height,uint32_t color) {
+        DisplayFrame f;
+        f.request.width=width;f.request.height=height;
+        f.pixels.assign(static_cast<size_t>(width)*static_cast<size_t>(height),color);
+        return f;
+    };
+    const Big span=Big::fromDouble(4.0,128);
+
+    {
+        Autopilot pilot(1);
+        auto flat=makeFrame(80,60,0xff335577u);
+        CHECK(pilot.tick(flat,true,span).control==AutopilotControl::ZoomOut);
+    }
+    {
+        Autopilot pilot(2);
+        auto flat=makeFrame(80,60,0xff335577u);
+        CHECK(pilot.tick(flat,false,span).control==AutopilotControl::Pause);
+    }
+    {
+        Autopilot pilot(3);
+        DisplayFrame noisy;
+        noisy.request.width=80;noisy.request.height=60;
+        noisy.pixels.resize(static_cast<size_t>(noisy.request.width)*static_cast<size_t>(noisy.request.height));
+        for(size_t i=0;i<noisy.pixels.size();++i)
+            noisy.pixels[i]=0xff000000u|static_cast<uint32_t>((i+1)&0x00ffffffu);
+        auto decision=pilot.tick(noisy,true,span);
+        CHECK(decision.control==AutopilotControl::ZoomIn);
+        CHECK(decision.interestLevel==2);
+        CHECK(decision.focusX>0 && decision.focusX<1);
+        CHECK(decision.focusY>0 && decision.focusY<1);
+    }
+    {
+        Autopilot pilot(4);
+        auto boundary=makeFrame(80,60,0xff557799u);
+        for(int y=5;y<55;y+=9) for(int x=5;x<75;x+=9)
+            boundary.pixels[static_cast<size_t>(y)*80+static_cast<size_t>(x)]=0xff000000u;
+        auto decision=pilot.tick(boundary,true,span);
+        CHECK(decision.control==AutopilotControl::ZoomIn);
+        CHECK(decision.interestLevel==1 || decision.interestLevel==2);
+    }
+    {
+        Autopilot pilot(5);
+        auto flat=makeFrame(80,60,0xff224466u);
+        bool reset=false;
+        for(int i=0;i<12 && !reset;++i)
+            reset=pilot.tick(flat,true,span,20).control==AutopilotControl::Reset;
+        CHECK(reset);
+    }
+}
+
 /// Runs regression checks for numeric.
 void numericTests() {
     auto v=View::parse("-2","0","1e-1000",100);
@@ -580,7 +633,7 @@ void failureTests() {
 int main() {
     try {
         for(auto [name,test]:std::vector<std::pair<const char*,std::function<void()>>>{
-          {"axis optimizer vs independent dense DP",axisTests}, {"classic XaoS palette",paletteTests}, {"arbitrary-precision camera",numericTests},
+          {"axis optimizer vs independent dense DP",axisTests}, {"XaoS autopilot",autopilotTests}, {"classic XaoS palette",paletteTests}, {"arbitrary-precision camera",numericTests},
           {"scalar/AVX2 bit identity",simdTests},{"counts/state/resume/limit decrease",resumeTests},
           {"zoom coordinates and exact refinement",zoomTests},{"deep zoom and cache invalidation",deepTests},
           {"cancellation and resumption",cancellationTests},{"solid guessing and preview refinement",previewTests},
