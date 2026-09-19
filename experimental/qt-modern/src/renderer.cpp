@@ -500,7 +500,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                          mp_bitcnt_t bits) {
     const auto begin=std::chrono::steady_clock::now();
     const auto*stateOld=dynamic_cast<const Frame<Real,Save>*>(statePrevious.get());
-    const auto*gridOld=dynamic_cast<const Frame<Real,Save>*>(gridPrevious.get());
+    const FrameBase*gridOld=gridPrevious.get();
     if(stateOld && !compatible(*stateOld,r,bits)) stateOld=nullptr;
     if(gridOld && !compatible(*gridOld,r,bits)) gridOld=nullptr;
     auto f=std::make_shared<Frame<Real,Save>>();
