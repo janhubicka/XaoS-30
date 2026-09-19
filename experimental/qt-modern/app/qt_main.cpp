@@ -171,8 +171,32 @@ class Canvas final:public QWidget {
         const double y=div(sub(newTop,oldTop),view.span).toDouble()*width();
         const double w=div(source.span,view.span).toDouble()*width();
         const double h=w*image.height()/image.width();
-        if(std::isfinite(x)&&std::isfinite(y)&&std::isfinite(w)&&std::isfinite(h) && w>0 && w<1.e9)
+        if(std::isfinite(x)&&std::isfinite(y)&&std::isfinite(w)&&std::isfinite(h) && w>0 && w<1.e9) {
+            // During zoom-out the transformed previous frame is smaller than the
+            // widget. Classic XaoS immediately fills the newly exposed bands from
+            // the nearest boundary row/column instead of flashing black. Do the
+            // same while the next DP frame is still being computed.
+            const double cw=width(),ch=height();
+            if(x>0) {
+                p.drawImage(QRectF(0,y,x,h),image,QRectF(0,0,1,image.height()));
+                if(y>0) p.fillRect(QRectF(0,0,x,y),QColor::fromRgba(image.pixel(0,0)));
+                if(y+h<ch) p.fillRect(QRectF(0,y+h,x,ch-(y+h)),QColor::fromRgba(image.pixel(0,image.height()-1)));
+            }
+            if(x+w<cw) {
+                p.drawImage(QRectF(x+w,y,cw-(x+w),h),image,
+                            QRectF(image.width()-1,0,1,image.height()));
+                if(y>0) p.fillRect(QRectF(x+w,0,cw-(x+w),y),
+                                  QColor::fromRgba(image.pixel(image.width()-1,0)));
+                if(y+h<ch) p.fillRect(QRectF(x+w,y+h,cw-(x+w),ch-(y+h)),
+                                     QColor::fromRgba(image.pixel(image.width()-1,image.height()-1)));
+            }
+            if(y>0)
+                p.drawImage(QRectF(x,0,w,y),image,QRectF(0,0,image.width(),1));
+            if(y+h<ch)
+                p.drawImage(QRectF(x,y+h,w,ch-(y+h)),image,
+                            QRectF(0,image.height()-1,image.width(),1));
             p.drawImage(QRectF(x,y,w,h),image);
+        }
     }
 protected:
     void paintEvent(QPaintEvent*) override {
