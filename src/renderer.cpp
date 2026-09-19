@@ -29,12 +29,17 @@ public:
     MemoryBudgetExceeded():std::length_error("estimated renderer memory exceeds budget") {}
 };
 /// Estimates memory consumed by one frame and optional saved orbit state.
-size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state,bool auxiliary) {
+size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state,unsigned stateScalars) {
     size_t each=sizeof(Count)+sizeof(uint32_t)+sizeof(uint8_t);
     if(state) {
-        if(big) each=plusChecked(each,plusChecked(sizeof(std::shared_ptr<const Orbit<Big>>)+sizeof(Orbit<Big>)+32,
-                                  multiplyChecked(4,static_cast<size_t>(bits/8)+3*sizeof(mp_limb_t))));
-        else each+=2*sizeof(double)+(auxiliary?2*sizeof(double):0);
+        if(big) {
+            const size_t scalarBytes=plusChecked(sizeof(Big),
+                plusChecked(static_cast<size_t>(bits/8),3*sizeof(mp_limb_t)));
+            each=plusChecked(each,plusChecked(sizeof(std::shared_ptr<const void>)+32,
+                                             multiplyChecked(stateScalars,scalarBytes)));
+        } else {
+            each=plusChecked(each,multiplyChecked(stateScalars,sizeof(double)));
+        }
     }
     return multiplyChecked(each,pixels);
 }
@@ -418,22 +423,22 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                          const std::shared_ptr<const FrameBase>&gridPrevious,
                                          mp_bitcnt_t bits) {
     const auto begin=std::chrono::steady_clock::now();
-    const auto*stateOld=dynamic_cast<const Frame<Real,Save>*>(statePrevious.get());
+    const auto*stateOld=dynamic_cast<const Frame<Real,Save,F>*>(statePrevious.get());
     const FrameBase*gridOld=gridPrevious.get();
     if(stateOld && !compatible(*stateOld,r,bits)) stateOld=nullptr;
     if(gridOld && !compatible(*gridOld,r,bits)) gridOld=nullptr;
-    auto f=std::make_shared<Frame<Real,Save>>();
+    auto f=std::make_shared<Frame<Real,Save,F>>();
     f->request=r;
     f->stride=(r.width+63)&~63;
     const size_t pixels=multiplyChecked(static_cast<size_t>(f->stride),static_cast<size_t>(r.height));
     const bool big=std::is_same_v<Real,Big>;
-    const bool auxiliary=F::generic && formulaNeedsAuxiliaryState(r.settings.formula);
-    size_t bytes=estimate(pixels,bits,big,Save,auxiliary);
+    constexpr unsigned stateScalars=F::stateScalars;
+    size_t bytes=estimate(pixels,bits,big,Save,stateScalars);
     auto addPreviousBytes=[&](const std::shared_ptr<const FrameBase>&previous) {
         if(previous) bytes=plusChecked(bytes,estimate(
             previous->counts.size(),previous->stats.bits,
             previous->stats.backend=="GMP",previous->request.settings.saveState,
-            formulaNeedsAuxiliaryState(previous->request.settings.formula)));
+            formulaStateScalars(previous->request.settings.formula)));
     };
     addPreviousBytes(statePrevious);
     if(gridPrevious && gridPrevious!=statePrevious) addPreviousBytes(gridPrevious);
@@ -471,7 +476,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     auto stateSourceY=exactSources(ay.coordinates,stateOld?&stateOld->ys:nullptr);
     auto gridStateSourceX=exactSources(ax.coordinates,gridOld?&gridOld->xs:nullptr);
     auto gridStateSourceY=exactSources(ay.coordinates,gridOld?&gridOld->ys:nullptr);
-    const auto*typedGridOld=dynamic_cast<const Frame<Real,Save>*>(gridOld);
+    const auto*typedGridOld=dynamic_cast<const Frame<Real,Save,F>*>(gridOld);
     f->xs=std::move(ax.coordinates); f->ys=std::move(ay.coordinates);
     if(r.settings.sliceMilliseconds) {
         // Start presentation coordinates at the real sample coordinates. Fill may
@@ -482,7 +487,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->stats.uniform=ax.uniform && ay.uniform;
     f->stats.bits=bits; f->stats.backend=big?"GMP":"double";
     f->stats.simd=!big && r.settings.simd && hasAVX2();
-    f->counts.resize(pixels); f->state.resize(pixels,auxiliary);
+    f->counts.resize(pixels); f->state.resize(pixels);
     f->samplePixels.assign(pixels,0xff000000u);
     f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
 
@@ -565,7 +570,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         }
                     }
                     const FrameBase*countOld=nullptr;
-                    const Frame<Real,Save>*typedCountOld=nullptr;
+                    const Frame<Real,Save,F>*typedCountOld=nullptr;
                     int csx=-1,csy=-1;
                     if(stateOld && sx>=0 && sy>=0) {
                         countOld=stateOld; typedCountOld=stateOld; csx=sx; csy=sy;
