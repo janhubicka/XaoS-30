@@ -1,6 +1,0 @@
-/build*/
-*.ppm
-*.png
-*.csv
-
-!docs/*.csv

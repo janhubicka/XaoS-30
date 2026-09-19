@@ -9,11 +9,13 @@
 #include <thread>
 #include <vector>
 namespace xaos {
+/// Returns a conservative default number of worker threads.
 size_t defaultWorkerCount() noexcept;
 struct Cancellation {
     std::atomic<bool> cancelled{false};
     const Cancellation* parent=nullptr; // non-owning; parent outlives the synchronous render
     std::chrono::steady_clock::time_point deadline=std::chrono::steady_clock::time_point::max();
+    /// Reports whether cancellation or an enabled deadline has been reached.
     bool requested(bool timeBudget=true) const noexcept {
         return cancelled.load(std::memory_order_relaxed) || (parent && parent->requested(timeBudget)) ||
             (timeBudget && deadline!=std::chrono::steady_clock::time_point::max() && std::chrono::steady_clock::now()>=deadline);
@@ -21,10 +23,13 @@ struct Cancellation {
 };
 class Executor {
 public:
+    /// Releases resources owned by the Executor instance.
     virtual ~Executor()=default;
+    /// Returns the number of workers available to the executor.
     virtual size_t concurrency() const noexcept=0;
     // Synchronous barrier: no callback may survive return, including exceptions.
     // Called only by one coordinator; do not call recursively from its workers.
+    /// Executes scheduled work using the implementation-specific worker machinery.
     virtual void run(const std::function<void(size_t)>& work)=0;
 };
 class ThreadExecutor final:public Executor {
@@ -36,9 +41,13 @@ class ThreadExecutor final:public Executor {
     std::exception_ptr error_;
     size_t generation_=0,remaining_=0;
 public:
+    /// Constructs a ThreadExecutor instance.
     explicit ThreadExecutor(size_t count);
+    /// Releases resources owned by the ThreadExecutor instance.
     ~ThreadExecutor() override;
+    /// Returns the number of workers available to the executor.
     size_t concurrency() const noexcept override { return threads_.size(); }
+    /// Executes scheduled work using the implementation-specific worker machinery.
     void run(const std::function<void(size_t)>& work) override;
 };
 }

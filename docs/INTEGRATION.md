@@ -4,14 +4,14 @@ This is a standalone implementation. No remote repository has been changed and
 no upstream branch, pull request, merge, or compatibility certification is claimed.
 
 The accompanying additive patch places the source under
-`experimental/qt-modern/` in a checkout of XaoS. It does not edit the production
+`` in a checkout of XaoS. It does not edit the production
 engine, change the upstream top-level CMake build, or install a competing binary
 under the original executable name. From the upstream checkout root:
 
 ```sh
 git apply --check /path/to/xaos-modern-additive.patch
 git apply /path/to/xaos-modern-additive.patch
-cmake -S experimental/qt-modern -B build-modern -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build-modern -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build-modern -j
 ctest --test-dir build-modern --output-on-failure
 ./build-modern/xaos-modern

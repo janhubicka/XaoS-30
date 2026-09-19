@@ -12,13 +12,17 @@ class QtExecutor final:public xaos::Executor {
     QThreadPool pool_;
     size_t count_;
 public:
+    /// Constructs a QtExecutor instance.
     explicit QtExecutor(size_t count):count_(count) {
         if(count<1 || count>1024) throw std::invalid_argument("invalid Qt worker count");
         pool_.setMaxThreadCount(static_cast<int>(count));
         pool_.setExpiryTimeout(-1);
     }
+    /// Releases resources owned by the QtExecutor instance.
     ~QtExecutor() override { pool_.waitForDone(); }
+    /// Returns the number of workers available to the executor.
     size_t concurrency() const noexcept override { return count_; }
+    /// Executes scheduled work using the implementation-specific worker machinery.
     void run(const std::function<void(size_t)>&work) override {
         struct Batch {
             std::mutex mutex;

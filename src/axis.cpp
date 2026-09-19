@@ -5,6 +5,7 @@
 #include <limits>
 #include <stdexcept>
 namespace xaos {
+/// Finds the minimum-cost monotone mapping from old sample lines to a new axis.
 AxisMatch matchAxis(std::span<const double> pos,int n,double radius) {
     if(n<1 || !(radius>0) || !std::isfinite(radius) || radius>32)
         throw std::invalid_argument("invalid line matching parameters");

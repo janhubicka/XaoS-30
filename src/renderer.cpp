@@ -12,14 +12,17 @@
 
 namespace xaos {
 namespace {
+/// Multiplies sizes while detecting overflow.
 size_t multiplyChecked(size_t a,size_t b) {
     if(b && a>std::numeric_limits<size_t>::max()/b) throw std::length_error("image/precision size overflow");
     return a*b;
 }
+/// Adds sizes while detecting overflow.
 size_t plusChecked(size_t a,size_t b) {
     if(a>std::numeric_limits<size_t>::max()-b) throw std::length_error("memory size overflow");
     return a+b;
 }
+/// Estimates memory consumed by one frame and optional saved orbit state.
 size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state) {
     size_t each=sizeof(Count)+2*sizeof(uint32_t)+sizeof(uint8_t);
     if(state) {
@@ -35,11 +38,13 @@ struct Axis {
     bool uniform=false;
     double cost=0;
 };
+/// Rounds a coordinate into the arithmetic precision used by the selected backend.
 template<class Real> Big quantize(Big b,mp_bitcnt_t bits) {
     if constexpr(std::is_same_v<Real,double>) return Big::fromDouble(b.toDouble(),128);
     else return b.atPrecision(bits);
 }
 template<class Real>
+/// Builds a new sample axis and reuses old coordinates with the line dynamic program.
 Axis makeAxis(const Big& center,const Big& step,int n,mp_bitcnt_t bits,
               const std::vector<Big>* old,bool uniform,double radius) {
     const mp_bitcnt_t p=std::is_same_v<Real,double>?std::max<mp_bitcnt_t>(128,bits):bits;
@@ -101,6 +106,7 @@ Axis makeAxis(const Big& center,const Big& step,int n,mp_bitcnt_t bits,
 // presentation coordinate was collapsed onto a neighbour, so its source map is
 // intentionally *not* suitable for orbit-state reuse.  Map exact old axes to the
 // newly selected DP coordinates by equality instead.
+/// Maps new coordinates to exactly matching old coordinates for safe state reuse.
 std::vector<int> exactSources(const std::vector<Big>& target,const std::vector<Big>* old) {
     std::vector<int> source(target.size(),-1);
     if(!old) return source;
@@ -111,11 +117,13 @@ std::vector<int> exactSources(const std::vector<Big>& target,const std::vector<B
     }
     return source;
 }
+/// Checks whether an old frame can safely serve as a visual fallback.
 bool displayCompatible(const FrameBase&old,const Request&r) {
     const auto&s=old.request.settings;
     return s.formula==r.settings.formula &&
         (s.formula!=Formula::Julia || (s.juliaRe==r.settings.juliaRe && s.juliaIm==r.settings.juliaIm));
 }
+/// Checks whether an old frame is compatible with exact mathematical state reuse.
 bool compatible(const FrameBase& old,const Request&r,mp_bitcnt_t bits) {
     return displayCompatible(old,r) && old.stats.bits==bits &&
            old.request.settings.analytic==r.settings.analytic;
@@ -123,6 +131,7 @@ bool compatible(const FrameBase& old,const Request&r,mp_bitcnt_t bits) {
 struct alignas(64) LocalStats { uint64_t reused=0,started=0,resumed=0,steps=0; };
 struct LineTask { bool row=false; int index=0; double priority=0; size_t serial=0; };
 
+/// Reports whether a sample has a display colour usable by solid guessing.
 bool previewKnown(uint8_t q) noexcept {
     // Classic XaoS treats timeout-filled pixels as ordinary samples on the next
     // low-resolution pass. Their collapsed presentation coordinates make that
@@ -131,12 +140,14 @@ bool previewKnown(uint8_t q) noexcept {
     return q!=static_cast<uint8_t>(DisplayQuality::Missing);
 }
 
+/// Measures arbitrary-precision coordinate distance in pixel units.
 double pixelDistance(const Big&a,const Big&b,const Big&step) {
     const double d=div(sub(a,b),step).toDouble();
     return std::isfinite(d)?std::abs(d):1.e12;
 }
 
 enum class MovementMode { Neutral, ZoomIn, ZoomOut };
+/// Classifies an axis update as zoom-in, zoom-out, or neutral motion.
 MovementMode movementMode(const std::vector<Big>&now,const std::vector<Big>*old,const Big&step) {
     if(!old || old->size()!=now.size() || now.empty()) return MovementMode::Neutral;
     const Big low=sub(now.front(),scale(step,.5)),high=add(now.back(),scale(step,.5));
@@ -145,6 +156,7 @@ MovementMode movementMode(const std::vector<Big>&now,const std::vector<Big>*old,
     return MovementMode::Neutral;
 }
 
+/// Computes XaoS-style significance priorities for missing rows or columns.
 std::vector<double> linePriorities(const std::vector<Big>&now,const std::vector<Big>*old,
                                    const std::vector<uint8_t>&dirty,const Big&step) {
     const int n=static_cast<int>(now.size());
@@ -183,6 +195,7 @@ std::vector<double> linePriorities(const std::vector<Big>&now,const std::vector<
     return price;
 }
 
+/// Builds the classic interlaced row-refinement order.
 std::vector<int> interlacedOrder(int n,int range) {
     range=std::clamp(range,1,16);
     std::vector<int> offsets(static_cast<size_t>(range));
@@ -211,6 +224,7 @@ struct AxisSupport {
     std::vector<double> target;
 };
 
+/// Collects completed nonuniform sample lines for interpolation.
 AxisSupport buildAxisSupport(const std::vector<Big>&coordinates,const std::vector<uint8_t>&ready,
                              const Big&step) {
     AxisSupport out;
@@ -240,6 +254,7 @@ struct CubicPoint {
     bool valid=false;
 };
 
+/// Builds the original XaoS run-based nearest-column fill map.
 std::vector<int> classicColumnSources(const std::vector<Big>&coordinates,
                                       const std::vector<uint8_t>&ready,const Big&step) {
     const int n=static_cast<int>(coordinates.size());
@@ -272,6 +287,7 @@ std::vector<int> classicColumnSources(const std::vector<Big>&coordinates,
     return source;
 }
 
+/// Builds the original XaoS nearest-row fill map.
 std::vector<int> classicRowSources(const std::vector<Big>&coordinates,
                                    const std::vector<uint8_t>&ready,const Big&step) {
     const int n=static_cast<int>(coordinates.size());
@@ -300,6 +316,7 @@ std::vector<int> classicRowSources(const std::vector<Big>&coordinates,
     return source;
 }
 
+/// Finds bracketing support lines and the interpolation fraction for one target.
 LinearPoint linearPoint(const AxisSupport&axis,double target) {
     if(axis.index.empty()) return {};
     auto it=std::lower_bound(axis.position.begin(),axis.position.end(),target);
@@ -314,6 +331,7 @@ LinearPoint linearPoint(const AxisSupport&axis,double target) {
             std::clamp((target-axis.position[lo])/span,0.0,1.0)};
 }
 
+/// Builds nonuniform cubic-Hermite support indices and weights for one target.
 CubicPoint cubicPoint(const AxisSupport&axis,double target) {
     CubicPoint out;
     if(axis.index.size()<4) return out;
@@ -349,20 +367,24 @@ CubicPoint cubicPoint(const AxisSupport&axis,double target) {
 }
 
 struct RGB { double r=0,g=0,b=0; };
+/// Converts a packed RGB pixel into floating-point channels.
 RGB unpack(uint32_t c) {
     return {static_cast<double>((c>>16)&255),static_cast<double>((c>>8)&255),
             static_cast<double>(c&255)};
 }
+/// Clamps floating-point RGB channels and packs them into an opaque pixel.
 uint32_t pack(const RGB&c) {
     const auto channel=[](double v) {
         return static_cast<uint32_t>(std::lround(std::clamp(v,0.0,255.0)));
     };
     return 0xff000000u|(channel(c.r)<<16)|(channel(c.g)<<8)|channel(c.b);
 }
+/// Linearly interpolates between two RGB colours.
 RGB mix(const RGB&a,const RGB&b,double t) {
     return {a.r+(b.r-a.r)*t,a.g+(b.g-a.g)*t,a.b+(b.b-a.b)*t};
 }
 
+/// Reads a usable colour from one adaptive-grid intersection.
 bool gridColor(const FrameBase&frame,int x,int y,uint32_t&color) {
     if(x<0 || y<0 || x>=frame.request.width || y>=frame.request.height) return false;
     const size_t i=frame.index(x,y);
@@ -372,6 +394,7 @@ bool gridColor(const FrameBase&frame,int x,int y,uint32_t&color) {
     return true;
 }
 
+/// Reconstructs a target pixel from four nonuniform grid neighbours.
 bool bilinearColor(const FrameBase&frame,const LinearPoint&x,const LinearPoint&y,
                    uint32_t&color) {
     if(x.a<0 || y.a<0) return false;
@@ -385,6 +408,7 @@ bool bilinearColor(const FrameBase&frame,const LinearPoint&x,const LinearPoint&y
     return true;
 }
 
+/// Reconstructs a target pixel from a clamped 4x4 nonuniform cubic stencil.
 bool bicubicColor(const FrameBase&frame,const CubicPoint&x,const CubicPoint&y,
                   uint32_t&color) {
     if(!x.valid || !y.valid) return false;
@@ -409,6 +433,7 @@ bool bicubicColor(const FrameBase&frame,const CubicPoint&x,const CubicPoint&y,
     return true;
 }
 
+/// Maps target pixel centres to nearest source indices in another viewport.
 std::vector<int> reprojectAxis(const Big&newCenter,const Big&newStep,int newSize,
                                const Big&oldCenter,const Big&oldStep,int oldSize) {
     std::vector<int> source(static_cast<size_t>(newSize),0);
@@ -427,6 +452,7 @@ std::vector<int> reprojectAxis(const Big&newCenter,const Big&newStep,int newSize
     return source;
 }
 
+/// Seeds the output raster from the previous visible frame with edge clamping.
 void seedPreviousDisplay(FrameBase&frame,const FrameBase*old,const Big&step) {
     frame.displayPixels.assign(frame.samplePixels.size(),0u);
     if(!old || old->displayPixels.empty() || old->request.width<1 || old->request.height<1)
@@ -443,6 +469,7 @@ void seedPreviousDisplay(FrameBase&frame,const FrameBase*old,const Big&step) {
             old->displayAt(sx[static_cast<size_t>(x)],sy[static_cast<size_t>(y)]);
 }
 
+/// Reconstructs the visible raster from the current adaptive row/column grid.
 void postprocess(FrameBase&frame,const Big&step,const std::vector<uint8_t>&rowReady,
                  const std::vector<uint8_t>&colReady,const FrameBase*old) {
     const AxisSupport xaxis=buildAxisSupport(frame.xs,colReady,step);
@@ -498,6 +525,7 @@ void postprocess(FrameBase&frame,const Big&step,const std::vector<uint8_t>&rowRe
 }
 
 template<class Real,bool Save,class F>
+/// Builds one frame, reusing orbit state and XaoS row/column geometry when safe.
 std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const Cancellation&stop,
                                          const std::shared_ptr<const FrameBase>&statePrevious,
                                          const std::shared_ptr<const FrameBase>&gridPrevious,
@@ -1019,6 +1047,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
 }
 
 template<class Real,bool Save>
+/// Dispatches a render request to the compile-time kernel for the selected formula.
 std::shared_ptr<const FrameBase> selectFormula(const Request&r,Executor&e,const Cancellation&s,
                                               const std::shared_ptr<const FrameBase>&stateOld,
                                               const std::shared_ptr<const FrameBase>&gridOld,
@@ -1032,6 +1061,7 @@ std::shared_ptr<const FrameBase> selectFormula(const Request&r,Executor&e,const 
 }
 }
 
+/// Validates a request, selects numeric/storage backends, and updates renderer caches.
 std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,const Cancellation&s) {
     if(r.width<1||r.height<1 || r.width>std::numeric_limits<int>::max()-64 ||
        r.height>std::numeric_limits<int>::max()-8 || !r.settings.iterations || !e.concurrency())
@@ -1061,11 +1091,13 @@ std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,con
     return result;
 }
 
+/// Maps a completed iteration count to its visible colour.
 uint32_t pixelColor(Count c,uint32_t limit) noexcept {
     if(c.status!=Status::Escaped || c.iterations>limit) return 0xff000000u;
     return classicIterationColor(c.iterations);
 }
 
+/// Writes the reconstructed frame to a binary PPM image.
 void writePPM(const FrameBase&f,const std::string&path) {
     std::ofstream out(path,std::ios::binary);
     if(!out) throw std::runtime_error("cannot open output: "+path);

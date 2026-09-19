@@ -11,5 +11,6 @@ struct AxisMatch {
 // Old lines may be dropped at zero cost. Reuse is injective and order preserving.
 // Candidates are restricted to |position-destination| < radius and viewport bounds.
 // Sparse weighted-chain DP, O((oldCount*radius + newCount) log newCount).
+/// Finds the minimum-cost monotone mapping from old sample lines to a new axis.
 AxisMatch matchAxis(std::span<const double> oldPositions,int newCount,double radius=4.0);
 }

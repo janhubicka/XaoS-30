@@ -12,7 +12,9 @@ enum class Status:uint8_t { Pending, Escaped, Interior };
 struct Count {
     uint32_t iterations=0;
     Status status=Status::Pending;
+    /// Reports whether an iteration count already determines the pixel at the requested limit.
     bool known(uint32_t limit) const noexcept { return status!=Status::Pending || iterations>=limit; }
+    /// Compares two values for equality.
     friend bool operator==(const Count&,const Count&)=default;
 };
 static_assert(sizeof(Count)==8);
@@ -23,6 +25,7 @@ template<class Real> struct Orbit { Real x,y; };
 
 // Only use the cheap analytic test well away from either algebraic boundary.
 // Coordinate conversion error is tiny relative to this margin on [-2,2]^2.
+/// Tests a conservative interior shortcut for the main Mandelbrot cardioid and period-two bulb.
 inline bool mainInterior(double x,double y) noexcept {
     if(std::abs(x)>2 || std::abs(y)>2) return false;
     const double yy=y*y, a=x-.25, q=a*a+yy;
@@ -32,13 +35,16 @@ struct Lane {
     double cr=0,ci=0,x=0,y=0;
     Count count;
 };
+/// Reports whether the runtime CPU supports the AVX2 kernel.
 bool hasAVX2() noexcept;
 // Four independent orbits, not four iterations of the same orbit.
 // All inactive lanes are frozen. The portable path has identical operation order.
+/// Advances up to four independent double-precision fractal orbits.
 void iterateFour(std::array<Lane,4>& lanes,size_t valid,uint32_t limit,
                  const Cancellation&,bool allowTimeBudget,bool ship,bool allowSIMD);
 
 template<class F>
+/// Builds one SIMD/scalar lane from a coordinate and optional resumable orbit state.
 Lane prepareLane(double cx,double cy,double jr,double ji,const Count& previous,
                  const Orbit<double>* saved,bool analytic) {
     Lane l;
@@ -58,7 +64,9 @@ template<class F> class BigKernel {
     Big cr_,ci_,xx_,yy_,t_,nx_;
 public:
     Big x,y;
+    /// Constructs a BigKernel instance.
     explicit BigKernel(mp_bitcnt_t p):cr_(p),ci_(p),xx_(p),yy_(p),t_(p),nx_(p),x(p),y(p) {}
+    /// Executes scheduled work using the implementation-specific worker machinery.
     Count run(const Big&cx,const Big&cy,const Big&jr,const Big&ji,const Count&previous,
               const Orbit<Big>* saved,uint32_t limit,const Cancellation&stop,
               bool allowTimeBudget,bool analytic) {

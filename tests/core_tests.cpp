@@ -15,7 +15,9 @@ using namespace xaos;
 namespace {
 int checks=0;
 #define CHECK(x) do { ++checks; if(!(x)) throw std::runtime_error(std::string(__FILE__)+":"+std::to_string(__LINE__)+": " #x); } while(false)
+/// Verifies that a callable rejects invalid input by throwing an exception.
 template<class Fn> void rejects(Fn fn) { bool yes=false; try{fn();}catch(const std::exception&){yes=true;} CHECK(yes); }
+/// Checks that two frames represent the same mathematical iteration results.
 void sameCounts(const FrameBase&a,const FrameBase&b) {
     CHECK(a.request.width==b.request.width); CHECK(a.request.height==b.request.height);
     CHECK(a.xs==b.xs); CHECK(a.ys==b.ys);
@@ -26,6 +28,7 @@ void sameCounts(const FrameBase&a,const FrameBase&b) {
         if(ac.iterations<=a.request.settings.iterations && bc.iterations<=b.request.settings.iterations) CHECK(ac==bc);
     }
 }
+/// Runs regression checks for axis.
 void axisTests() {
     std::mt19937 gen(173);
     std::uniform_real_distribution<double> rnd(-1,8);
@@ -64,6 +67,7 @@ void axisTests() {
     rejects([]{matchAxis({},0);});
     rejects([]{matchAxis({},3,0);});
 }
+/// Runs regression checks for numeric.
 void numericTests() {
     auto v=View::parse("-2","0","1e-1000",100);
     CHECK(v.requiredBits(100)>3300);
@@ -82,6 +86,7 @@ void numericTests() {
     CHECK((std::is_empty_v<Storage<false,double>>));
     CHECK((std::is_empty_v<Storage<false,Big>>));
 }
+/// Runs regression checks for simd.
 void simdTests() {
     Cancellation stop;
     std::mt19937_64 gen(23);
@@ -109,6 +114,7 @@ void simdTests() {
         CHECK(a[0].count.status==Status::Escaped); CHECK(a[0].count.iterations==expected);
     }
 }
+/// Runs regression checks for resume.
 void resumeTests() {
     ThreadExecutor one(1),many(4); Cancellation stop;
     for(mp_bitcnt_t precision:{0ul,128ul,256ul}) for(auto formula:{Formula::Mandelbrot,Formula::Julia,Formula::BurningShip}) {
@@ -128,6 +134,7 @@ void resumeTests() {
 }
 // Freshly evaluate the ACTUAL nonuniform coordinates, not the ideal pixel grid.
 // This is the key test for retaining orbits during approximate zooming.
+/// Recomputes every stored coordinate independently and verifies the cache.
 template<class F> void verifyCoordinates(const FrameBase&frame) {
     const auto&r=frame.request; Cancellation stop;
     BigKernel<F> kernel(frame.stats.bits);
@@ -145,6 +152,7 @@ template<class F> void verifyCoordinates(const FrameBase&frame) {
         CHECK(frame.at(x,y)==expected);
     }
 }
+/// Recomputes mathematically known samples and verifies cached results.
 template<class F> void verifyKnownCoordinates(const FrameBase&frame) {
     const auto&r=frame.request; Cancellation stop;
     BigKernel<F> kernel(frame.stats.bits);
@@ -164,6 +172,7 @@ template<class F> void verifyKnownCoordinates(const FrameBase&frame) {
         CHECK(actual==expected);
     }
 }
+/// Runs regression checks for zoom.
 void zoomTests() {
     ThreadExecutor pool(3); Cancellation stop;
     for(mp_bitcnt_t precision:{0ul,192ul}) for(bool state:{false,true}) {
@@ -188,6 +197,7 @@ void zoomTests() {
         Renderer resized; b=resized.render(r,pool,stop); sameCounts(*a,*b);
     }
 }
+/// Runs regression checks for deep.
 void deepTests() {
     ThreadExecutor pool(3); Cancellation stop;
     // Manual precision must apply to the pixel-step division too, not only z_n.
@@ -213,6 +223,7 @@ void deepTests() {
     r.settings.formula=Formula::Julia;a=renderer.render(r,pool,stop);
     CHECK(a->stats.reused==0);CHECK(a->stats.resumed==0);
 }
+/// Runs regression checks for cancellation.
 void cancellationTests() {
     ThreadExecutor pool(2);Renderer renderer;Request r;r.width=19;r.height=13;r.settings.analytic=false;
     Cancellation stopped; stopped.cancelled.store(true);
@@ -236,6 +247,7 @@ void cancellationTests() {
     }
 }
 
+/// Runs regression checks for palette.
 void paletteTests() {
     const auto p=classicDefaultPalette();
     CHECK(p.size()==65534);
@@ -258,6 +270,7 @@ void paletteTests() {
     CHECK(pixelColor(Count{99,Status::Interior},100)==0xff000000u);
 }
 
+/// Runs regression checks for preview.
 void previewTests() {
     ThreadExecutor pool(4);Cancellation stop;
     Request r;r.width=160;r.height=96;r.settings.iterations=1000;r.settings.analytic=true;
@@ -299,6 +312,7 @@ void previewTests() {
 }
 
 
+/// Runs regression checks for resolution feedback.
 void resolutionFeedbackTests() {
     ThreadExecutor pool(4); Renderer renderer; Cancellation go;
     Request r; r.width=160; r.height=96; r.settings.iterations=900;
@@ -351,6 +365,7 @@ void resolutionFeedbackTests() {
 }
 
 
+/// Runs regression checks for reconstruction.
 void reconstructionTests() {
     ThreadExecutor pool(4); Cancellation go;
     auto make=[&](Reconstruction reconstruction) {
@@ -386,6 +401,7 @@ void reconstructionTests() {
 
 
 
+/// Runs regression checks for split cache.
 void splitCacheTests() {
     ThreadExecutor pool(4); Cancellation go; Renderer renderer;
     Request r; r.width=120; r.height=80; r.settings.iterations=300;
@@ -418,6 +434,7 @@ void splitCacheTests() {
     CHECK(exactSamples>static_cast<uint64_t>(r.width*r.height)/4);
 }
 
+/// Runs regression checks for rapid zoom display.
 void rapidZoomDisplayTests() {
     ThreadExecutor pool(4); Cancellation go; Renderer renderer;
     Request r; r.width=192; r.height=120; r.settings.iterations=1400;
@@ -487,6 +504,7 @@ void rapidZoomDisplayTests() {
     CHECK(bestFilled<=beforeFilled);
 }
 
+/// Runs regression checks for failure.
 void failureTests() {
     ThreadExecutor pool(2);Renderer renderer;Request r;Cancellation stop;
     r.width=0;rejects([&]{renderer.render(r,pool,stop);});r.width=32;r.height=20;
@@ -499,6 +517,7 @@ void failureTests() {
     rejects([]{ThreadExecutor none(0);});
 }
 }
+/// Runs the regression test executable.
 int main() {
     try {
         for(auto [name,test]:std::vector<std::pair<const char*,std::function<void()>>>{

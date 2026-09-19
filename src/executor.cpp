@@ -6,6 +6,7 @@
 #include <sched.h>
 #endif
 namespace xaos {
+/// Returns a conservative default number of worker threads.
 size_t defaultWorkerCount() noexcept {
     size_t n=std::max(1u,std::thread::hardware_concurrency());
 #ifdef __linux__
@@ -16,6 +17,7 @@ size_t defaultWorkerCount() noexcept {
     return std::min<size_t>(1024,n);
 }
 
+/// Constructs a ThreadExecutor instance.
 ThreadExecutor::ThreadExecutor(size_t count) {
     if(count<1||count>1024) throw std::invalid_argument("worker count must be between 1 and 1024");
     threads_.reserve(count);
@@ -34,11 +36,13 @@ ThreadExecutor::ThreadExecutor(size_t count) {
         }
     });
 }
+/// Releases resources owned by the ThreadExecutor instance.
 ThreadExecutor::~ThreadExecutor() {
     for(auto&t:threads_) t.request_stop();
     wake_.notify_all();
     for(auto&t:threads_) if(t.joinable()) t.join();
 }
+/// Performs the run operation.
 void ThreadExecutor::run(const std::function<void(size_t)>& work) {
     std::unique_lock lock(mutex_);
     if(remaining_) throw std::logic_error("concurrent/nested Executor::run");

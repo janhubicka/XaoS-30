@@ -9,13 +9,18 @@ namespace xaos {
 template<class T> class AlignedAllocator {
 public:
     using value_type=T;
+    /// Constructs a AlignedAllocator instance.
     AlignedAllocator()=default;
+    /// Constructs a AlignedAllocator instance.
     template<class U> AlignedAllocator(const AlignedAllocator<U>&) {}
+    /// Allocates cache-line-aligned storage for the container.
     T* allocate(size_t n) {
         if(n>std::numeric_limits<size_t>::max()/sizeof(T)) throw std::bad_array_new_length();
         return static_cast<T*>(::operator new(n*sizeof(T),std::align_val_t(64)));
     }
+    /// Releases cache-line-aligned storage previously allocated by this allocator.
     void deallocate(T*p,size_t) noexcept { ::operator delete(p,std::align_val_t(64)); }
+    /// Compares two values for equality.
     template<class U> bool operator==(const AlignedAllocator<U>&) const noexcept { return true; }
 };
 template<class T> using AlignedVector=std::vector<T,AlignedAllocator<T>>;
@@ -49,6 +54,7 @@ struct Statistics {
 };
 enum class DisplayQuality : uint8_t { Missing=0, Fill=1, Guess=2, Exact=3 };
 struct FrameBase {
+    /// Releases resources owned by the FrameBase instance.
     virtual ~FrameBase()=default;
     Request request;
     int stride=0;
@@ -66,25 +72,35 @@ struct FrameBase {
     AlignedVector<uint8_t> sampleQuality;
     AlignedVector<uint32_t> displayPixels;
     Statistics stats;
+    /// Converts image coordinates into the padded linear frame index.
     size_t index(int x,int y) const { return static_cast<size_t>(y)*static_cast<size_t>(stride)+static_cast<size_t>(x); }
+    /// Returns the mathematical iteration state stored at one pixel.
     Count at(int x,int y) const { return counts[index(x,y)]; }
+    /// Returns the reconstructed display pixel at one image coordinate.
     uint32_t displayAt(int x,int y) const { return displayPixels[index(x,y)]; }
+    /// Returns the adaptive-grid quality marker at one image coordinate.
     DisplayQuality qualityAt(int x,int y) const { return static_cast<DisplayQuality>(sampleQuality[index(x,y)]); }
 };
 template<bool Save,class Real> struct Storage;
 template<class Real> struct Storage<false,Real> {
+    /// Resizes the storage policy to cover the requested number of samples.
     void resize(size_t) {}
+    /// Copies resumable state for one sample between compatible storage objects.
     void copy(size_t,const Storage&,size_t) {}
 };
 template<> struct Storage<true,double> {
     AlignedVector<double> x,y;
+    /// Resizes the storage policy to cover the requested number of samples.
     void resize(size_t n) { x.resize(n); y.resize(n); }
+    /// Copies resumable state for one sample between compatible storage objects.
     void copy(size_t d,const Storage&s,size_t i) { x[d]=s.x[i]; y[d]=s.y[i]; }
 };
 template<> struct Storage<true,Big> {
     // Only unfinished orbits allocate limbs. Reused states are shared read-only.
     std::vector<std::shared_ptr<const Orbit<Big>>> orbit;
+    /// Resizes the storage policy to cover the requested number of samples.
     void resize(size_t n) { orbit.resize(n); }
+    /// Copies resumable state for one sample between compatible storage objects.
     void copy(size_t d,const Storage&s,size_t i) { orbit[d]=s.orbit[i]; }
 };
 template<class Real,bool Save> struct Frame final:FrameBase { Storage<Save,Real> state; };
@@ -95,11 +111,15 @@ class Renderer {
     std::shared_ptr<const FrameBase> statePrevious_,gridPrevious_;
 public:
     // One coordinator at a time. Worker scheduling is supplied by the host.
+    /// Validates a request, selects numeric/storage backends, and updates renderer caches.
     std::shared_ptr<const FrameBase> render(const Request&,Executor&,const Cancellation&);
+    /// Clears mathematical and display-grid renderer caches.
     void clear() { statePrevious_.reset(); gridPrevious_.reset(); }
 };
 // Palette is separate from iteration storage. Changing a palette does not require
 // recalculating orbits. Output is packed 0xFFRRGGBB; unresolved/inside is black.
+/// Maps a completed iteration count to its visible colour.
 uint32_t pixelColor(Count count,uint32_t limit) noexcept;
+/// Writes the reconstructed frame to a binary PPM image.
 void writePPM(const FrameBase&,const std::string& path);
 }
