@@ -712,8 +712,14 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         auto coordinates=makeFastCoordinates.template operator()<DoubleDouble>();
         DoubleDoubleStateStorage* state=nullptr;
         if constexpr(Save && big) state=&f->state.getDoubleDouble();
-        const DoubleDouble jr=DoubleDouble::fromBig(r.settings.juliaRe);
-        const DoubleDouble ji=DoubleDouble::fromBig(r.settings.juliaIm);
+        const DoubleDouble jr=[](const Settings&s) {
+            if constexpr(F::julia) return DoubleDouble::fromBig(s.juliaRe);
+            else return DoubleDouble{};
+        }(r.settings);
+        const DoubleDouble ji=[](const Settings&s) {
+            if constexpr(F::julia) return DoubleDouble::fromBig(s.juliaIm);
+            else return DoubleDouble{};
+        }(r.settings);
         return [&,coordinates,state,jr,ji](const std::vector<size_t>&list,
                                            const Cancellation&calculationStop) {
             if(list.empty()) return;
