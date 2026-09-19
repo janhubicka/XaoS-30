@@ -776,6 +776,11 @@ int main(int argc,char**argv) {
             state->zoomTicks=1;
             continuous->start();
         });
+        QTimer::singleShot(800,&window,[&window]{
+            window.canvas->view.rotate(.5,.5,.18,
+                std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));
+            window.canvas->submit(true);
+        });
         QTimer::singleShot(1000,&window,[&window]{window.iterations->setValue(128);});
         QTimer::singleShot(1400,&window,[&window]{window.canvas->settings.minimumPrecision=128;window.canvas->submit(false,true);});
         QTimer::singleShot(1900,&window,[&window]{window.canvas->settings.saveState=false;window.canvas->submit();});
