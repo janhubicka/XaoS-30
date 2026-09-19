@@ -40,12 +40,14 @@
 #include <QWheelEvent>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <charconv>
 #include <condition_variable>
 #include <functional>
 #include <optional>
 #include <numbers>
+#include <thread>
 
 using namespace xaos;
 namespace {
