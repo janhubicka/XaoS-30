@@ -518,6 +518,10 @@ int main(int argc,char**argv) {
         });
         QTimer::singleShot(150,&window,[&] {
             publishedAtStart=window.canvas->publishedFrames;
+            window.canvas->view.zoom(.37,.61,.997,
+                std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));
+            window.canvas->submit(true);
+            zoomTicks=1;
             continuous->start();
         });
         QTimer::singleShot(1000,&window,[&]{window.iterations->setValue(128);});
