@@ -34,13 +34,13 @@ class Autopilot {
     /// Returns a top-to-bottom display pixel without exposing Qt-specific storage.
     uint32_t pixel(const DisplayFrame&,int x,int y) const noexcept;
     /// Chooses one local or global candidate point using XaoS's range convention.
-    bool randomCandidate(const DisplayFrame&,int range);
+    bool randomCandidate(const DisplayFrame&,int range,int centerX,int centerY);
     /// Tests whether the candidate's 5x5 neighborhood straddles the inside-set colour.
     bool boundaryInteresting(const DisplayFrame&) const noexcept;
     /// Tests XaoS's second heuristic: very few equal-colour pairs in the local neighborhood.
     bool noiseInteresting(const DisplayFrame&) const noexcept;
     /// Tries random candidates until one satisfies the requested heuristic.
-    bool look(const DisplayFrame&,int range,int maximum,bool noisy);
+    bool look(const DisplayFrame&,int centerX,int centerY,int range,int maximum,bool noisy);
     /// Builds the current control/focus decision from internal XaoS autopilot state.
     AutopilotDecision decision(const DisplayFrame&) const noexcept;
 
