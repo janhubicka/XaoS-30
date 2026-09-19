@@ -609,7 +609,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         workStop.deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(r.settings.sliceMilliseconds);
     const double juliaReal=r.settings.juliaRe.toDouble(),juliaImag=r.settings.juliaIm.toDouble();
 
-    using BigScratch=std::conditional_t<F::generic,detail::GenericFormulaKernel<Big>,BigKernel<F>>;
+    using BigScratch=std::conditional_t<F::generic,detail::FixedFormulaKernel<Big,F>,BigKernel<F>>;
     std::vector<std::unique_ptr<BigScratch>> bigScratch;
     if constexpr(big) {
         bigScratch.reserve(executor.concurrency());
@@ -638,13 +638,13 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                             continue;
                         }
-                        const Orbit<Big>*saved=nullptr;
+                        const FormulaOrbit<Big,F>*saved=nullptr;
                         if constexpr(Save) saved=f->state.orbit[index].get();
-                        const uint32_t start=saved?before.iterations:0;
+                        const uint32_t startIterations=saved?before.iterations:0;
                         Count result;
                         if(r.view.rotation==0) {
                             if constexpr(F::generic)
-                                result=scratch.run(r.settings.formula,f->xs[static_cast<size_t>(x)],f->ys[static_cast<size_t>(y)],
+                                result=scratch.run(f->xs[static_cast<size_t>(x)],f->ys[static_cast<size_t>(y)],
                                                    before,saved,r.settings.iterations,calculationStop,Save);
                             else
                                 result=scratch.run(f->xs[static_cast<size_t>(x)],f->ys[static_cast<size_t>(y)],
@@ -654,27 +654,26 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             Big real=add(bxReal[static_cast<size_t>(x)],byReal[static_cast<size_t>(y)]);
                             Big imag=add(bxImag[static_cast<size_t>(x)],byImag[static_cast<size_t>(y)]);
                             if constexpr(F::generic)
-                                result=scratch.run(r.settings.formula,real,imag,before,saved,
+                                result=scratch.run(real,imag,before,saved,
                                                    r.settings.iterations,calculationStop,Save);
                             else
                                 result=scratch.run(real,imag,r.settings.juliaRe,r.settings.juliaIm,before,saved,
                                                    r.settings.iterations,calculationStop,Save,r.settings.analytic);
                         }
-                        stat.steps+=result.iterations-start;
-                        if(saved && start) ++stat.resumed; else ++stat.started;
-                        if(!Save && result.status==Status::Pending && result.iterations<before.iterations) continue;
+                        stat.steps+=result.iterations-startIterations;
+                        if(saved && startIterations) ++stat.resumed; else ++stat.started;
+                        if(!Save && result.status==Status::Pending &&
+                           result.iterations<before.iterations) continue;
                         f->counts[index]=result;
                         if constexpr(Save) {
-                            if(result.status!=Status::Pending) f->state.orbit[index].reset();
-                            else if(result.iterations>start) {
-                                if constexpr(F::generic)
-                                    f->state.orbit[index]=std::make_shared<Orbit<Big>>(
-                                        Orbit<Big>{scratch.x,scratch.y,scratch.a,scratch.b});
-                                else {
-                                    Big zero(bits);
-                                    f->state.orbit[index]=std::make_shared<Orbit<Big>>(
-                                        Orbit<Big>{scratch.x,scratch.y,zero,zero});
-                                }
+                            if(result.status!=Status::Pending) {
+                                f->state.orbit[index].reset();
+                            } else if(result.iterations>startIterations) {
+                                auto orbit=std::make_shared<FormulaOrbit<Big,F>>(bits);
+                                orbit->x=scratch.x;orbit->y=scratch.y;
+                                if constexpr(F::stateScalars>=3) orbit->a=scratch.a;
+                                if constexpr(F::stateScalars>=4) orbit->b=scratch.b;
+                                f->state.orbit[index]=std::move(orbit);
                             }
                         }
                         if(result.known(r.settings.iterations)) {
@@ -684,7 +683,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     }
                 }
             } else if constexpr(F::generic) {
-                detail::GenericFormulaKernel<double> scratch;
+                detail::FixedFormulaKernel<double,F> scratch;
                 const size_t chunk=list.size()>512?64:8;
                 while(!calculationStop.requested()) {
                     const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
@@ -700,28 +699,23 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         }
                         const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
                         const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
-                        Orbit<double> orbit{}; const Orbit<double>*saved=nullptr;
+                        FormulaOrbit<double,F> orbit{};
+                        const FormulaOrbit<double,F>*saved=nullptr;
                         if constexpr(Save) {
                             if(before.iterations) {
-                                orbit={f->state.x[index],f->state.y[index],
-                                       f->state.a.empty()?0:f->state.a[index],
-                                       f->state.b.empty()?0:f->state.b[index]};
+                                orbit=f->state.load(index);
                                 saved=&orbit;
                             }
                         }
-                        const uint32_t start=saved?before.iterations:0;
-                        Count result=scratch.run(r.settings.formula,doubleRealAt(x,y),doubleImagAt(x,y),
+                        const uint32_t startIterations=saved?before.iterations:0;
+                        Count result=scratch.run(doubleRealAt(x,y),doubleImagAt(x,y),
                                                  before,saved,r.settings.iterations,calculationStop,Save);
-                        stat.steps+=result.iterations-start;
-                        if(saved && start) ++stat.resumed; else ++stat.started;
-                        if(!Save && result.status==Status::Pending && result.iterations<before.iterations) continue;
+                        stat.steps+=result.iterations-startIterations;
+                        if(saved && startIterations) ++stat.resumed; else ++stat.started;
+                        if(!Save && result.status==Status::Pending &&
+                           result.iterations<before.iterations) continue;
                         f->counts[index]=result;
-                        if constexpr(Save) {
-                            f->state.x[index]=scratch.x;f->state.y[index]=scratch.y;
-                            if(!f->state.a.empty()) {
-                                f->state.a[index]=scratch.a;f->state.b[index]=scratch.b;
-                            }
-                        }
+                        if constexpr(Save) f->state.store(index,scratch);
                         if(result.known(r.settings.iterations)) {
                             f->samplePixels[index]=pixelColor(result,r.settings.iterations);
                             f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
@@ -750,12 +744,11 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             }
                             const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
                             const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
-                            Orbit<double> orbit{}; const Orbit<double>*saved=nullptr;
+                            FormulaOrbit<double,F> orbit{};
+                            const FormulaOrbit<double,F>*saved=nullptr;
                             if constexpr(Save) {
                                 if(before.iterations) {
-                                    orbit={f->state.x[index],f->state.y[index],
-                                           f->state.a.empty()?0:f->state.a[index],
-                                           f->state.b.empty()?0:f->state.b[index]};
+                                    orbit=f->state.load(index);
                                     saved=&orbit;
                                 }
                             }
@@ -770,12 +763,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         for(size_t j=0;j<used;++j) {
                             const size_t index=indexes[j]; auto&l=lanes[j];
                             stat.steps+=l.count.iterations-starts[j];
-                            if(!Save && l.count.status==Status::Pending && l.count.iterations<f->counts[index].iterations) continue;
+                            if(!Save && l.count.status==Status::Pending &&
+                               l.count.iterations<f->counts[index].iterations) continue;
                             f->counts[index]=l.count;
-                            if constexpr(Save) {
-                                f->state.x[index]=l.x;f->state.y[index]=l.y;
-                                if(!f->state.a.empty()) { f->state.a[index]=0;f->state.b[index]=0; }
-                            }
+                            if constexpr(Save) f->state.store(index,l);
                             if(l.count.known(r.settings.iterations)) {
                                 f->samplePixels[index]=pixelColor(l.count,r.settings.iterations);
                                 f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
