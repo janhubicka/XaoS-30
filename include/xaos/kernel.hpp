@@ -82,6 +82,8 @@ struct Lane {
 };
 /// Reports whether the runtime CPU supports the AVX2 kernel.
 bool hasAVX2() noexcept;
+/// Reports whether this build/runtime has a native multi-pixel SIMD kernel.
+bool hasNativeSIMD() noexcept;
 // Four independent orbits, not four iterations of the same orbit.
 // All inactive lanes are frozen. The portable path has identical operation order.
 /// Advances up to four independent double-precision fractal orbits.
