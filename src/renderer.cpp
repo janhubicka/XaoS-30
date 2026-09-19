@@ -416,23 +416,23 @@ std::vector<int> reprojectAxis(const Big&newCenter,const Big&newStep,int newSize
 }
 
 
-template<class Real,bool Save,class F>
+template<class Real,bool Save>
 /// Builds one frame, reusing orbit state and XaoS row/column geometry when safe.
 std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const Cancellation&stop,
                                          const std::shared_ptr<const FrameBase>&statePrevious,
                                          const std::shared_ptr<const FrameBase>&gridPrevious,
                                          mp_bitcnt_t bits) {
     const auto begin=std::chrono::steady_clock::now();
-    const auto*stateOld=dynamic_cast<const Frame<Real,Save,F>*>(statePrevious.get());
+    const auto*stateOld=dynamic_cast<const Frame<Real,Save>*>(statePrevious.get());
     const FrameBase*gridOld=gridPrevious.get();
     if(stateOld && !compatible(*stateOld,r,bits)) stateOld=nullptr;
     if(gridOld && !compatible(*gridOld,r,bits)) gridOld=nullptr;
-    auto f=std::make_shared<Frame<Real,Save,F>>();
+    auto f=std::make_shared<Frame<Real,Save>>();
     f->request=r;
     f->stride=(r.width+63)&~63;
     const size_t pixels=multiplyChecked(static_cast<size_t>(f->stride),static_cast<size_t>(r.height));
     const bool big=std::is_same_v<Real,Big>;
-    constexpr unsigned stateScalars=F::stateScalars;
+    const unsigned stateScalars=formulaStateScalars(r.settings.formula);
     size_t bytes=estimate(pixels,bits,big,Save,stateScalars);
     auto addPreviousBytes=[&](const std::shared_ptr<const FrameBase>&previous) {
         if(previous) bytes=plusChecked(bytes,estimate(
@@ -476,7 +476,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     auto stateSourceY=exactSources(ay.coordinates,stateOld?&stateOld->ys:nullptr);
     auto gridStateSourceX=exactSources(ax.coordinates,gridOld?&gridOld->xs:nullptr);
     auto gridStateSourceY=exactSources(ay.coordinates,gridOld?&gridOld->ys:nullptr);
-    const auto*typedGridOld=dynamic_cast<const Frame<Real,Save,F>*>(gridOld);
+    const auto*typedGridOld=dynamic_cast<const Frame<Real,Save>*>(gridOld);
     f->xs=std::move(ax.coordinates); f->ys=std::move(ay.coordinates);
     if(r.settings.sliceMilliseconds) {
         // Start presentation coordinates at the real sample coordinates. Fill may
@@ -486,8 +486,11 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->stats.lineCost=ax.cost+ay.cost;
     f->stats.uniform=ax.uniform && ay.uniform;
     f->stats.bits=bits; f->stats.backend=big?"GMP":"double";
-    f->stats.simd=!big && !F::generic && r.settings.simd && hasAVX2();
-    f->counts.resize(pixels); f->state.resize(pixels);
+    const bool quadratic=r.settings.formula==Formula::Mandelbrot ||
+                         r.settings.formula==Formula::Julia ||
+                         r.settings.formula==Formula::BurningShip;
+    f->stats.simd=!big && quadratic && r.settings.simd && hasAVX2();
+    f->counts.resize(pixels); f->state.resize(pixels,stateScalars);
     f->samplePixels.assign(pixels,0xff000000u);
     f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
 
@@ -570,7 +573,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         }
                     }
                     const FrameBase*countOld=nullptr;
-                    const Frame<Real,Save,F>*typedCountOld=nullptr;
+                    const Frame<Real,Save>*typedCountOld=nullptr;
                     int csx=-1,csy=-1;
                     if(stateOld && sx>=0 && sy>=0) {
                         countOld=stateOld; typedCountOld=stateOld; csx=sx; csy=sy;
