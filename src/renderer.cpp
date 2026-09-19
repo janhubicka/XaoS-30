@@ -23,13 +23,19 @@ size_t plusChecked(size_t a,size_t b) {
     if(a>std::numeric_limits<size_t>::max()-b) throw std::length_error("memory size overflow");
     return a+b;
 }
+class MemoryBudgetExceeded final:public std::length_error {
+public:
+    /// Records a renderer-budget refusal separately from arithmetic overflow.
+    MemoryBudgetExceeded():std::length_error(
+        "estimated renderer memory exceeds budget") {}
+};
 /// Estimates memory consumed by one frame and optional saved orbit state.
-size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state) {
+size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state,bool auxiliary) {
     size_t each=sizeof(Count)+sizeof(uint32_t)+sizeof(uint8_t);
     if(state) {
         if(big) each=plusChecked(each,plusChecked(sizeof(std::shared_ptr<const Orbit<Big>>)+sizeof(Orbit<Big>)+32,
                                   multiplyChecked(4,static_cast<size_t>(bits/8)+3*sizeof(mp_limb_t))));
-        else each+=4*sizeof(double);
+        else each+=2*sizeof(double)+(auxiliary?2*sizeof(double):0);
     }
     return multiplyChecked(each,pixels);
 }
@@ -419,10 +425,13 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->stride=(r.width+63)&~63;
     const size_t pixels=multiplyChecked(static_cast<size_t>(f->stride),static_cast<size_t>(r.height));
     const bool big=std::is_same_v<Real,Big>;
-    size_t bytes=estimate(pixels,bits,big,Save);
+    const bool auxiliary=F::generic && formulaNeedsAuxiliaryState(r.settings.formula);
+    size_t bytes=estimate(pixels,bits,big,Save,auxiliary);
     auto addPreviousBytes=[&](const std::shared_ptr<const FrameBase>&previous) {
-        if(previous) bytes=plusChecked(bytes,estimate(previous->counts.size(),previous->stats.bits,
-                                                       previous->stats.backend=="GMP",previous->request.settings.saveState));
+        if(previous) bytes=plusChecked(bytes,estimate(
+            previous->counts.size(),previous->stats.bits,
+            previous->stats.backend=="GMP",previous->request.settings.saveState,
+            formulaNeedsAuxiliaryState(previous->request.settings.formula)));
     };
     addPreviousBytes(statePrevious);
     if(gridPrevious && gridPrevious!=statePrevious) addPreviousBytes(gridPrevious);
@@ -430,7 +439,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     bytes=plusChecked(bytes,multiplyChecked(axisEntries,sizeof(Big)+sizeof(int)+static_cast<size_t>(bits/8)+40));
     bytes=plusChecked(bytes,multiplyChecked(executor.concurrency(),multiplyChecked(12,static_cast<size_t>(bits/8)+64)));
     if(r.settings.memoryBudget && bytes>r.settings.memoryBudget)
-        throw std::length_error("estimated renderer memory exceeds budget; use count-only mode, fewer pixels, or a larger budget");
+        throw MemoryBudgetExceeded();
     f->stats.estimatedBytes=bytes;
 
     auto step=divide(r.view.span.atPrecision(std::max(bits,r.view.span.precision())),
@@ -464,7 +473,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->stats.uniform=ax.uniform && ay.uniform;
     f->stats.bits=bits; f->stats.backend=big?"GMP":"double";
     f->stats.simd=!big && r.settings.simd && hasAVX2();
-    f->counts.resize(pixels); f->state.resize(pixels);
+    f->counts.resize(pixels); f->state.resize(pixels,auxiliary);
     f->samplePixels.assign(pixels,0xff000000u);
     f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
 
@@ -641,7 +650,9 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         Orbit<double> orbit{}; const Orbit<double>*saved=nullptr;
                         if constexpr(Save) {
                             if(before.iterations) {
-                                orbit={f->state.x[index],f->state.y[index],f->state.a[index],f->state.b[index]};
+                                orbit={f->state.x[index],f->state.y[index],
+                                       f->state.a.empty()?0:f->state.a[index],
+                                       f->state.b.empty()?0:f->state.b[index]};
                                 saved=&orbit;
                             }
                         }
@@ -654,7 +665,9 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         f->counts[index]=result;
                         if constexpr(Save) {
                             f->state.x[index]=scratch.x;f->state.y[index]=scratch.y;
-                            f->state.a[index]=scratch.a;f->state.b[index]=scratch.b;
+                            if(!f->state.a.empty()) {
+                                f->state.a[index]=scratch.a;f->state.b[index]=scratch.b;
+                            }
                         }
                         if(result.known(r.settings.iterations)) {
                             f->samplePixels[index]=pixelColor(result,r.settings.iterations);
@@ -1026,22 +1039,53 @@ std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,con
     if(!(r.settings.reuseRadius>0 && r.settings.reuseRadius<=32) ||
        !std::isfinite(r.settings.focusX) || !std::isfinite(r.settings.focusY) || r.settings.solidGuessRange>16)
         throw std::invalid_argument("invalid reuse radius, focus, or solid-guess range");
+
     mp_bitcnt_t bits=std::max(r.settings.minimumPrecision,r.view.requiredBits(r.width,r.settings.guardBits));
     const auto step=divide(r.view.span,static_cast<unsigned long>(r.width));
     const bool native=bits<=53 && r.view.re.exponent()<1000 && r.view.im.exponent()<1000 &&
                       r.view.span.exponent()<990 && step.exponent()>-1000;
-    std::shared_ptr<const FrameBase> result;
-    if(native) {
-        if(r.settings.saveState) result=selectFormula<double,true>(r,e,s,statePrevious_,gridPrevious_,53);
-        else result=selectFormula<double,false>(r,e,s,statePrevious_,gridPrevious_,53);
-    } else {
+    if(!native) {
         bits=std::max<mp_bitcnt_t>(64,bits);
         if(bits>std::numeric_limits<mp_bitcnt_t>::max()-GMP_NUMB_BITS) throw std::length_error("precision overflow");
         bits=((bits+GMP_NUMB_BITS-1)/GMP_NUMB_BITS)*GMP_NUMB_BITS;
         if(r.settings.memoryBudget && bits/8>r.settings.memoryBudget/12)
             throw std::length_error("precision exceeds the memory budget");
-        if(r.settings.saveState) result=selectFormula<Big,true>(r,e,s,statePrevious_,gridPrevious_,bits);
-        else result=selectFormula<Big,false>(r,e,s,statePrevious_,gridPrevious_,bits);
+    }
+
+    auto dispatch=[&](const Request&request)->std::shared_ptr<const FrameBase> {
+        if(native) {
+            if(request.settings.saveState)
+                return selectFormula<double,true>(request,e,s,statePrevious_,gridPrevious_,53);
+            return selectFormula<double,false>(request,e,s,statePrevious_,gridPrevious_,53);
+        }
+        if(request.settings.saveState)
+            return selectFormula<Big,true>(request,e,s,statePrevious_,gridPrevious_,bits);
+        return selectFormula<Big,false>(request,e,s,statePrevious_,gridPrevious_,bits);
+    };
+
+    std::shared_ptr<const FrameBase> result;
+    try {
+        result=dispatch(r);
+    } catch(const MemoryBudgetExceeded&) {
+        if(!r.settings.saveState) throw;
+        Request reduced=r;
+        reduced.settings.saveState=false;
+        try {
+            result=dispatch(reduced);
+        } catch(const MemoryBudgetExceeded&) {
+            // Partial mathematical state is less valuable than keeping the last
+            // display grid. Drop it first; if the budget is still exceeded, the
+            // GUI already has a DisplayFrame fallback so both renderer caches can
+            // be released safely and the count-only frame can start fresh.
+            if(statePrevious_ && statePrevious_!=gridPrevious_) statePrevious_.reset();
+            try {
+                result=dispatch(reduced);
+            } catch(const MemoryBudgetExceeded&) {
+                statePrevious_.reset();
+                gridPrevious_.reset();
+                result=dispatch(reduced);
+            }
+        }
     }
     statePrevious_=result;
     if(result->stats.reusableGrid) gridPrevious_=result;
