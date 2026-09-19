@@ -540,6 +540,9 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     auto ay=makeAxis<Real>(r.view.im,step,r.height,bits,oldPreviewY,r.settings.uniform,r.settings.reuseRadius);
     auto stateSourceX=exactSources(ax.coordinates,stateOld?&stateOld->xs:nullptr);
     auto stateSourceY=exactSources(ay.coordinates,stateOld?&stateOld->ys:nullptr);
+    auto gridStateSourceX=exactSources(ax.coordinates,gridOld?&gridOld->xs:nullptr);
+    auto gridStateSourceY=exactSources(ay.coordinates,gridOld?&gridOld->ys:nullptr);
+    const auto*typedGridOld=dynamic_cast<const Frame<Real,Save>*>(gridOld);
     f->xs=std::move(ax.coordinates); f->ys=std::move(ay.coordinates);
     if(r.settings.sliceMilliseconds) {
         // Start presentation coordinates at the real sample coordinates. Fill may
@@ -597,19 +600,35 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             f->sampleQuality[d]=static_cast<uint8_t>(oldQuality==DisplayQuality::Fill?DisplayQuality::Guess:oldQuality);
                         }
                     }
-                    if(!stateOld || sx<0 || sy<0) continue;
-                    const size_t ss=static_cast<size_t>(sy)*static_cast<size_t>(stateOld->stride)+static_cast<size_t>(sx);
-                    f->counts[d]=stateOld->counts[ss];
-                    if constexpr(Save) f->state.copy(d,stateOld->state,ss);
+                    const FrameBase*countOld=nullptr;
+                    const Frame<Real,Save>*typedCountOld=nullptr;
+                    int csx=-1,csy=-1;
+                    if(stateOld && sx>=0 && sy>=0) {
+                        countOld=stateOld; typedCountOld=stateOld; csx=sx; csy=sy;
+                    } else {
+                        const int gsx=gridStateSourceX[static_cast<size_t>(x)];
+                        const int gsy=gridStateSourceY[static_cast<size_t>(y)];
+                        if(gridOld && gsx>=0 && gsy>=0) {
+                            countOld=gridOld; typedCountOld=typedGridOld; csx=gsx; csy=gsy;
+                        }
+                    }
+                    if(!countOld) continue;
+                    const size_t ss=static_cast<size_t>(csy)*static_cast<size_t>(countOld->stride)+static_cast<size_t>(csx);
+                    Count reusedCount=countOld->counts[ss];
+                    if constexpr(Save) {
+                        if(typedCountOld) f->state.copy(d,typedCountOld->state,ss);
+                        else if(reusedCount.status==Status::Pending) reusedCount={};
+                    }
+                    f->counts[d]=reusedCount;
                     if(f->counts[d].known(r.settings.iterations)) {
                         f->samplePixels[d]=pixelColor(f->counts[d],r.settings.iterations);
                         f->sampleQuality[d]=static_cast<uint8_t>(DisplayQuality::Exact);
                         ++stat.reused;
-                    } else if(stateOld->request.settings.iterations==r.settings.iterations &&
+                    } else if(countOld->request.settings.iterations==r.settings.iterations &&
                               f->sampleQuality[d]==static_cast<uint8_t>(DisplayQuality::Missing) &&
-                              stateOld->sampleQuality[ss]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
-                        f->samplePixels[d]=stateOld->samplePixels[ss];
-                        f->sampleQuality[d]=stateOld->sampleQuality[ss];
+                              countOld->sampleQuality[ss]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
+                        f->samplePixels[d]=countOld->samplePixels[ss];
+                        f->sampleQuality[d]=countOld->sampleQuality[ss];
                     }
                 }
             }
