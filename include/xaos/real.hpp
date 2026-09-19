@@ -6,6 +6,7 @@
 #include <charconv>
 #include <cstddef>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -119,6 +120,9 @@ inline Big negate(const Big&a) { Big r(a.precision()); mpf_neg(r.get(),a.get());
 
 struct View {
     Big re=Big::parse("-0.5"), im=Big::parse("0"), span=Big::parse("3.5");
+    // Clockwise screen rotation in radians. The mathematical plane remains fixed;
+    // this only rotates the screen basis used by the adaptive row/column grid.
+    double rotation=0;
     /// Estimates enough precision to parse decimal coordinates without early loss.
     static mp_bitcnt_t textBits(std::string_view a,std::string_view b,std::string_view c) {
         // Count significand digits, not an arbitrarily long exponent.
@@ -126,6 +130,13 @@ struct View {
         for(auto s:{a,b,c}) { const auto end=s.find_first_of("eE"); n=std::max(n,end==s.npos?s.size():end); }
         if(n>(std::numeric_limits<mp_bitcnt_t>::max()-128)/4) throw std::length_error("coordinate too long");
         return std::max<mp_bitcnt_t>(128,static_cast<mp_bitcnt_t>(n)*4+32);
+    }
+    /// Normalizes a finite rotation angle to a stable principal range.
+    static double normalizeRotation(double angle) {
+        if(!std::isfinite(angle)) throw std::invalid_argument("invalid rotation");
+        angle=std::remainder(angle,2*std::numbers::pi);
+        if(std::abs(angle)<1e-15) angle=0;
+        return angle;
     }
     /// Parses a decimal value or viewport while preserving the required precision.
     static View parse(std::string_view x,std::string_view y,std::string_view s,int width=1024,unsigned guard=16,mp_bitcnt_t maximumBits=0) {
@@ -152,26 +163,90 @@ struct View {
         p=std::max({p,re.precision(),im.precision(),span.precision()});
         re=re.atPrecision(p); im=im.atPrecision(p); span=span.atPrecision(p);
     }
+    /// Returns the center projected onto the current horizontal/vertical screen basis.
+    std::pair<Big,Big> axisCenter() const {
+        if(rotation==0) return {re,im};
+        const double cs=std::cos(rotation),sn=std::sin(rotation);
+        return {add(scale(re,cs),scale(im,sn)),
+                add(scale(re,-sn),scale(im,cs))};
+    }
+    /// Converts coordinates in the rotated screen basis back to the mathematical plane.
+    std::pair<Big,Big> complexFromAxes(const Big&x,const Big&y) const {
+        if(rotation==0) return {x,y};
+        const double cs=std::cos(rotation),sn=std::sin(rotation);
+        return {add(scale(x,cs),scale(y,-sn)),
+                add(scale(x,sn),scale(y,cs))};
+    }
+    /// Maps a normalized screen point to an arbitrary-precision complex coordinate.
+    std::pair<Big,Big> screenToComplex(double u,double v,int width,int height) const {
+        if(width<1||height<1||!std::isfinite(u)||!std::isfinite(v))
+            throw std::invalid_argument("invalid screen point");
+        const double horizontal=u-.5;
+        const double vertical=(.5-v)*static_cast<double>(height)/width;
+        if(rotation==0)
+            return {add(re,scale(span,horizontal)),add(im,scale(span,vertical))};
+        const double cs=std::cos(rotation),sn=std::sin(rotation);
+        const Big dx=scale(span,horizontal),dy=scale(span,vertical);
+        return {add(re,add(scale(dx,cs),scale(dy,-sn))),
+                add(im,add(scale(dx,sn),scale(dy,cs)))};
+    }
+    /// Maps a mathematical complex coordinate to normalized screen coordinates.
+    std::pair<double,double> complexToScreen(const Big&real,const Big&imag,int width,int height) const {
+        if(width<1||height<1) throw std::invalid_argument("invalid screen size");
+        const Big dr=sub(real,re),di=sub(im,im);
+        Big horizontal,vertical;
+        if(rotation==0) {
+            horizontal=dr;vertical=di;
+        } else {
+            const double cs=std::cos(rotation),sn=std::sin(rotation);
+            horizontal=add(scale(dr,cs),scale(di,sn));
+            vertical=add(scale(dr,-sn),scale(di,cs));
+        }
+        const double u=.5+div(horizontal,span).toDouble();
+        const double v=.5-div(vertical,span).toDouble()*static_cast<double>(width)/height;
+        return {u,v};
+    }
     /// Updates the arbitrary-precision viewport for a pointer-centred zoom.
     void zoom(double u,double v,double factor,int width,int height) {
         if(!std::isfinite(factor)||factor<=0 || width<1||height<1 || !std::isfinite(u)||!std::isfinite(v))
             throw std::invalid_argument("invalid zoom");
         Big next=scale(span,factor);
-        View future{re,im,next};
+        View future{re,im,next,rotation};
         ensure(std::max<mp_bitcnt_t>(128,future.requiredBits(width,32)));
-        next=scale(span,factor);
-        Big change=sub(span,next);
-        re=add(re,scale(change,u-.5));
-        im=add(im,scale(change,(.5-v)*static_cast<double>(height)/width));
-        span=std::move(next);
+        const auto anchor=screenToComplex(u,v,width,height);
+        span=scale(span,factor);
+        const auto moved=screenToComplex(u,v,width,height);
+        re=add(re,sub(anchor.first,moved.first));
+        im=add(im,sub(anchor.second,moved.second));
     }
     /// Moves the arbitrary-precision viewport by a screen-space offset.
     void pan(double dx,double dy,int width) {
         if(width<1||!std::isfinite(dx)||!std::isfinite(dy)) throw std::invalid_argument("invalid pan");
         ensure(std::max<mp_bitcnt_t>(128,requiredBits(width,32)));
-        re=sub(re,scale(span,dx/width)); im=add(im,scale(span,dy/width));
+        const Big step=divide(span,static_cast<unsigned long>(width));
+        if(rotation==0) {
+            re=sub(re,scale(step,dx));
+            im=add(im,scale(step,dy));
+            return;
+        }
+        const double cs=std::cos(rotation),sn=std::sin(rotation);
+        re=add(re,scale(step,-dx*cs-dy*sn));
+        im=add(im,scale(step,-dx*sn+dy*cs));
+    }
+    /// Rotates the screen basis around a normalized screen-space anchor.
+    void rotate(double u,double v,double radians,int width,int height) {
+        if(width<1||height<1||!std::isfinite(radians)||!std::isfinite(u)||!std::isfinite(v))
+            throw std::invalid_argument("invalid rotation");
+        ensure(std::max<mp_bitcnt_t>(128,requiredBits(width,32)));
+        const auto anchor=screenToComplex(u,v,width,height);
+        rotation=normalizeRotation(rotation+radians);
+        const auto moved=screenToComplex(u,v,width,height);
+        re=add(re,sub(anchor.first,moved.first));
+        im=add(im,sub(anchor.second,moved.second));
     }
     /// Compares two values for equality.
-    friend bool operator==(const View&a,const View&b) { return a.re==b.re && a.im==b.im && a.span==b.span; }
+    friend bool operator==(const View&a,const View&b) {
+        return a.re==b.re && a.im==b.im && a.span==b.span && a.rotation==b.rotation;
+    }
 };
 } // namespace xaos
