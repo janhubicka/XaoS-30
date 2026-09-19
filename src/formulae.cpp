@@ -52,6 +52,7 @@ const FormulaInfo& formulaInfo(Formula formula) {
 std::optional<Formula> formulaFromName(std::string_view name) noexcept {
     for(const auto&info:infos)
         if(name==info.shortName) return info.formula;
+    if(name=="mandelbrot") return Formula::Mandelbrot;
     if(name=="burningship") return Formula::BurningShip;
     return std::nullopt;
 }
