@@ -21,7 +21,7 @@ size_t plusChecked(size_t a,size_t b) {
     return a+b;
 }
 size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state) {
-    size_t each=sizeof(Count)+sizeof(uint32_t)+sizeof(uint8_t);
+    size_t each=sizeof(Count)+2*sizeof(uint32_t)+sizeof(uint8_t);
     if(state) {
         if(big) each=plusChecked(each,plusChecked(sizeof(std::shared_ptr<const Orbit<Big>>)+sizeof(Orbit<Big>)+32,
                                   multiplyChecked(2,static_cast<size_t>(bits/8)+3*sizeof(mp_limb_t))));
@@ -251,8 +251,9 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->stats.bits=bits; f->stats.backend=big?"GMP":"double";
     f->stats.simd=!big && r.settings.simd && hasAVX2();
     f->counts.resize(pixels); f->state.resize(pixels);
-    f->displayPixels.assign(pixels,0xff000000u);
-    f->displayQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
+    f->samplePixels.assign(pixels,0xff000000u);
+    f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
+    f->displayPixels.assign(pixels,0u);
 
     std::vector<double> dx,dy;
     if constexpr(!big) {
@@ -281,16 +282,16 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     // not also our true sample coordinate, downgrade it to Fill.
                     if(r.settings.sliceMilliseconds && psx>=0 && psy>=0 && old->request.settings.iterations==r.settings.iterations) {
                         const size_t ps=static_cast<size_t>(psy)*static_cast<size_t>(old->stride)+static_cast<size_t>(psx);
-                        if(old->displayQuality[ps]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
-                            f->displayPixels[d]=old->displayPixels[ps];
+                        if(old->sampleQuality[ps]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
+                            f->samplePixels[d]=old->samplePixels[ps];
                             // The DP source is already at exactly this new presentation
                             // coordinate. A timeout-filled old pixel becomes an ordinary
                             // approximate sample once its collapsed coordinate is selected
                             // by the next DP pass, just as classic XaoS clears dirty state
                             // on the reused line. Keep it non-resumable, but do not carry
                             // "needs resolution refinement" forever.
-                            const auto oldQuality=static_cast<DisplayQuality>(old->displayQuality[ps]);
-                            f->displayQuality[d]=static_cast<uint8_t>(oldQuality==DisplayQuality::Fill?DisplayQuality::Guess:oldQuality);
+                            const auto oldQuality=static_cast<DisplayQuality>(old->sampleQuality[ps]);
+                            f->sampleQuality[d]=static_cast<uint8_t>(oldQuality==DisplayQuality::Fill?DisplayQuality::Guess:oldQuality);
                         }
                     }
                     if(sx<0 || sy<0) continue;
@@ -298,14 +299,14 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     f->counts[d]=old->counts[ss];
                     if constexpr(Save) f->state.copy(d,old->state,ss);
                     if(f->counts[d].known(r.settings.iterations)) {
-                        f->displayPixels[d]=pixelColor(f->counts[d],r.settings.iterations);
-                        f->displayQuality[d]=static_cast<uint8_t>(DisplayQuality::Exact);
+                        f->samplePixels[d]=pixelColor(f->counts[d],r.settings.iterations);
+                        f->sampleQuality[d]=static_cast<uint8_t>(DisplayQuality::Exact);
                         ++stat.reused;
                     } else if(old->request.settings.iterations==r.settings.iterations &&
-                              f->displayQuality[d]==static_cast<uint8_t>(DisplayQuality::Missing) &&
-                              old->displayQuality[ss]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
-                        f->displayPixels[d]=old->displayPixels[ss];
-                        f->displayQuality[d]=old->displayQuality[ss];
+                              f->sampleQuality[d]==static_cast<uint8_t>(DisplayQuality::Missing) &&
+                              old->sampleQuality[ss]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
+                        f->samplePixels[d]=old->samplePixels[ss];
+                        f->sampleQuality[d]=old->sampleQuality[ss];
                     }
                 }
             }
@@ -341,8 +342,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
                         Count before=f->counts[index];
                         if(before.known(r.settings.iterations)) {
-                            f->displayPixels[index]=pixelColor(before,r.settings.iterations);
-                            f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                            f->samplePixels[index]=pixelColor(before,r.settings.iterations);
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                             continue;
                         }
                         const Orbit<Big>*saved=nullptr;
@@ -360,8 +361,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                 f->state.orbit[index]=std::make_shared<Orbit<Big>>(Orbit<Big>{scratch.x,scratch.y});
                         }
                         if(result.known(r.settings.iterations)) {
-                            f->displayPixels[index]=pixelColor(result,r.settings.iterations);
-                            f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                            f->samplePixels[index]=pixelColor(result,r.settings.iterations);
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                         }
                     }
                 }
@@ -381,8 +382,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             const size_t index=list[k++];
                             Count before=f->counts[index];
                             if(before.known(r.settings.iterations)) {
-                                f->displayPixels[index]=pixelColor(before,r.settings.iterations);
-                                f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                                f->samplePixels[index]=pixelColor(before,r.settings.iterations);
+                                f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                                 continue;
                             }
                             const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
@@ -406,8 +407,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             f->counts[index]=l.count;
                             if constexpr(Save) { f->state.x[index]=l.x;f->state.y[index]=l.y; }
                             if(l.count.known(r.settings.iterations)) {
-                                f->displayPixels[index]=pixelColor(l.count,r.settings.iterations);
-                                f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                                f->samplePixels[index]=pixelColor(l.count,r.settings.iterations);
+                                f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                             }
                         }
                     }
@@ -426,8 +427,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
 
     auto colorAt=[&](int x,int y,uint32_t&color)->bool {
         const size_t i=f->index(x,y);
-        if(!previewKnown(f->displayQuality[i])) return false;
-        color=f->displayPixels[i];return true;
+        if(!previewKnown(f->sampleQuality[i])) return false;
+        color=f->samplePixels[i];return true;
     };
     auto sameSeven=[&](const std::array<std::pair<int,int>,7>&points,uint32_t&color)->bool {
         if(!colorAt(points[0].first,points[0].second,color)) return false;
@@ -471,20 +472,20 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         for(int y:rowOrder) for(int x=0;x<r.width;++x) {
             const size_t index=f->index(x,y);
             if(!f->counts[index].known(r.settings.iterations)) list.push_back(index);
-            else if(f->displayQuality[index]!=static_cast<uint8_t>(DisplayQuality::Exact)) {
-                f->displayPixels[index]=pixelColor(f->counts[index],r.settings.iterations);
-                f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+            else if(f->sampleQuality[index]!=static_cast<uint8_t>(DisplayQuality::Exact)) {
+                f->samplePixels[index]=pixelColor(f->counts[index],r.settings.iterations);
+                f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
             }
         }
         calculateList(list);
         // A completed raster row/column can act as an exact source for the same
         // nearest-line timeout fill used by the classic renderer.
         for(int y=0;y<r.height;++y) {
-            bool ready=true;for(int x=0;x<r.width;++x) if(f->displayQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) {ready=false;break;}
+            bool ready=true;for(int x=0;x<r.width;++x) if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) {ready=false;break;}
             if(ready) rowReady[static_cast<size_t>(y)]=1;
         }
         for(int x=0;x<r.width;++x) {
-            bool ready=true;for(int y=0;y<r.height;++y) if(f->displayQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) {ready=false;break;}
+            bool ready=true;for(int y=0;y<r.height;++y) if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) {ready=false;break;}
             if(ready) colReady[static_cast<size_t>(x)]=1;
         }
     };
@@ -531,19 +532,19 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 for(int x:positions) {
                     const size_t index=f->index(x,y);
                     if(f->counts[index].known(r.settings.iterations)) {
-                        f->displayPixels[index]=pixelColor(f->counts[index],r.settings.iterations);
-                        f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                        f->samplePixels[index]=pixelColor(f->counts[index],r.settings.iterations);
+                        f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                     } else {
                         uint32_t guessed=0;
                         if(guessRow(y,x,guessed)) {
-                            f->displayPixels[index]=guessed;
-                            f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Guess);
+                            f->samplePixels[index]=guessed;
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Guess);
                             ++f->stats.solidGuessed;
                         } else calculate.push_back(index);
                     }
                 }
                 calculateList(calculate);
-                for(int x:positions) if(f->displayQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) { visuallyComplete=false;break; }
+                for(int x:positions) if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) { visuallyComplete=false;break; }
                 if(visuallyComplete) rowReady[static_cast<size_t>(y)]=1;
             } else {
                 const int x=t.index;
@@ -558,19 +559,19 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 for(int y:positions) {
                     const size_t index=f->index(x,y);
                     if(f->counts[index].known(r.settings.iterations)) {
-                        f->displayPixels[index]=pixelColor(f->counts[index],r.settings.iterations);
-                        f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                        f->samplePixels[index]=pixelColor(f->counts[index],r.settings.iterations);
+                        f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                     } else {
                         uint32_t guessed=0;
                         if(guessColumn(x,y,guessed)) {
-                            f->displayPixels[index]=guessed;
-                            f->displayQuality[index]=static_cast<uint8_t>(DisplayQuality::Guess);
+                            f->samplePixels[index]=guessed;
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Guess);
                             ++f->stats.solidGuessed;
                         } else calculate.push_back(index);
                     }
                 }
                 calculateList(calculate);
-                for(int y:positions) if(f->displayQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) { visuallyComplete=false;break; }
+                for(int y:positions) if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) { visuallyComplete=false;break; }
                 if(visuallyComplete) colReady[static_cast<size_t>(x)]=1;
             }
             if(!visuallyComplete && workStop.requested()) break;
@@ -594,10 +595,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     // colours are presentation-only and are replaced by later exact/guessed work.
     if(r.settings.sliceMilliseconds && r.settings.dynamicFill) {
         auto copyFill=[&](size_t d,size_t src) {
-            if(f->displayQuality[d]!=static_cast<uint8_t>(DisplayQuality::Missing) ||
-               f->displayQuality[src]==static_cast<uint8_t>(DisplayQuality::Missing)) return;
-            f->displayPixels[d]=f->displayPixels[src];
-            f->displayQuality[d]=static_cast<uint8_t>(DisplayQuality::Fill);
+            if(f->sampleQuality[d]!=static_cast<uint8_t>(DisplayQuality::Missing) ||
+               f->sampleQuality[src]==static_cast<uint8_t>(DisplayQuality::Missing)) return;
+            f->samplePixels[d]=f->samplePixels[src];
+            f->sampleQuality[d]=static_cast<uint8_t>(DisplayQuality::Fill);
             ++f->stats.filled;
         };
         // zoom.cpp:mkfilltable()/filly() select the closest completed column,
@@ -640,7 +641,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
         const size_t i=f->index(x,y);
         if(!f->counts[i].known(r.settings.iterations)) ++f->stats.pending;
-        const auto q=static_cast<DisplayQuality>(f->displayQuality[i]);
+        const auto q=static_cast<DisplayQuality>(f->sampleQuality[i]);
         if(q==DisplayQuality::Missing || q==DisplayQuality::Fill) ++visualPending;
     }
     // Guessed samples are deliberately considered finished for an interactive
