@@ -134,11 +134,12 @@ calculated in parallel before each line scan so the sequential left/up reference
 used by the original heuristic remains available while expensive anchors still
 use all workers.
 
-A guessed pixel is tagged `Guess`; a deadline substitute is tagged `Fill`.
-Neither changes `Count`, `z_n`, or the exact sample coordinate. When a slice
-expires, the display-only fill mirrors `mkfilltable`/`filly`: unresolved columns
-copy the closest completed column in coordinate space, then unresolved rows copy
-the closest completed row.
+A guessed pixel is tagged `Guess` and never changes `Count`, `z_n`, or
+the exact sample coordinate. Deadline reduction no longer materializes `Fill`
+pixels. Instead the compute stage records `displayXSource` and
+`displayYSource` maps mirroring `mkfilltable`/`filly`. This preserves the
+classic nearest-source semantics and presentation-coordinate collapse in
+O(width+height) work, while the display stage follows the maps later.
 
 Classic XaoS then stores the copied source coordinate back into `xpos`/`ypos`.
 That detail is essential: it deliberately creates duplicate line coordinates, so
@@ -152,13 +153,13 @@ remain valid. Once the line grid is resolved, any pending guessed pixels are
 refined in the original interlaced line order rather than a centre-out tile
 order. Aggressive previews therefore cannot masquerade as resumable state.
 
-The GUI time budget follows the policy in upstream `ui_helper.cpp` with a
-50-frame moving history: start from five times recent work; during interaction,
-tighten to three times when above the 25-FPS threshold and clamp to about 15 FPS;
-at idle use about 1/3 second; never request a slice shorter than about 1/30
-second, subtract measured image/UI overhead, and retain a 10 ms floor. The
-budget is soft: an individual orbit or line can overrun it, exactly as the old
-engine only reaches interrupt points at safe boundaries.
+The GUI compute budget follows the policy in upstream `ui_helper.cpp` with a
+50-frame moving history: start from five times recent mathematical work; during
+interaction tighten to three times when above the 25-FPS threshold and clamp to
+about 15 FPS; at idle use about 1/3 second; never request a slice shorter than
+about 1/30 second, and retain a 10 ms floor. Presentation time is deliberately
+not charged to this budget. The budget remains soft: an individual orbit or
+line can overrun it because interruption is only observed at safe boundaries.
 
 ## Scheduling and GUI lifetime
 
@@ -170,11 +171,16 @@ zoom previews instead follow the row/column priority queue above. Runtime AVX2
 still processes four native orbits per inner batch, while GMP scratch objects
 are retained per worker.
 
-The GUI maintains one pending request rather than accumulating obsolete zooms.
-Superseding a request cancels current work cooperatively. Incomplete views keep
-refining while no newer request exists; after input settles the UI requests a
-uniform-grid pass. Only the coordinator creates QImages, and display fallback,
-solid guesses, and timeout fills are never read back as mathematical state.
+The GUI maintains one pending compute request rather than accumulating obsolete
+zooms. A compute coordinator owns the renderer and its multithreaded Qt worker
+pool. Each immutable grid frame is handed to a separate presentation thread,
+which uses a small persistent worker pool for nearest/bilinear/bicubic
+reconstruction while compute immediately continues the next refinement slice.
+Same-view presentation is allowed to finish so progressive updates remain
+visible; a newer user request cancels stale presentation and replaces its
+pending frame. QImage conversion also runs on the presentation thread using
+row-wise copies. Display fallback, interpolation, and timeout source maps are
+never read back as mathematical state.
 
 Qt-specific paths have been statically reviewed but could not be compiled in the
 local container because Qt 6 development files are unavailable; repository CI
