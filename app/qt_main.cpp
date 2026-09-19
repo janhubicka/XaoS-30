@@ -145,6 +145,7 @@ class Canvas final:public QWidget {
                      id=job.serial,epoch=job.epoch] {
                         if(epoch!=epoch_ || id<shown_) return;
                         shown_=id;
+                        ++publishedFrames;
                         fallback_=image_; fallbackView_=imageView_;
                         image_=image; imageView_=view;
                         if(stats.complete) ++completedFrames;
@@ -333,6 +334,7 @@ public:
     View view;
     Settings settings;
     int completedFrames=0;
+    int publishedFrames=0;
     std::function<void(QString)> onStatus;
     /// Constructs a Canvas instance.
     explicit Canvas(QWidget*parent=nullptr):QWidget(parent) {
@@ -492,14 +494,39 @@ int main(int argc,char**argv) {
     QApplication app(argc,argv);QApplication::setApplicationName("XaoS Modern");
     Window window;
     const bool smoke=app.arguments().contains("--smoke-test");
-    if(smoke) {window.resize(420,320);window.iterations->setValue(64);window.canvas->setThreads(2);}
+    if(smoke) {
+        window.resize(520,360);
+        window.iterations->setValue(64);
+        window.canvas->settings.reconstruction=Reconstruction::Bicubic;
+        window.canvas->setThreads(2);
+    }
     window.show();
     if(smoke) {
-        QTimer::singleShot(200,&window,[&]{window.canvas->view.zoom(.4,.6,.97,std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));window.canvas->submit(true);});
-        QTimer::singleShot(400,&window,[&]{window.iterations->setValue(128);});
-        QTimer::singleShot(600,&window,[&]{window.canvas->settings.minimumPrecision=128;window.canvas->submit(false,true);});
-        QTimer::singleShot(1200,&window,[&]{window.canvas->settings.saveState=false;window.canvas->submit();});
-        QTimer::singleShot(3000,&window,[&]{app.exit(window.canvas->completedFrames?0:2);});
+        auto*continuous=new QTimer(&window);
+        continuous->setInterval(8);
+        int zoomTicks=0,publishedAtStart=0;
+        bool publishedDuringMotion=false;
+        QObject::connect(continuous,&QTimer::timeout,&window,[&] {
+            publishedDuringMotion|=window.canvas->publishedFrames>publishedAtStart;
+            window.canvas->view.zoom(.37,.61,.997,
+                std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));
+            window.canvas->submit(true);
+            if(++zoomTicks>=80) {
+                publishedDuringMotion|=window.canvas->publishedFrames>publishedAtStart;
+                continuous->stop();
+            }
+        });
+        QTimer::singleShot(150,&window,[&] {
+            publishedAtStart=window.canvas->publishedFrames;
+            continuous->start();
+        });
+        QTimer::singleShot(1000,&window,[&]{window.iterations->setValue(128);});
+        QTimer::singleShot(1400,&window,[&]{window.canvas->settings.minimumPrecision=128;window.canvas->submit(false,true);});
+        QTimer::singleShot(1900,&window,[&]{window.canvas->settings.saveState=false;window.canvas->submit();});
+        QTimer::singleShot(4000,&window,[&]{
+            const bool ok=window.canvas->completedFrames && publishedDuringMotion;
+            app.exit(ok?0:2);
+        });
     }
     return app.exec(); // Window destruction joins all render workers before QApplication dies.
 }
