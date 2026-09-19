@@ -800,7 +800,14 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         auto coordinates=makeFastCoordinates.template operator()<Fast>();
         FixedStateStorage<N>* state=nullptr;
         if constexpr(Save) state=&f->state.template getFixed<N>();
-        const Fast jr=Fast::fromBig(r.settings.juliaRe),ji=Fast::fromBig(r.settings.juliaIm);
+        const Fast jr=[](const Settings&s) {
+            if constexpr(F::julia) return Fast::fromBig(s.juliaRe);
+            else return Fast{};
+        }(r.settings);
+        const Fast ji=[](const Settings&s) {
+            if constexpr(F::julia) return Fast::fromBig(s.juliaIm);
+            else return Fast{};
+        }(r.settings);
         return [&,coordinates,state,jr,ji](const std::vector<size_t>&list,
                                            const Cancellation&calculationStop) {
             if(list.empty()) return;
