@@ -27,9 +27,11 @@ The project is rooted here. Do not recreate `experimental/qt-modern/` or a secon
 4. Observe the internal frame budget between row/column operations. Do not let the internal time slice cut a grid line in half. Explicit caller/UI cancellation must remain effective for pathological long orbits.
 5. Before honoring an interactive timeout, maintain enough row/column support for reduced-resolution reconstruction (the classic XaoS `readyforinterrupt` invariant).
 6. Nearest reconstruction must remain compatible with original XaoS `mkfilltable()/filly()` behavior. Bilinear and bicubic reconstruction must use actual nonuniform coordinate spacing.
-7. Keep presentation off the compute coordinator. `Renderer::render()` timing and frame budgets cover mathematical DP/orbit work only; `presentFrame()` may run concurrently on a separate executor and stale display work must be cancellable.
-8. Precision is runtime-selected. Do not replace the GMP path with a fixed menu of template precisions.
-9. Scalar and SIMD escape counts must stay identical; keep `-ffp-contract=off` unless the numerical contract and tests are deliberately changed.
+7. Keep presentation off the compute coordinator. `Renderer::render()` timing and frame budgets cover mathematical DP/orbit work only; `presentFrame()` may run concurrently on a separate executor.
+8. Treat viewport motion and semantic invalidation differently: continuous zoom/pan must coalesce pending geometry without cancelling the active bounded row/column slice, while formula/iteration/reconstruction/precision/Julia/size changes must invalidate old compute and presentation through the semantic epoch.
+9. Preserve XaoS line significance: zoom-in uses inverse movement (fixed-point bias), zoom-out uses movement with ×500 endpoint weighting, followed by recursive `addprices()` midpoint/span weighting.
+10. Precision is runtime-selected. Do not replace the GMP path with a fixed menu of template precisions.
+11. Scalar and SIMD escape counts must stay identical; keep `-ffp-contract=off` unless the numerical contract and tests are deliberately changed.
 
 ## Coding style
 
