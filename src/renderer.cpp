@@ -135,8 +135,11 @@ bool displayCompatible(const FrameBase&old,const Request&r) {
 }
 /// Checks whether an old frame is compatible with exact mathematical state reuse.
 bool compatible(const FrameBase& old,const Request&r,mp_bitcnt_t bits) {
-    return displayCompatible(old,r) && old.stats.bits==bits &&
-           old.request.settings.analytic==r.settings.analytic;
+    // The row/column coordinates are expressed in the view's rotated screen
+    // basis. A different angle therefore denotes a different coordinate system:
+    // visual fallback is still valid, but DP/orbit state is not.
+    return displayCompatible(old,r) && old.request.view.rotation==r.view.rotation &&
+           old.stats.bits==bits && old.request.settings.analytic==r.settings.analytic;
 }
 struct alignas(64) LocalStats { uint64_t reused=0,started=0,resumed=0,steps=0; };
 struct LineTask { bool row=false; int index=0; double priority=0; size_t serial=0; };
@@ -434,8 +437,14 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     };
     addPreviousBytes(statePrevious);
     if(gridPrevious && gridPrevious!=statePrevious) addPreviousBytes(gridPrevious);
-    const size_t axisEntries=multiplyChecked(2,plusChecked(static_cast<size_t>(r.width),static_cast<size_t>(r.height)));
+    const size_t axisCount=plusChecked(static_cast<size_t>(r.width),static_cast<size_t>(r.height));
+    const size_t axisEntries=multiplyChecked(2,axisCount);
     bytes=plusChecked(bytes,multiplyChecked(axisEntries,sizeof(Big)+sizeof(int)+static_cast<size_t>(bits/8)+40));
+    // Rotated GMP rendering precomputes the four screen-basis components so each
+    // orbit needs only two arbitrary-precision additions, not four multiplies.
+    if(big && r.view.rotation!=0)
+        bytes=plusChecked(bytes,multiplyChecked(multiplyChecked(4,axisCount),
+            sizeof(Big)+static_cast<size_t>(bits/8)+3*sizeof(mp_limb_t)+32));
     bytes=plusChecked(bytes,multiplyChecked(executor.concurrency(),multiplyChecked(12,static_cast<size_t>(bits/8)+64)));
     if(r.settings.memoryBudget && bytes>r.settings.memoryBudget)
         throw MemoryBudgetExceeded();
@@ -455,8 +464,9 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     // coordinate.
     const auto*oldPreviewX=gridOld?(gridOld->previewXs.empty()?&gridOld->xs:&gridOld->previewXs):nullptr;
     const auto*oldPreviewY=gridOld?(gridOld->previewYs.empty()?&gridOld->ys:&gridOld->previewYs):nullptr;
-    auto ax=makeAxis<Real>(r.view.re,step,r.width,bits,oldPreviewX,r.settings.uniform,r.settings.reuseRadius);
-    auto ay=makeAxis<Real>(r.view.im,step,r.height,bits,oldPreviewY,r.settings.uniform,r.settings.reuseRadius);
+    const auto [axisXCenter,axisYCenter]=r.view.axisCenter();
+    auto ax=makeAxis<Real>(axisXCenter,step,r.width,bits,oldPreviewX,r.settings.uniform,r.settings.reuseRadius);
+    auto ay=makeAxis<Real>(axisYCenter,step,r.height,bits,oldPreviewY,r.settings.uniform,r.settings.reuseRadius);
     auto stateSourceX=exactSources(ax.coordinates,stateOld?&stateOld->xs:nullptr);
     auto stateSourceY=exactSources(ay.coordinates,stateOld?&stateOld->ys:nullptr);
     auto gridStateSourceX=exactSources(ax.coordinates,gridOld?&gridOld->xs:nullptr);
@@ -476,12 +486,40 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->samplePixels.assign(pixels,0xff000000u);
     f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
 
-    std::vector<double> dx,dy;
+    const double rotationCos=std::cos(r.view.rotation);
+    const double rotationSin=std::sin(r.view.rotation);
+    std::vector<double> dx,dy,dxReal,dxImag,dyReal,dyImag;
+    std::vector<Big> bxReal,bxImag,byReal,byImag;
     if constexpr(!big) {
         dx.reserve(f->xs.size());dy.reserve(f->ys.size());
         for(const auto&x:f->xs) dx.push_back(x.toDouble());
         for(const auto&y:f->ys) dy.push_back(y.toDouble());
+        if(r.view.rotation!=0) {
+            dxReal.reserve(dx.size());dxImag.reserve(dx.size());
+            dyReal.reserve(dy.size());dyImag.reserve(dy.size());
+            for(double x:dx) { dxReal.push_back(x*rotationCos);dxImag.push_back(x*rotationSin); }
+            for(double y:dy) { dyReal.push_back(-y*rotationSin);dyImag.push_back(y*rotationCos); }
+        }
+    } else if(r.view.rotation!=0) {
+        bxReal.reserve(f->xs.size());bxImag.reserve(f->xs.size());
+        byReal.reserve(f->ys.size());byImag.reserve(f->ys.size());
+        for(const auto&x:f->xs) {
+            bxReal.push_back(scale(x,rotationCos));
+            bxImag.push_back(scale(x,rotationSin));
+        }
+        for(const auto&y:f->ys) {
+            byReal.push_back(scale(y,-rotationSin));
+            byImag.push_back(scale(y,rotationCos));
+        }
     }
+    const auto doubleRealAt=[&](int x,int y) {
+        return r.view.rotation==0?dx[static_cast<size_t>(x)]:
+            dxReal[static_cast<size_t>(x)]+dyReal[static_cast<size_t>(y)];
+    };
+    const auto doubleImagAt=[&](int x,int y) {
+        return r.view.rotation==0?dy[static_cast<size_t>(y)]:
+            dxImag[static_cast<size_t>(x)]+dyImag[static_cast<size_t>(y)];
+    };
 
     std::vector<LocalStats> stats(executor.concurrency());
     // Move display samples from the last valid grid and mathematical state from
@@ -599,13 +637,24 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         if constexpr(Save) saved=f->state.orbit[index].get();
                         const uint32_t start=saved?before.iterations:0;
                         Count result;
-                        if constexpr(F::generic)
-                            result=scratch.run(r.settings.formula,f->xs[static_cast<size_t>(x)],f->ys[static_cast<size_t>(y)],
-                                               before,saved,r.settings.iterations,calculationStop,Save);
-                        else
-                            result=scratch.run(f->xs[static_cast<size_t>(x)],f->ys[static_cast<size_t>(y)],
-                                               r.settings.juliaRe,r.settings.juliaIm,before,saved,
-                                               r.settings.iterations,calculationStop,Save,r.settings.analytic);
+                        if(r.view.rotation==0) {
+                            if constexpr(F::generic)
+                                result=scratch.run(r.settings.formula,f->xs[static_cast<size_t>(x)],f->ys[static_cast<size_t>(y)],
+                                                   before,saved,r.settings.iterations,calculationStop,Save);
+                            else
+                                result=scratch.run(f->xs[static_cast<size_t>(x)],f->ys[static_cast<size_t>(y)],
+                                                   r.settings.juliaRe,r.settings.juliaIm,before,saved,
+                                                   r.settings.iterations,calculationStop,Save,r.settings.analytic);
+                        } else {
+                            Big real=add(bxReal[static_cast<size_t>(x)],byReal[static_cast<size_t>(y)]);
+                            Big imag=add(bxImag[static_cast<size_t>(x)],byImag[static_cast<size_t>(y)]);
+                            if constexpr(F::generic)
+                                result=scratch.run(r.settings.formula,real,imag,before,saved,
+                                                   r.settings.iterations,calculationStop,Save);
+                            else
+                                result=scratch.run(real,imag,r.settings.juliaRe,r.settings.juliaIm,before,saved,
+                                                   r.settings.iterations,calculationStop,Save,r.settings.analytic);
+                        }
                         stat.steps+=result.iterations-start;
                         if(saved && start) ++stat.resumed; else ++stat.started;
                         if(!Save && result.status==Status::Pending && result.iterations<before.iterations) continue;
@@ -656,7 +705,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             }
                         }
                         const uint32_t start=saved?before.iterations:0;
-                        Count result=scratch.run(r.settings.formula,dx[static_cast<size_t>(x)],dy[static_cast<size_t>(y)],
+                        Count result=scratch.run(r.settings.formula,doubleRealAt(x,y),doubleImagAt(x,y),
                                                  before,saved,r.settings.iterations,calculationStop,Save);
                         stat.steps+=result.iterations-start;
                         if(saved && start) ++stat.resumed; else ++stat.started;
@@ -705,7 +754,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                     saved=&orbit;
                                 }
                             }
-                            lanes[used]=prepareLane<F>(dx[static_cast<size_t>(x)],dy[static_cast<size_t>(y)],
+                            lanes[used]=prepareLane<F>(doubleRealAt(x,y),doubleImagAt(x,y),
                                 juliaReal,juliaImag,before,saved,r.settings.analytic);
                             indexes[used]=index;starts[used]=saved?before.iterations:0;
                             if(saved && before.iterations) ++stat.resumed; else ++stat.started;
@@ -838,10 +887,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         for(size_t i=0;i<rowReady.size();++i) yDirty[i]=static_cast<uint8_t>(!rowReady[i]);
         const Big xExtent=scale(step,static_cast<double>(r.width));
         const Big yExtent=scale(step,static_cast<double>(r.height));
-        const Big xBegin=sub(r.view.re,scale(xExtent,.5));
-        const Big xEnd=add(r.view.re,scale(xExtent,.5));
-        const Big yBegin=sub(r.view.im,scale(yExtent,.5));
-        const Big yEnd=add(r.view.im,scale(yExtent,.5));
+        const Big xBegin=sub(axisXCenter,scale(xExtent,.5));
+        const Big xEnd=add(axisXCenter,scale(xExtent,.5));
+        const Big yBegin=sub(axisYCenter,scale(yExtent,.5));
+        const Big yEnd=add(axisYCenter,scale(yExtent,.5));
         const auto px=linePriorities(f->xs,oldPreviewX,xDirty,step,xBegin,xEnd);
         const auto py=linePriorities(f->ys,oldPreviewY,yDirty,step,yBegin,yEnd);
         std::vector<LineTask> tasks;
@@ -1044,8 +1093,9 @@ std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,con
        r.height>std::numeric_limits<int>::max()-8 || !r.settings.iterations || !e.concurrency())
         throw std::invalid_argument("invalid dimensions, iteration cap, or executor");
     if(!(r.settings.reuseRadius>0 && r.settings.reuseRadius<=32) ||
-       !std::isfinite(r.settings.focusX) || !std::isfinite(r.settings.focusY) || r.settings.solidGuessRange>16)
-        throw std::invalid_argument("invalid reuse radius, focus, or solid-guess range");
+       !std::isfinite(r.settings.focusX) || !std::isfinite(r.settings.focusY) ||
+       !std::isfinite(r.view.rotation) || r.settings.solidGuessRange>16)
+        throw std::invalid_argument("invalid reuse radius, focus, rotation, or solid-guess range");
 
     mp_bitcnt_t bits=std::max(r.settings.minimumPrecision,r.view.requiredBits(r.width,r.settings.guardBits));
     const auto step=divide(r.view.span,static_cast<unsigned long>(r.width));
@@ -1147,16 +1197,19 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
 
     std::vector<int> fallbackX,fallbackY;
     if(previous && displayCompatible(previous->request,frame.request) &&
+       previous->request.view.rotation==frame.request.view.rotation &&
        previous->request.width>0 && previous->request.height>0 &&
        previous->pixels.size()==static_cast<size_t>(previous->request.width)*
                                 static_cast<size_t>(previous->request.height)) {
         const Big oldStep=divide(previous->request.view.span.atPrecision(
             std::max(frame.stats.bits,previous->request.view.span.precision())),
             static_cast<unsigned long>(previous->request.width));
-        fallbackX=reprojectAxis(frame.request.view.re,step,frame.request.width,
-                                previous->request.view.re,oldStep,previous->request.width);
-        fallbackY=reprojectAxis(frame.request.view.im,step,frame.request.height,
-                                previous->request.view.im,oldStep,previous->request.height);
+        const auto [newXCenter,newYCenter]=frame.request.view.axisCenter();
+        const auto [oldXCenter,oldYCenter]=previous->request.view.axisCenter();
+        fallbackX=reprojectAxis(newXCenter,step,frame.request.width,
+                                oldXCenter,oldStep,previous->request.width);
+        fallbackY=reprojectAxis(newYCenter,step,frame.request.height,
+                                oldYCenter,oldStep,previous->request.height);
     }
 
     std::atomic<int> nextRow{0};

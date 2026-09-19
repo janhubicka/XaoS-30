@@ -19,7 +19,7 @@ int main(int argc,char**argv) {
         Request r; r.width=800; r.height=600;
         size_t threads=defaultWorkerCount();
         std::string re="-0.5",im="0",span="3.5",output;
-        int frames=1; double zoom=1;
+        int frames=1; double zoom=1,rotationDegrees=0;
         std::vector<uint32_t> limits;
         for(int i=1;i<argc;++i) {
             std::string a=argv[i];
@@ -33,6 +33,12 @@ int main(int argc,char**argv) {
             else if(a=="--center-re") re=next();
             else if(a=="--center-im") im=next();
             else if(a=="--span") span=next();
+            else if(a=="--rotation") {
+                std::string value=next(); size_t used=0;
+                rotationDegrees=std::stod(value,&used);
+                if(used!=value.size()||!std::isfinite(rotationDegrees))
+                    throw std::invalid_argument("invalid rotation");
+            }
             else if(a=="--julia-re") { auto s=next(); r.settings.juliaRe=Big::parse(s,View::textBits(s,"","")); }
             else if(a=="--julia-im") { auto s=next(); r.settings.juliaIm=Big::parse(s,View::textBits(s,"","")); }
             else if(a=="--output") output=next();
@@ -68,7 +74,7 @@ int main(int argc,char**argv) {
                 "--width N --height N --iterations N --precision BITS (0=adaptive)\n"
                 "--threads N --counts | --state --scalar --no-interior --uniform\n"
                 "--slice MS --solid-guess N | --no-guess --no-fill --reconstruct MODE\n"
-                "--center-re DECIMAL --center-im DECIMAL --span DECIMAL\n"
+                "--center-re DECIMAL --center-im DECIMAL --span DECIMAL --rotation DEGREES\n"
                 "--formula NAME --list-formulas --julia-re DECIMAL --julia-im DECIMAL\n"
                 "--frames N --zoom FACTOR --limits 128,256,512 --output FILE.ppm\n"
                 "--memory-mib N (0=unlimited; default 1024)\n";
@@ -77,6 +83,7 @@ int main(int argc,char**argv) {
         }
         if(frames<1) throw std::invalid_argument("frames must be positive");
         r.view=View::parse(re,im,span,r.width,16,r.settings.memoryBudget);
+        r.view.rotation=View::normalizeRotation(rotationDegrees*std::numbers::pi/180.0);
         ThreadExecutor executor(threads); Renderer renderer; Cancellation stop;
         std::cout<<"frame,width,height,limit,backend,bits,mode,threads,simd,ms,reused,started,resumed,steps,pending,estimated_bytes,guessed,filled\n";
         std::shared_ptr<const FrameBase> f;

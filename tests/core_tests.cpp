@@ -179,6 +179,25 @@ void numericTests() {
     rejects([]{Big::parse("1e");});
     rejects([]{View::parse("0","0","0");}); rejects([]{View::parse("0","0","-1");});
     rejects([&]{v.zoom(.5,.5,0,100,100);});
+    rejects([&]{v.rotate(.5,.5,std::numeric_limits<double>::infinity(),100,100);});
+
+    // Rotation/zoom are anchored in screen space, so the selected mathematical
+    // point stays under the same two-finger centroid even at arbitrary precision.
+    View rotated=View::parse("-0.743643887037151","0.13182590420533","1e-40",320);
+    const double u=.27,vv=.68;
+    auto anchor=rotated.screenToComplex(u,vv,320,200);
+    rotated.rotate(u,vv,.61,320,200);
+    auto mapped=rotated.complexToScreen(anchor.first,anchor.second,320,200);
+    CHECK(std::abs(mapped.first-u)<5e-5);CHECK(std::abs(mapped.second-vv)<5e-5);
+    // The O(1) center must survive projection to the rotated basis with accuracy
+    // measured against the tiny viewport span, not merely against double epsilon.
+    const auto axisCenter=rotated.axisCenter();
+    const auto centerBack=rotated.complexFromAxes(axisCenter.first,axisCenter.second);
+    CHECK(std::abs(div(sub(centerBack.first,rotated.re),rotated.span).toDouble())<5e-5);
+    CHECK(std::abs(div(sub(centerBack.second,rotated.im),rotated.span).toDouble())<5e-5);
+    rotated.zoom(u,vv,.83,320,200);
+    mapped=rotated.complexToScreen(anchor.first,anchor.second,320,200);
+    CHECK(std::abs(mapped.first-u)<5e-5);CHECK(std::abs(mapped.second-vv)<5e-5);
     CHECK((std::is_empty_v<Storage<false,double>>));
     CHECK((std::is_empty_v<Storage<false,Big>>));
 }
@@ -308,11 +327,18 @@ template<class F> void verifyCoordinates(const FrameBase&frame) {
     for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
         Count expected;
         if(frame.stats.backend=="GMP") {
-            expected=kernel.run(frame.xs[static_cast<size_t>(x)],frame.ys[static_cast<size_t>(y)],
+            const auto point=r.view.complexFromAxes(
+                frame.xs[static_cast<size_t>(x)],frame.ys[static_cast<size_t>(y)]);
+            expected=kernel.run(point.first,point.second,
                 r.settings.juliaRe,r.settings.juliaIm,{},nullptr,r.settings.iterations,stop,true,r.settings.analytic);
         } else {
+            const double gx=frame.xs[static_cast<size_t>(x)].toDouble();
+            const double gy=frame.ys[static_cast<size_t>(y)].toDouble();
+            const double cs=std::cos(r.view.rotation),sn=std::sin(r.view.rotation);
+            const double real=r.view.rotation==0?gx:gx*cs-gy*sn;
+            const double imag=r.view.rotation==0?gy:gx*sn+gy*cs;
             std::array<Lane,4>a{};
-            a[0]=prepareLane<F>(frame.xs[static_cast<size_t>(x)].toDouble(),frame.ys[static_cast<size_t>(y)].toDouble(),
+            a[0]=prepareLane<F>(real,imag,
                   r.settings.juliaRe.toDouble(),r.settings.juliaIm.toDouble(),{},nullptr,r.settings.analytic);
             iterateFour(a,1,r.settings.iterations,stop,true,F::ship,false); expected=a[0].count;
         }
@@ -328,11 +354,18 @@ template<class F> void verifyKnownCoordinates(const FrameBase&frame) {
         if(!actual.known(r.settings.iterations)) continue;
         Count expected;
         if(frame.stats.backend=="GMP") {
-            expected=kernel.run(frame.xs[static_cast<size_t>(x)],frame.ys[static_cast<size_t>(y)],
+            const auto point=r.view.complexFromAxes(
+                frame.xs[static_cast<size_t>(x)],frame.ys[static_cast<size_t>(y)]);
+            expected=kernel.run(point.first,point.second,
                 r.settings.juliaRe,r.settings.juliaIm,{},nullptr,r.settings.iterations,stop,true,r.settings.analytic);
         } else {
+            const double gx=frame.xs[static_cast<size_t>(x)].toDouble();
+            const double gy=frame.ys[static_cast<size_t>(y)].toDouble();
+            const double cs=std::cos(r.view.rotation),sn=std::sin(r.view.rotation);
+            const double real=r.view.rotation==0?gx:gx*cs-gy*sn;
+            const double imag=r.view.rotation==0?gy:gx*sn+gy*cs;
             std::array<Lane,4>a{};
-            a[0]=prepareLane<F>(frame.xs[static_cast<size_t>(x)].toDouble(),frame.ys[static_cast<size_t>(y)].toDouble(),
+            a[0]=prepareLane<F>(real,imag,
                   r.settings.juliaRe.toDouble(),r.settings.juliaIm.toDouble(),{},nullptr,r.settings.analytic);
             iterateFour(a,1,r.settings.iterations,stop,true,F::ship,false); expected=a[0].count;
         }
@@ -362,6 +395,35 @@ void zoomTests() {
         CHECK(a->stats.uniform);
         r.width=57;r.height=23; a=renderer.render(r,pool,stop);
         Renderer resized; b=resized.render(r,pool,stop); sameCounts(*a,*b);
+    }
+}
+
+/// Runs regression checks for rotated adaptive-grid rendering and cache rules.
+void rotationTests() {
+    ThreadExecutor pool(4); Cancellation stop;
+    for(mp_bitcnt_t precision:{0ul,192ul}) {
+        Request r; r.width=47;r.height=33;r.settings.iterations=180;
+        r.settings.minimumPrecision=precision;r.settings.analytic=false;r.settings.solidGuessRange=0;
+        Renderer renderer;
+        auto base=renderer.render(r,pool,stop);CHECK(base->stats.complete);
+
+        r.view.rotate(.31,.64,.47,r.width,r.height);
+        auto rotated=renderer.render(r,pool,stop);
+        CHECK(rotated->stats.complete);
+        CHECK(rotated->stats.reused==0);
+        verifyCoordinates<Mandelbrot>(*rotated);
+        Renderer fresh;auto expected=fresh.render(r,pool,stop);
+        sameCounts(*rotated,*expected);
+
+        // Once the basis angle is fixed, ordinary pan/zoom again reuses whole
+        // rows and columns in that rotated coordinate system.
+        r.view.zoom(.42,.58,.97,r.width,r.height);
+        auto zoomed=renderer.render(r,pool,stop);
+        CHECK(zoomed->stats.complete);
+        CHECK(zoomed->stats.reused>0);
+        // A reused adaptive grid is intentionally not the same grid as a fresh
+        // ideal render; validate every sample at its actual rotated coordinate.
+        verifyCoordinates<Mandelbrot>(*zoomed);
     }
 }
 /// Runs regression checks for deep.
@@ -745,7 +807,8 @@ int main() {
         for(auto [name,test]:std::vector<std::pair<const char*,std::function<void()>>>{
           {"axis optimizer vs independent dense DP",axisTests}, {"XaoS autopilot",autopilotTests}, {"XaoS fixed formulas",formulaTests}, {"classic XaoS palette",paletteTests}, {"arbitrary-precision camera",numericTests},
           {"scalar/AVX2 bit identity",simdTests},{"counts/state/resume/limit decrease",resumeTests},
-          {"zoom coordinates and exact refinement",zoomTests},{"deep zoom and cache invalidation",deepTests},
+          {"zoom coordinates and exact refinement",zoomTests},{"rotated view rendering and reuse",rotationTests},
+          {"deep zoom and cache invalidation",deepTests},
           {"cancellation and resumption",cancellationTests},{"solid guessing and preview refinement",previewTests},
           {"timeout fill feeds next DP resolution pass",resolutionFeedbackTests},{"grid reconstruction modes",reconstructionTests},
           {"split orbit/grid cache lifetime",splitCacheTests},
