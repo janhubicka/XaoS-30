@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: xaos-kernel-bench-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   kernel-benchmark:
     name: Kernel benchmark (${{ matrix.arch }})
