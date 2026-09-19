@@ -117,11 +117,15 @@ std::vector<int> exactSources(const std::vector<Big>& target,const std::vector<B
     }
     return source;
 }
-/// Checks whether an old frame can safely serve as a visual fallback.
-bool displayCompatible(const FrameBase&old,const Request&r) {
-    const auto&s=old.request.settings;
+/// Checks whether two requests may share a visual fallback.
+bool displayCompatible(const Request&old,const Request&r) {
+    const auto&s=old.settings;
     return s.formula==r.settings.formula &&
         (s.formula!=Formula::Julia || (s.juliaRe==r.settings.juliaRe && s.juliaIm==r.settings.juliaIm));
+}
+/// Checks whether an old frame can safely serve as a visual fallback.
+bool displayCompatible(const FrameBase&old,const Request&r) {
+    return displayCompatible(old.request,r);
 }
 /// Checks whether an old frame is compatible with exact mathematical state reuse.
 bool compatible(const FrameBase& old,const Request&r,mp_bitcnt_t bits) {
@@ -452,77 +456,6 @@ std::vector<int> reprojectAxis(const Big&newCenter,const Big&newStep,int newSize
     return source;
 }
 
-/// Seeds the output raster from the previous visible frame with edge clamping.
-void seedPreviousDisplay(FrameBase&frame,const FrameBase*old,const Big&step) {
-    frame.displayPixels.assign(frame.samplePixels.size(),0u);
-    if(!old || old->displayPixels.empty() || old->request.width<1 || old->request.height<1)
-        return;
-    const Big oldStep=divide(old->request.view.span.atPrecision(
-        std::max(frame.stats.bits,old->request.view.span.precision())),
-        static_cast<unsigned long>(old->request.width));
-    const auto sx=reprojectAxis(frame.request.view.re,step,frame.request.width,
-                                old->request.view.re,oldStep,old->request.width);
-    const auto sy=reprojectAxis(frame.request.view.im,step,frame.request.height,
-                                old->request.view.im,oldStep,old->request.height);
-    for(int y=0;y<frame.request.height;++y) for(int x=0;x<frame.request.width;++x)
-        frame.displayPixels[frame.index(x,y)]=
-            old->displayAt(sx[static_cast<size_t>(x)],sy[static_cast<size_t>(y)]);
-}
-
-/// Reconstructs the visible raster from the current adaptive row/column grid.
-void postprocess(FrameBase&frame,const Big&step,const std::vector<uint8_t>&rowReady,
-                 const std::vector<uint8_t>&colReady,const FrameBase*old) {
-    const AxisSupport xaxis=buildAxisSupport(frame.xs,colReady,step);
-    const AxisSupport yaxis=buildAxisSupport(frame.ys,rowReady,step);
-    seedPreviousDisplay(frame,old,step);
-    if(xaxis.index.empty() || yaxis.index.empty()) return;
-
-    const auto nearestX=classicColumnSources(frame.xs,colReady,step);
-    const auto nearestY=classicRowSources(frame.ys,rowReady,step);
-    std::vector<LinearPoint> linearX(static_cast<size_t>(frame.request.width));
-    std::vector<LinearPoint> linearY(static_cast<size_t>(frame.request.height));
-    std::vector<CubicPoint> cubicX(static_cast<size_t>(frame.request.width));
-    std::vector<CubicPoint> cubicY(static_cast<size_t>(frame.request.height));
-    for(int x=0;x<frame.request.width;++x) {
-        const double target=xaxis.target[static_cast<size_t>(x)];
-        linearX[static_cast<size_t>(x)]=linearPoint(xaxis,target);
-        cubicX[static_cast<size_t>(x)]=cubicPoint(xaxis,target);
-    }
-    for(int y=0;y<frame.request.height;++y) {
-        const double target=yaxis.target[static_cast<size_t>(y)];
-        linearY[static_cast<size_t>(y)]=linearPoint(yaxis,target);
-        cubicY[static_cast<size_t>(y)]=cubicPoint(yaxis,target);
-    }
-
-    for(int y=0;y<frame.request.height;++y) for(int x=0;x<frame.request.width;++x) {
-        uint32_t color=0;
-        bool ok=false;
-        switch(frame.request.settings.reconstruction) {
-        case Reconstruction::Nearest:
-            ok=gridColor(frame,nearestX[static_cast<size_t>(x)],
-                         nearestY[static_cast<size_t>(y)],color);
-            break;
-        case Reconstruction::Bilinear:
-            ok=bilinearColor(frame,linearX[static_cast<size_t>(x)],
-                             linearY[static_cast<size_t>(y)],color);
-            if(!ok)
-                ok=gridColor(frame,nearestX[static_cast<size_t>(x)],
-                             nearestY[static_cast<size_t>(y)],color);
-            break;
-        case Reconstruction::Bicubic:
-            ok=bicubicColor(frame,cubicX[static_cast<size_t>(x)],
-                            cubicY[static_cast<size_t>(y)],color);
-            if(!ok)
-                ok=bilinearColor(frame,linearX[static_cast<size_t>(x)],
-                                 linearY[static_cast<size_t>(y)],color);
-            if(!ok)
-                ok=gridColor(frame,nearestX[static_cast<size_t>(x)],
-                             nearestY[static_cast<size_t>(y)],color);
-            break;
-        }
-        if(ok) frame.displayPixels[frame.index(x,y)]=color;
-    }
-}
 
 template<class Real,bool Save,class F>
 /// Builds one frame, reusing orbit state and XaoS row/column geometry when safe.
