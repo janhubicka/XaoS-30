@@ -100,8 +100,8 @@ class Canvas final:public QWidget {
     uint64_t serial_=0,shown_=0,epoch_=1;
     QImage image_,fallback_;
     View imageView_,fallbackView_;
-    QTimer motion_,idle_,autopilotTimer_;
-    QElapsedTimer motionClock_,autopilotClock_;
+    QTimer motion_,idle_,autopilotTimer_,touchMomentum_;
+    QElapsedTimer motionClock_,autopilotClock_,touchSampleClock_,touchMomentumClock_,touchGestureClock_;
     Autopilot autopilotEngine_;
     std::shared_ptr<const DisplayFrame> latestDisplay_;
     Statistics latestDisplayStats_;
@@ -114,11 +114,65 @@ class Canvas final:public QWidget {
     bool nativeGestureActive_=false,gestureChanged_=false;
     enum class TouchMode { None, Pan, Pinch };
     TouchMode touchMode_=TouchMode::None;
-    QPointF touchLastCenter_,touchStart_,lastTapPosition_;
+    QPointF touchLastCenter_,touchStart_,lastTapPosition_,touchLastTwoCenter_;
+    QPointF touchPanVelocity_,touchMomentumAnchor_;
     double touchLastDistance_=0,touchLastAngle_=0;
+    double touchZoomVelocity_=0,touchRotationVelocity_=0,touchGestureMaxTravel_=0;
+    int touchGestureMaxPoints_=0;
     bool touchChanged_=false,touchTapCandidate_=false,touchPanStarted_=false;
+    bool touchAfterPinchSingle_=false,touchStoppedMotion_=false;
     QElapsedTimer lastTapClock_;
     size_t threads_=std::max<size_t>(1,defaultWorkerCount()-presentationWorkerCount());
+    /// Stops Frax-style kinetic touch motion. Returns whether anything was moving.
+    bool stopTouchMomentum(bool refine=true) {
+        const bool was=touchMomentum_.isActive();
+        touchMomentum_.stop();
+        touchPanVelocity_=QPointF{};
+        touchZoomVelocity_=0;
+        touchRotationVelocity_=0;
+        if(was && refine) submit(false);
+        return was;
+    }
+
+    /// Blends the newest touch delta into release velocities for kinetic motion.
+    void sampleTouchVelocity(const QPointF&panDelta,double zoomLog,double rotation) {
+        if(!touchSampleClock_.isValid()) {touchSampleClock_.restart();return;}
+        const double seconds=std::clamp(touchSampleClock_.restart()/1000.0,.004,.08);
+        constexpr double mix=.38;
+        QPointF pan=panDelta/seconds;
+        const double speed=std::hypot(pan.x(),pan.y());
+        if(speed>5000) pan*=5000.0/speed;
+        touchPanVelocity_=touchPanVelocity_*(1.0-mix)+pan*mix;
+        const double zoom=std::clamp(zoomLog/seconds,-5.0,5.0);
+        const double turn=std::clamp(rotation/seconds,-6.0,6.0);
+        touchZoomVelocity_=touchZoomVelocity_*(1.0-mix)+zoom*mix;
+        touchRotationVelocity_=touchRotationVelocity_*(1.0-mix)+turn*mix;
+    }
+
+    /// Reports whether release velocity is large enough to continue flying.
+    bool hasTouchMomentum() const noexcept {
+        return std::hypot(touchPanVelocity_.x(),touchPanVelocity_.y())>12.0 ||
+               std::abs(touchZoomVelocity_)>.018 || std::abs(touchRotationVelocity_)>.018;
+    }
+
+    /// Starts kinetic continuation of the combined pan/zoom/rotation gesture.
+    void startTouchMomentum(const QPointF&anchor) {
+        if(!hasTouchMomentum()) {stopTouchMomentum(false);idle_.start();return;}
+        touchMomentumAnchor_=anchor;
+        touchMomentumClock_.restart();
+        touchMomentum_.start();
+    }
+
+    /// Frax tap zoom: exact 3x step and move the tapped mathematical point to center.
+    void fraxTapZoom(const QPointF&position,double factor) {
+        const int w=std::max(1,width()),h=std::max(1,height());
+        view.zoom(position.x()/w,position.y()/h,factor,w,h);
+        const QPointF center(width()*.5,height()*.5);
+        view.pan(center.x()-position.x(),center.y()-position.y(),w);
+        pointer_=center;
+        submit(true);
+    }
+
     /// Maps a target selected in a displayed source frame into the current viewport.
     QPointF mapDisplayFocus(const DisplayFrame&frame,double u,double v) const {
         if(width()<1 || height()<1) return QPointF(.5,.5);
@@ -409,7 +463,6 @@ protected:
                          event->type()==QEvent::TouchEnd ||
                          event->type()==QEvent::TouchCancel)) {
             auto*touch=static_cast<QTouchEvent*>(event);
-            if(autopilotEnabled_) {touch->accept();return true;}
 
             std::vector<QPointF> active;
             active.reserve(2);
@@ -418,35 +471,106 @@ protected:
                     active.push_back(point.position());
             }
 
+            if(event->type()==QEvent::TouchBegin) {
+                const bool stoppedAutopilot=autopilotEnabled_;
+                if(stoppedAutopilot) setAutopilot(false);
+                touchStoppedMotion_=stopTouchMomentum(false) || stoppedAutopilot;
+                idle_.stop();
+                touchGestureClock_.restart();
+                touchSampleClock_.restart();
+                touchGestureMaxPoints_=static_cast<int>(active.size());
+                touchGestureMaxTravel_=0;
+                touchChanged_=false;
+                touchTapCandidate_=active.size()==1;
+                touchPanStarted_=false;
+                touchAfterPinchSingle_=false;
+                touchPanVelocity_=QPointF{};
+                touchZoomVelocity_=0;
+                touchRotationVelocity_=0;
+                if(!active.empty()) {
+                    touchStart_=touchLastCenter_=active.front();
+                    pointer_=active.front();
+                }
+            }
+
+            touchGestureMaxPoints_=std::max(touchGestureMaxPoints_,
+                static_cast<int>(touch->points().size()));
+            for(const auto&point:touch->points()) {
+                const QPointF travel=point.position()-point.pressPosition();
+                touchGestureMaxTravel_=std::max(touchGestureMaxTravel_,
+                    std::hypot(travel.x(),travel.y()));
+            }
+            if(touch->points().size()>=2) {
+                touchLastTwoCenter_=(touch->points()[0].position()+touch->points()[1].position())*.5;
+            }
+
             const QPointF releasedPosition=touch->points().empty()
                 ? touchLastCenter_ : touch->points().front().position();
             if(event->type()==QEvent::TouchEnd || event->type()==QEvent::TouchCancel ||
                active.empty()) {
-                if(event->type()!=QEvent::TouchCancel && touchTapCandidate_ && !touchPanStarted_) {
-                    const bool doubleTap=lastTapClock_.isValid() && lastTapClock_.elapsed()<350 &&
-                        std::hypot(releasedPosition.x()-lastTapPosition_.x(),
-                                   releasedPosition.y()-lastTapPosition_.y())<48.0;
-                    if(doubleTap) {
-                        try {
-                            view.zoom(releasedPosition.x()/std::max(1,width()),
-                                      releasedPosition.y()/std::max(1,height()),.5,
-                                      std::max(1,width()),std::max(1,height()));
-                            pointer_=releasedPosition;
-                            touchChanged_=true;
-                        } catch(const std::exception&ex) {
-                            if(onStatus) onStatus(ex.what());
-                        }
+                const bool cancelled=event->type()==QEvent::TouchCancel;
+                const bool quick=touchGestureClock_.isValid() && touchGestureClock_.elapsed()<380;
+                const bool twoFingerTap=!cancelled && !touchStoppedMotion_ &&
+                    touchGestureMaxPoints_>=2 && quick && touchGestureMaxTravel_<14.0 &&
+                    !touchChanged_;
+                bool handledTap=false;
+
+                try {
+                    if(twoFingerTap) {
+                        // Frax/Maps convention: two-finger tap is an exact 3x step out.
+                        stopTouchMomentum(false);
+                        fraxTapZoom(touchLastTwoCenter_,3.0);
                         lastTapClock_.invalidate();
-                    } else {
-                        lastTapPosition_=releasedPosition;
-                        lastTapClock_.restart();
+                        handledTap=true;
+                    } else if(!cancelled && !touchStoppedMotion_ &&
+                              touchGestureMaxPoints_==1 && touchTapCandidate_ &&
+                              !touchPanStarted_) {
+                        const bool doubleTap=lastTapClock_.isValid() &&
+                            lastTapClock_.elapsed()<350 &&
+                            std::hypot(releasedPosition.x()-lastTapPosition_.x(),
+                                       releasedPosition.y()-lastTapPosition_.y())<48.0;
+                        if(doubleTap) {
+                            // Frax tap zoom is a discrete 300% step and recenters the target.
+                            stopTouchMomentum(false);
+                            fraxTapZoom(releasedPosition,1.0/3.0);
+                            lastTapClock_.invalidate();
+                            handledTap=true;
+                        } else {
+                            lastTapPosition_=releasedPosition;
+                            lastTapClock_.restart();
+                            // A plain tap stops flight and asks for the best still image.
+                            submit(false);
+                        }
                     }
+                } catch(const std::exception&ex) {
+                    stopTouchMomentum(false);
+                    if(onStatus) onStatus(ex.what());
                 }
-                if(touchChanged_) submit(true); else idle_.start();
+
+                if(!handledTap && touchChanged_) {
+                    submit(true);
+                    if(!cancelled && hasTouchMomentum())
+                        startTouchMomentum(pointer_);
+                    else {
+                        stopTouchMomentum(false);
+                        idle_.start();
+                    }
+                } else if(!handledTap && touchStoppedMotion_) {
+                    // Frax single-tap semantics: stopping animation is itself the action.
+                    lastTapClock_.invalidate();
+                    submit(false);
+                } else if(!handledTap && !touchChanged_) {
+                    idle_.start();
+                }
+
                 touchMode_=TouchMode::None;
                 touchChanged_=false;
                 touchTapCandidate_=false;
                 touchPanStarted_=false;
+                touchAfterPinchSingle_=false;
+                touchStoppedMotion_=false;
+                touchGestureMaxPoints_=0;
+                touchGestureMaxTravel_=0;
                 dragging_=false;
                 touch->accept();return true;
             }
@@ -459,19 +583,24 @@ protected:
                     const double distance=std::hypot(separation.x(),separation.y());
                     const double angle=std::atan2(separation.y(),separation.x());
                     touchTapCandidate_=false;
+                    touchAfterPinchSingle_=false;
                     dragging_=false;
 
                     if(touchMode_!=TouchMode::Pinch) {
-                        // The first finger may already have generated a few touch
-                        // updates. Re-baseline when the second finger arrives so
-                        // that those never turn the intended pinch into a pan.
+                        // Re-baseline when the second finger arrives. This both prevents
+                        // pinch-as-pan misclassification and avoids a kinetic velocity spike.
                         touchMode_=TouchMode::Pinch;
                         touchLastCenter_=center;
                         touchLastDistance_=distance;
                         touchLastAngle_=angle;
+                        touchPanVelocity_=QPointF{};
+                        touchZoomVelocity_=0;
+                        touchRotationVelocity_=0;
+                        touchSampleClock_.restart();
                     } else {
                         bool changed=false;
                         const QPointF delta=center-touchLastCenter_;
+                        double zoomLog=0,rotation=0;
                         if(std::hypot(delta.x(),delta.y())>.01) {
                             view.pan(delta.x(),delta.y(),std::max(1,width()));
                             changed=true;
@@ -479,55 +608,77 @@ protected:
                         if(distance>4.0 && touchLastDistance_>4.0) {
                             const double scale=distance/touchLastDistance_;
                             if(std::isfinite(scale) && scale>0 && std::abs(scale-1.0)>1e-4) {
+                                zoomLog=std::log(scale);
                                 view.zoom(center.x()/std::max(1,width()),
                                           center.y()/std::max(1,height()),1.0/scale,
                                           std::max(1,width()),std::max(1,height()));
                                 changed=true;
                             }
                         }
-                        const double rotation=std::remainder(
-                            angle-touchLastAngle_,2.0*std::numbers::pi);
+                        rotation=std::remainder(angle-touchLastAngle_,2.0*std::numbers::pi);
                         if(std::abs(rotation)>1e-5) {
                             view.rotate(center.x()/std::max(1,width()),
                                         center.y()/std::max(1,height()),rotation,
                                         std::max(1,width()),std::max(1,height()));
                             changed=true;
                         }
+                        if(changed) sampleTouchVelocity(delta,zoomLog,rotation);
                         touchLastCenter_=center;
                         touchLastDistance_=distance;
                         touchLastAngle_=angle;
                         pointer_=center;
-                        if(changed) {touchChanged_=true;update();}
+                        if(changed) {touchChanged_=true;submit(true);}
                     }
                 } else {
                     const QPointF position=active.front();
                     pointer_=position;
-                    if(touchMode_!=TouchMode::Pan) {
-                        const bool continuingAfterPinch=touchMode_==TouchMode::Pinch;
+
+                    if(touchMode_==TouchMode::Pinch) {
+                        // Fingers normally lift one after another. Keep the pinch
+                        // velocity alive during this short tail so release inertia is
+                        // based on the two-finger gesture, not a synthetic one-finger pan.
+                        if(!touchAfterPinchSingle_) {
+                            touchAfterPinchSingle_=true;
+                            touchStart_=touchLastCenter_=position;
+                        } else if(std::hypot(position.x()-touchStart_.x(),
+                                             position.y()-touchStart_.y())>=8.0) {
+                            touchMode_=TouchMode::Pan;
+                            touchPanStarted_=true;
+                            touchPanVelocity_=QPointF{};
+                            touchZoomVelocity_=0;
+                            touchRotationVelocity_=0;
+                            touchLastCenter_=position;
+                            touchSampleClock_.restart();
+                        }
+                    } else if(touchMode_!=TouchMode::Pan) {
                         touchMode_=TouchMode::Pan;
                         touchStart_=touchLastCenter_=position;
-                        touchPanStarted_=continuingAfterPinch;
-                        touchTapCandidate_=!continuingAfterPinch;
+                        touchTapCandidate_=true;
+                        touchPanStarted_=false;
+                        touchSampleClock_.restart();
                     } else if(!touchPanStarted_) {
-                        // A small dead zone gives the second finger time to land
-                        // without moving the image underneath an intended pinch.
+                        // The dead zone gives a second finger time to land without
+                        // moving the image underneath an intended pinch.
                         if(std::hypot(position.x()-touchStart_.x(),
                                       position.y()-touchStart_.y())>=8.0) {
                             touchPanStarted_=true;
                             touchTapCandidate_=false;
                             touchLastCenter_=position;
+                            touchSampleClock_.restart();
                         }
                     } else {
                         const QPointF delta=position-touchLastCenter_;
                         touchLastCenter_=position;
                         if(std::hypot(delta.x(),delta.y())>.01) {
                             view.pan(delta.x(),delta.y(),std::max(1,width()));
+                            sampleTouchVelocity(delta,0,0);
                             touchChanged_=true;
-                            update();
+                            submit(true);
                         }
                     }
                 }
             } catch(const std::exception&ex) {
+                stopTouchMomentum(false);
                 if(onStatus) onStatus(ex.what());
             }
             touch->accept();return true;
@@ -678,9 +829,8 @@ protected:
         }
         pointer_=e->position();
         try {
-            view.zoom(pointer_.x()/std::max(1,width()),pointer_.y()/std::max(1,height()),
-                      .5,std::max(1,width()),std::max(1,height()));
-            submit(true);
+            stopTouchMomentum(false);
+            fraxTapZoom(pointer_,1.0/3.0);
         } catch(const std::exception&ex) { if(onStatus) onStatus(ex.what()); }
         e->accept();
     }
@@ -707,7 +857,50 @@ public:
         setAttribute(Qt::WA_AcceptTouchEvents,true);
         grabGesture(Qt::PinchGesture);
         motion_.setInterval(16);idle_.setSingleShot(true);idle_.setInterval(180);
+        touchMomentum_.setInterval(16);
         autopilotTimer_.setInterval(40); // original XaoS autopilot timer: 25 Hz
+        connect(&touchMomentum_,&QTimer::timeout,this,[this] {
+            const double seconds=std::clamp(touchMomentumClock_.restart()/1000.0,.001,.05);
+            try {
+                bool changed=false;
+                const QPointF pan=touchPanVelocity_*seconds;
+                if(std::hypot(pan.x(),pan.y())>.01) {
+                    view.pan(pan.x(),pan.y(),std::max(1,width()));
+                    touchMomentumAnchor_+=pan;
+                    changed=true;
+                }
+                if(std::abs(touchZoomVelocity_)>.001) {
+                    view.zoom(touchMomentumAnchor_.x()/std::max(1,width()),
+                              touchMomentumAnchor_.y()/std::max(1,height()),
+                              std::exp(-touchZoomVelocity_*seconds),
+                              std::max(1,width()),std::max(1,height()));
+                    changed=true;
+                }
+                if(std::abs(touchRotationVelocity_)>.001) {
+                    view.rotate(touchMomentumAnchor_.x()/std::max(1,width()),
+                                touchMomentumAnchor_.y()/std::max(1,height()),
+                                touchRotationVelocity_*seconds,
+                                std::max(1,width()),std::max(1,height()));
+                    changed=true;
+                }
+                pointer_=touchMomentumAnchor_;
+                if(changed) submit(true);
+
+                // Frax-like "throw" motion coasts for a while rather than stopping
+                // abruptly, but still converges so a still image can refine.
+                const double decay=std::exp(-1.65*seconds);
+                touchPanVelocity_*=decay;
+                touchZoomVelocity_*=decay;
+                touchRotationVelocity_*=decay;
+                if(!hasTouchMomentum()) {
+                    stopTouchMomentum(false);
+                    submit(false);
+                }
+            } catch(const std::exception&e) {
+                stopTouchMomentum(false);
+                if(onStatus) onStatus(e.what());
+            }
+        });
         connect(&motion_,&QTimer::timeout,this,[this] {
             if(!direction_) return;
             const double seconds=std::min<qint64>(motionClock_.restart(),100)/1000.;
@@ -724,7 +917,7 @@ public:
     }
     /// Releases resources owned by the Canvas instance.
     ~Canvas() override {
-        motion_.stop();idle_.stop();autopilotTimer_.stop();
+        motion_.stop();idle_.stop();autopilotTimer_.stop();touchMomentum_.stop();
         shutdown_.store(true,std::memory_order_relaxed);
         {
             std::lock_guard lock(mutex_);
@@ -792,7 +985,7 @@ public:
     void setAutopilot(bool enabled) {
         if(autopilotEnabled_==enabled) return;
         autopilotEnabled_=enabled;
-        direction_=0;motion_.stop();dragging_=false;
+        direction_=0;motion_.stop();stopTouchMomentum(false);dragging_=false;
         if(onAutopilotChanged) onAutopilotChanged(enabled);
         autopilotEngine_.reset();autopilotStep_=0;
         if(enabled) {
@@ -835,9 +1028,9 @@ public:
     /// Changes the worker count and requests a new render.
     void setThreads(size_t n) {threads_=n;submit();}
     /// Restores the default fractal view and requests a render.
-    void reset() {restoreFormulaDefault();submit();}
+    void reset() {stopTouchMomentum(false);restoreFormulaDefault();submit();}
     /// Stops continuous zooming and requests refinement of the current view.
-    void stopZoom() {direction_=0;motion_.stop();setAutopilot(false);submit();}
+    void stopZoom() {direction_=0;motion_.stop();stopTouchMomentum(false);setAutopilot(false);submit();}
     /// Writes the currently displayed Qt image to a user-selected PNG file.
     void saveImage() {
         if(image_.isNull()) return;
@@ -1016,10 +1209,12 @@ class Window final:public QMainWindow {
         connect(save,&QAction::triggered,canvas,&Canvas::saveImage);
         connect(help,&QAction::triggered,this,[this]{
             QMessageBox::information(this,"Explore XaoS",
-                "One finger drags the plane.\n"
-                "Pinch with two fingers to zoom.\n"
-                "Twist two fingers to rotate.\n"
-                "Double-tap to dive in.\n\n"
+                "Motion works like Frax:\n\n"
+                "Swipe with one finger to pan; release with speed to coast.\n"
+                "Move, pinch and twist two fingers together — pan, zoom and rotation combine.\n"
+                "Release a moving gesture to keep flying; tap once to stop and refine.\n"
+                "Double-tap one finger: exact 3× zoom in and center that point.\n"
+                "Tap with two fingers: exact 3× zoom out and center the midpoint.\n\n"
                 "Explore lets XaoS choose the next interesting boundary automatically.");
         });
         canvas->onAutopilotChanged=[this](bool){refreshMobileChrome();};
