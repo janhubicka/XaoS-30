@@ -677,6 +677,42 @@ void rapidZoomDisplayTests() {
     CHECK(bestFilled<=beforeFilled);
 }
 
+/// Verifies lazy auxiliary storage and graceful renderer-budget fallback.
+void memoryBudgetTests() {
+    ThreadExecutor one(1);Cancellation stop;
+    {
+        Request r;r.width=64;r.height=48;r.settings.iterations=64;
+        r.settings.formula=Formula::Mandelbrot;
+        Renderer renderer;
+        auto frame=renderer.render(r,one,stop);
+        auto*typed=dynamic_cast<const Frame<double,true>*>(frame.get());
+        CHECK(typed);
+        CHECK(typed->state.a.empty());
+        CHECK(typed->state.b.empty());
+    }
+    {
+        Request r;r.width=64;r.height=48;r.settings.iterations=64;
+        r.settings.formula=Formula::Phoenix;
+        Renderer renderer;
+        auto frame=renderer.render(r,one,stop);
+        auto*typed=dynamic_cast<const Frame<double,true>*>(frame.get());
+        CHECK(typed);
+        CHECK(!typed->state.a.empty());
+        CHECK(!typed->state.b.empty());
+    }
+    {
+        Request r;r.width=512;r.height=256;r.settings.iterations=64;
+        r.settings.formula=Formula::Mandelbrot;
+        r.settings.memoryBudget=3ull*1024*1024;
+        r.settings.saveState=true;
+        Renderer renderer;
+        auto frame=renderer.render(r,one,stop);
+        CHECK(frame->stats.complete);
+        CHECK(!frame->request.settings.saveState);
+        CHECK(frame->stats.estimatedBytes<=r.settings.memoryBudget);
+    }
+}
+
 /// Runs regression checks for presentation threading.
 void presentationTests() {
     ThreadExecutor compute(4),one(1),many(4); Cancellation go; Renderer renderer;
@@ -714,6 +750,7 @@ int main() {
           {"timeout fill feeds next DP resolution pass",resolutionFeedbackTests},{"grid reconstruction modes",reconstructionTests},
           {"split orbit/grid cache lifetime",splitCacheTests},
           {"rapid zoom display and idle refinement",rapidZoomDisplayTests},
+          {"fullscreen memory-budget fallback",memoryBudgetTests},
           {"parallel presentation equivalence",presentationTests},
           {"validation and exception barriers",failureTests}}) {
             test();std::cout<<"PASS "<<name<<'\n';

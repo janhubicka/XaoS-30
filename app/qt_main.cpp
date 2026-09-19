@@ -211,9 +211,10 @@ class Canvas final:public QWidget {
                 const auto stats=job.frame->stats;
                 const auto view=job.frame->request.view;
                 const auto reconstruction=job.frame->request.settings.reconstruction;
+                const bool savedState=job.frame->request.settings.saveState;
                 const double presentationMs=display->milliseconds;
                 QMetaObject::invokeMethod(this,
-                    [this,image=std::move(image),display,view,stats,reconstruction,presentationMs,
+                    [this,image=std::move(image),display,view,stats,reconstruction,savedState,presentationMs,
                      id=job.serial,epoch=job.epoch] {
                         if(epoch!=epoch_ || id<shown_) return;
                         shown_=id;
@@ -229,9 +230,10 @@ class Canvas final:public QWidget {
                         case Reconstruction::Bicubic: mode="bicubic"; break;
                         }
                         if(onStatus) onStatus(
-                            QString("%1%2 | %3 bits | compute %4 ms | present %5 ms | reused %6 resumed %7 | %8 | %9%10")
+                            QString("%1%2 | %3 bits | %4 | compute %5 ms | present %6 ms | reused %7 resumed %8 | %9 | %10%11")
                                 .arg(QString::fromStdString(stats.backend)).arg(stats.simd?" / AVX2":"")
                                 .arg(static_cast<qulonglong>(stats.bits))
+                                .arg(savedState?"state":"counts")
                                 .arg(stats.milliseconds,0,'f',1).arg(presentationMs,0,'f',1)
                                 .arg(static_cast<qulonglong>(stats.reused))
                                 .arg(static_cast<qulonglong>(stats.resumed))
