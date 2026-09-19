@@ -66,8 +66,10 @@ template<class Real, bool Save, class Formula>
 std::shared_ptr<const FrameBase> compute(/* request, executor, cache, ... */);
 ```
 
-`Real` is `double` or `Big`; `Formula` is Mandelbrot, Julia, or BurningShip.
-Formula selection and state policy happen outside the inner orbit loop. The
+`Real` is `double` or `Big`. Mandelbrot, Julia, and Burning Ship retain the
+specialized four-lane native path. The remaining fixed XaoS formula families use
+a generic scalar orbit kernel inside the same multithreaded row/column scheduler.
+Formula selection and state policy happen outside the line scheduler. The
 native SIMD kernel is shared by the two quadratic formulas after initialization;
 Burning Ship specializes the absolute-value recurrence.
 
@@ -75,7 +77,11 @@ Burning Ship specializes the absolute-value recurrence.
 `Storage<true, double>` holds two 64-byte-aligned structure-of-arrays vectors.
 `Storage<true, Big>` holds shared, immutable orbit objects only where needed.
 GMP scratch variables are allocated once per worker and reused in its inner loop.
-No runtime virtual formula calls or generic expression-template temporaries occur
+Added formulas use a compact runtime formula switch per scalar iteration rather
+than virtual dispatch. Their resumable state contains the current complex value
+plus one auxiliary complex value, sufficient for Phoenix, Octo, Manowar, Spider,
+and Beryl. GMP uses the same formulas at arbitrary precision. No runtime virtual
+formula calls occur
 per iteration. Scalar and AVX2 retain the same arithmetic evaluation order; FMA
 contraction and fast-math are deliberately not enabled.
 
@@ -192,6 +198,21 @@ back as mathematical state.
 Qt-specific paths have been statically reviewed but could not be compiled in the
 local container because Qt 6 development files are unavailable; repository CI
 provides the Qt build and offscreen smoke test.
+
+## Formula registry
+
+Formula metadata is centralized in `formulae.cpp` using XaoS short names. The
+GUI and headless CLI consume the same registry. The optimized quadratic/ship
+kernels are kept separate from the generic fixed-formula evaluator so adding the
+historical formula menu does not slow the main Mandelbrot path. Auxiliary orbit
+state is saved and moved with the exact-coordinate cache, just like `z_n`.
+
+## Zoom speed
+
+Continuous manual zoom and autopilot share a user speed multiplier. Up multiplies
+it by 1.05 and Down divides it by 1.05, matching XaoS's historical
+`SPEEDUP` control. The multiplier scales both acceleration and maximum step;
+wheel zoom remains discrete.
 
 ## Autopilot
 
