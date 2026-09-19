@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "xaos/renderer.hpp"
 #include "xaos/axis.hpp"
+#include "xaos/formulae.hpp"
 #include "xaos/palette.hpp"
 #include <algorithm>
 #include <array>
@@ -557,10 +558,11 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         workStop.deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(r.settings.sliceMilliseconds);
     const double juliaReal=r.settings.juliaRe.toDouble(),juliaImag=r.settings.juliaIm.toDouble();
 
-    std::vector<std::unique_ptr<BigKernel<F>>> bigScratch;
+    using BigScratch=std::conditional_t<F::generic,detail::GenericFormulaKernel<Big>,BigKernel<F>>;
+    std::vector<std::unique_ptr<BigScratch>> bigScratch;
     if constexpr(big) {
         bigScratch.reserve(executor.concurrency());
-        for(size_t i=0;i<executor.concurrency();++i) bigScratch.push_back(std::make_unique<BigKernel<F>>(bits));
+        for(size_t i=0;i<executor.concurrency();++i) bigScratch.push_back(std::make_unique<BigScratch>(bits));
     }
 
     auto calculateList=[&](const std::vector<size_t>&list,const Cancellation&calculationStop) {
@@ -588,16 +590,71 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         const Orbit<Big>*saved=nullptr;
                         if constexpr(Save) saved=f->state.orbit[index].get();
                         const uint32_t start=saved?before.iterations:0;
-                        Count result=scratch.run(f->xs[static_cast<size_t>(x)],f->ys[static_cast<size_t>(y)],
-                            r.settings.juliaRe,r.settings.juliaIm,before,saved,r.settings.iterations,calculationStop,Save,r.settings.analytic);
+                        Count result;
+                        if constexpr(F::generic)
+                            result=scratch.run(r.settings.formula,f->xs[static_cast<size_t>(x)],f->ys[static_cast<size_t>(y)],
+                                               before,saved,r.settings.iterations,calculationStop,Save);
+                        else
+                            result=scratch.run(f->xs[static_cast<size_t>(x)],f->ys[static_cast<size_t>(y)],
+                                               r.settings.juliaRe,r.settings.juliaIm,before,saved,
+                                               r.settings.iterations,calculationStop,Save,r.settings.analytic);
                         stat.steps+=result.iterations-start;
                         if(saved && start) ++stat.resumed; else ++stat.started;
                         if(!Save && result.status==Status::Pending && result.iterations<before.iterations) continue;
                         f->counts[index]=result;
                         if constexpr(Save) {
                             if(result.status!=Status::Pending) f->state.orbit[index].reset();
-                            else if(result.iterations>start)
-                                f->state.orbit[index]=std::make_shared<Orbit<Big>>(Orbit<Big>{scratch.x,scratch.y});
+                            else if(result.iterations>start) {
+                                if constexpr(F::generic)
+                                    f->state.orbit[index]=std::make_shared<Orbit<Big>>(
+                                        Orbit<Big>{scratch.x,scratch.y,scratch.a,scratch.b});
+                                else {
+                                    Big zero(bits);
+                                    f->state.orbit[index]=std::make_shared<Orbit<Big>>(
+                                        Orbit<Big>{scratch.x,scratch.y,zero,zero});
+                                }
+                            }
+                        }
+                        if(result.known(r.settings.iterations)) {
+                            f->samplePixels[index]=pixelColor(result,r.settings.iterations);
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                        }
+                    }
+                }
+            } else if constexpr(F::generic) {
+                detail::GenericFormulaKernel<double> scratch;
+                const size_t chunk=list.size()>512?64:8;
+                while(!calculationStop.requested()) {
+                    const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
+                    if(first>=list.size()) break;
+                    const size_t last=std::min(first+chunk,list.size());
+                    for(size_t k=first;k<last && !calculationStop.requested();++k) {
+                        const size_t index=list[k];
+                        Count before=f->counts[index];
+                        if(before.known(r.settings.iterations)) {
+                            f->samplePixels[index]=pixelColor(before,r.settings.iterations);
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                            continue;
+                        }
+                        const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
+                        const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
+                        Orbit<double> orbit{}; const Orbit<double>*saved=nullptr;
+                        if constexpr(Save) {
+                            if(before.iterations) {
+                                orbit={f->state.x[index],f->state.y[index],f->state.a[index],f->state.b[index]};
+                                saved=&orbit;
+                            }
+                        }
+                        const uint32_t start=saved?before.iterations:0;
+                        Count result=scratch.run(r.settings.formula,dx[static_cast<size_t>(x)],dy[static_cast<size_t>(y)],
+                                                 before,saved,r.settings.iterations,calculationStop,Save);
+                        stat.steps+=result.iterations-start;
+                        if(saved && start) ++stat.resumed; else ++stat.started;
+                        if(!Save && result.status==Status::Pending && result.iterations<before.iterations) continue;
+                        f->counts[index]=result;
+                        if constexpr(Save) {
+                            f->state.x[index]=scratch.x;f->state.y[index]=scratch.y;
+                            f->state.a[index]=scratch.a;f->state.b[index]=scratch.b;
                         }
                         if(result.known(r.settings.iterations)) {
                             f->samplePixels[index]=pixelColor(result,r.settings.iterations);
@@ -629,7 +686,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
                             Orbit<double> orbit{}; const Orbit<double>*saved=nullptr;
                             if constexpr(Save) {
-                                if(before.iterations) { orbit={f->state.x[index],f->state.y[index]}; saved=&orbit; }
+                                if(before.iterations) { orbit={f->state.x[index],f->state.y[index],f->state.a[index],f->state.b[index]}; saved=&orbit; }
                             }
                             lanes[used]=prepareLane<F>(dx[static_cast<size_t>(x)],dy[static_cast<size_t>(y)],
                                 juliaReal,juliaImag,before,saved,r.settings.analytic);
@@ -644,7 +701,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             stat.steps+=l.count.iterations-starts[j];
                             if(!Save && l.count.status==Status::Pending && l.count.iterations<f->counts[index].iterations) continue;
                             f->counts[index]=l.count;
-                            if constexpr(Save) { f->state.x[index]=l.x;f->state.y[index]=l.y; }
+                            if constexpr(Save) { f->state.x[index]=l.x;f->state.y[index]=l.y;f->state.a[index]=0;f->state.b[index]=0; }
                             if(l.count.known(r.settings.iterations)) {
                                 f->samplePixels[index]=pixelColor(l.count,r.settings.iterations);
                                 f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
@@ -955,13 +1012,14 @@ std::shared_ptr<const FrameBase> selectFormula(const Request&r,Executor&e,const 
     case Formula::Mandelbrot: return compute<Real,Save,Mandelbrot>(r,e,s,stateOld,gridOld,bits);
     case Formula::Julia: return compute<Real,Save,Julia>(r,e,s,stateOld,gridOld,bits);
     case Formula::BurningShip: return compute<Real,Save,BurningShip>(r,e,s,stateOld,gridOld,bits);
+    default: return compute<Real,Save,GenericFormula>(r,e,s,stateOld,gridOld,bits);
     }
-    throw std::invalid_argument("unknown formula");
 }
 }
 
 /// Validates a request, selects numeric/storage backends, and updates renderer caches.
 std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,const Cancellation&s) {
+    (void)formulaInfo(r.settings.formula);
     if(r.width<1||r.height<1 || r.width>std::numeric_limits<int>::max()-64 ||
        r.height>std::numeric_limits<int>::max()-8 || !r.settings.iterations || !e.concurrency())
         throw std::invalid_argument("invalid dimensions, iteration cap, or executor");
