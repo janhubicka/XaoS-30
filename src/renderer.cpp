@@ -24,7 +24,7 @@ size_t plusChecked(size_t a,size_t b) {
 }
 /// Estimates memory consumed by one frame and optional saved orbit state.
 size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state) {
-    size_t each=sizeof(Count)+2*sizeof(uint32_t)+sizeof(uint8_t);
+    size_t each=sizeof(Count)+sizeof(uint32_t)+sizeof(uint8_t);
     if(state) {
         if(big) each=plusChecked(each,plusChecked(sizeof(std::shared_ptr<const Orbit<Big>>)+sizeof(Orbit<Big>)+32,
                                   multiplyChecked(2,static_cast<size_t>(bits/8)+3*sizeof(mp_limb_t))));
@@ -531,8 +531,6 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                          const std::shared_ptr<const FrameBase>&gridPrevious,
                                          mp_bitcnt_t bits) {
     const auto begin=std::chrono::steady_clock::now();
-    const FrameBase*displayOld=statePrevious.get();
-    if(displayOld && !displayCompatible(*displayOld,r)) displayOld=nullptr;
     const auto*stateOld=dynamic_cast<const Frame<Real,Save>*>(statePrevious.get());
     const FrameBase*gridOld=gridPrevious.get();
     if(stateOld && !compatible(*stateOld,r,bits)) stateOld=nullptr;
@@ -550,7 +548,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     addPreviousBytes(statePrevious);
     if(gridPrevious && gridPrevious!=statePrevious) addPreviousBytes(gridPrevious);
     const size_t axisEntries=multiplyChecked(2,plusChecked(static_cast<size_t>(r.width),static_cast<size_t>(r.height)));
-    bytes=plusChecked(bytes,multiplyChecked(axisEntries,sizeof(Big)+static_cast<size_t>(bits/8)+40));
+    bytes=plusChecked(bytes,multiplyChecked(axisEntries,sizeof(Big)+sizeof(int)+static_cast<size_t>(bits/8)+40));
     bytes=plusChecked(bytes,multiplyChecked(executor.concurrency(),multiplyChecked(12,static_cast<size_t>(bits/8)+64)));
     if(r.settings.memoryBudget && bytes>r.settings.memoryBudget)
         throw std::length_error("estimated renderer memory exceeds budget; use count-only mode, fewer pixels, or a larger budget");
@@ -590,7 +588,6 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->counts.resize(pixels); f->state.resize(pixels);
     f->samplePixels.assign(pixels,0xff000000u);
     f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
-    f->displayPixels.assign(pixels,0u);
 
     std::vector<double> dx,dy;
     if constexpr(!big) {
@@ -621,17 +618,25 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     // not also our true sample coordinate, downgrade it to Fill.
                     if(gridOld && r.settings.sliceMilliseconds && psx>=0 && psy>=0 &&
                        gridOld->request.settings.iterations==r.settings.iterations) {
-                        const size_t ps=static_cast<size_t>(psy)*static_cast<size_t>(gridOld->stride)+static_cast<size_t>(psx);
+                        // Timeout fill is stored as row/column source maps rather
+                        // than materialized pixels. Resolve the reused presentation
+                        // coordinate to its real support sample before copying it.
+                        int resolvedX=psx,resolvedY=psy;
+                        if(gridOld->displayXSource.size()==static_cast<size_t>(gridOld->request.width) &&
+                           gridOld->displayXSource[static_cast<size_t>(psx)]>=0)
+                            resolvedX=gridOld->displayXSource[static_cast<size_t>(psx)];
+                        if(gridOld->displayYSource.size()==static_cast<size_t>(gridOld->request.height) &&
+                           gridOld->displayYSource[static_cast<size_t>(psy)]>=0)
+                            resolvedY=gridOld->displayYSource[static_cast<size_t>(psy)];
+                        const size_t ps=static_cast<size_t>(resolvedY)*static_cast<size_t>(gridOld->stride)+
+                                        static_cast<size_t>(resolvedX);
                         if(gridOld->sampleQuality[ps]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
                             f->samplePixels[d]=gridOld->samplePixels[ps];
-                            // The DP source is already at exactly this new presentation
-                            // coordinate. A timeout-filled old pixel becomes an ordinary
-                            // approximate sample once its collapsed coordinate is selected
-                            // by the next DP pass, just as classic XaoS clears dirty state
-                            // on the reused line. Keep it non-resumable, but do not carry
-                            // "needs resolution refinement" forever.
                             const auto oldQuality=static_cast<DisplayQuality>(gridOld->sampleQuality[ps]);
-                            f->sampleQuality[d]=static_cast<uint8_t>(oldQuality==DisplayQuality::Fill?DisplayQuality::Guess:oldQuality);
+                            const bool approximate=resolvedX!=psx || resolvedY!=psy ||
+                                                   oldQuality==DisplayQuality::Fill;
+                            f->sampleQuality[d]=static_cast<uint8_t>(
+                                approximate?DisplayQuality::Guess:oldQuality);
                         }
                     }
                     const FrameBase*countOld=nullptr;
@@ -986,54 +991,62 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
             rasterRefine();
     }
 
-    // XaoS's interruptible renderer never exposes holes: when the time budget is
-    // exhausted, copy nearby already-rendered samples into remaining gaps. These
-    // colours are presentation-only and are replaced by later exact/guessed work.
+    // Resolution reduction is represented only by source maps. This keeps
+    // timeout handling O(width+height): presentation follows these maps later
+    // instead of copying a full framebuffer on the compute thread.
+    f->displayXSource.assign(static_cast<size_t>(r.width),-1);
+    f->displayYSource.assign(static_cast<size_t>(r.height),-1);
+    for(int x=0;x<r.width;++x) if(colReady[static_cast<size_t>(x)])
+        f->displayXSource[static_cast<size_t>(x)]=x;
+    for(int y=0;y<r.height;++y) if(rowReady[static_cast<size_t>(y)])
+        f->displayYSource[static_cast<size_t>(y)]=y;
+
     if(r.settings.sliceMilliseconds && r.settings.dynamicFill) {
-        const auto columnSource=classicColumnSources(f->xs,colReady,step);
-        const auto rowSource=classicRowSources(f->ys,rowReady,step);
-        auto storeFill=[&](size_t d,size_t src) {
-            if(f->sampleQuality[src]==static_cast<uint8_t>(DisplayQuality::Missing)) return;
-            if(f->sampleQuality[d]!=static_cast<uint8_t>(DisplayQuality::Fill))
-                ++f->stats.filled;
-            f->samplePixels[d]=f->samplePixels[src];
-            f->sampleQuality[d]=static_cast<uint8_t>(DisplayQuality::Fill);
-        };
-
-        // mkfilltable() chooses one source for a whole contiguous run of dirty
-        // columns. Fill those columns only on completed rows; filly() later copies
-        // completed rows wholesale into dirty rows.
-        for(int x=0;x<r.width;++x) if(!colReady[static_cast<size_t>(x)]) {
-            const int src=columnSource[static_cast<size_t>(x)];
-            if(src<0) continue;
-            for(int y=0;y<r.height;++y) if(rowReady[static_cast<size_t>(y)])
-                storeFill(f->index(x,y),f->index(src,y));
-            f->previewXs[static_cast<size_t>(x)]=f->previewXs[static_cast<size_t>(src)];
+        f->displayXSource=classicColumnSources(f->xs,colReady,step);
+        f->displayYSource=classicRowSources(f->ys,rowReady,step);
+        if(!f->previewXs.empty()) for(int x=0;x<r.width;++x) {
+            const int src=f->displayXSource[static_cast<size_t>(x)];
+            if(src>=0 && src!=x) f->previewXs[static_cast<size_t>(x)]=f->previewXs[static_cast<size_t>(src)];
         }
-
-        for(int y=0;y<r.height;++y) if(!rowReady[static_cast<size_t>(y)]) {
-            const int src=rowSource[static_cast<size_t>(y)];
-            if(src<0) continue;
-            for(int x=0;x<r.width;++x)
-                storeFill(f->index(x,y),f->index(x,src));
-            f->previewYs[static_cast<size_t>(y)]=f->previewYs[static_cast<size_t>(src)];
+        if(!f->previewYs.empty()) for(int y=0;y<r.height;++y) {
+            const int src=f->displayYSource[static_cast<size_t>(y)];
+            if(src>=0 && src!=y) f->previewYs[static_cast<size_t>(y)]=f->previewYs[static_cast<size_t>(src)];
         }
     }
 
+    const uint64_t mappedX=static_cast<uint64_t>(std::count_if(
+        f->displayXSource.begin(),f->displayXSource.end(),[](int source){return source>=0;}));
+    const uint64_t mappedY=static_cast<uint64_t>(std::count_if(
+        f->displayYSource.begin(),f->displayYSource.end(),[](int source){return source>=0;}));
+    uint64_t identityX=0,identityY=0;
+    for(int x=0;x<r.width;++x)
+        identityX+=f->displayXSource[static_cast<size_t>(x)]==x;
+    for(int y=0;y<r.height;++y)
+        identityY+=f->displayYSource[static_cast<size_t>(y)]==y;
+    f->stats.filled=mappedX*mappedY-identityX*identityY;
     for(auto&s:stats) {
         f->stats.reused+=s.reused; f->stats.started+=s.started; f->stats.resumed+=s.resumed; f->stats.steps+=s.steps;
     }
-    uint64_t visualPending=0;
     for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
         const size_t i=f->index(x,y);
         if(!f->counts[i].known(r.settings.iterations)) ++f->stats.pending;
-        const auto q=static_cast<DisplayQuality>(f->sampleQuality[i]);
-        if(q==DisplayQuality::Missing || q==DisplayQuality::Fill) ++visualPending;
     }
-    // Guessed samples are deliberately considered finished for an interactive
-    // frame, matching the classic zoomer. They remain non-resumable and will be
-    // recalculated if the iteration limit/formula/precision requires it later.
-    f->stats.complete=r.settings.sliceMilliseconds?visualPending==0:f->stats.pending==0;
+    bool reducedResolution=false,unsupportedDisplay=false;
+    for(int x=0;x<r.width;++x) {
+        const int source=f->displayXSource[static_cast<size_t>(x)];
+        reducedResolution|=source>=0 && source!=x;
+        unsupportedDisplay|=source<0;
+    }
+    for(int y=0;y<r.height;++y) {
+        const int source=f->displayYSource[static_cast<size_t>(y)];
+        reducedResolution|=source>=0 && source!=y;
+        unsupportedDisplay|=source<0;
+    }
+    // Guessed samples are finished interactive samples, but a reduced-resolution
+    // source map remains incomplete so idle slices keep refining the grid.
+    f->stats.complete=r.settings.sliceMilliseconds
+        ? !reducedResolution && !unsupportedDisplay
+        : f->stats.pending==0;
     if(!f->previewXs.empty() || !f->previewYs.empty())
         f->stats.uniform=f->stats.uniform && f->previewXs==f->xs && f->previewYs==f->ys;
     f->stats.gridRows=static_cast<uint32_t>(std::count(rowReady.begin(),rowReady.end(),uint8_t{1}));
@@ -1041,7 +1054,9 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->stats.reusableGrid=
         f->stats.gridRows>=static_cast<uint32_t>(std::min(3,r.height)) &&
         f->stats.gridColumns>=static_cast<uint32_t>(std::min(3,r.width));
-    postprocess(*f,step,rowReady,colReady,displayOld);
+    // Compute timing deliberately ends before any display reconstruction. The GUI
+    // uses this number to budget future orbit/refinement work independently from
+    // presentation cost.
     f->stats.milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
     return f;
 }
