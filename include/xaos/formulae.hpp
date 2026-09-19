@@ -486,7 +486,7 @@ template<class R,class F> struct FixedFormulaKernel {
 
 private:
     /// Initializes compile-time formula parameters and fresh orbit state.
-    void initialize(const R&cx,const R&cy,R&cr,R&ci) {
+    XAOS_ALWAYS_INLINE void initialize(const R&cx,const R&cy,R&cr,R&ci) {
         using O=NumberOps<R>;
         cr=cx;ci=cy;
         x=cx;y=cy;a=O::value(0,cx);b=O::value(0,cx);
@@ -538,7 +538,7 @@ private:
     }
 
     /// Rebuilds deterministic parameters while restoring a saved orbit.
-    void parameters(const R&cx,const R&cy,R&cr,R&ci) {
+    XAOS_ALWAYS_INLINE void parameters(const R&cx,const R&cy,R&cr,R&ci) {
         using O=NumberOps<R>;
         cr=cx;ci=cy;
         if constexpr(F::formula==Formula::Newton || F::formula==Formula::Newton4 ||
@@ -575,7 +575,7 @@ private:
 
 public:
     /// Iterates one fixed formula. The compiler sees a unique loop for every F.
-    XAOS_FLATTEN Count run(const R&cx,const R&cy,const Count&previous,const FormulaOrbit<R,F>*saved,
+    XAOS_ALWAYS_INLINE XAOS_FLATTEN Count run(const R&cx,const R&cy,const Count&previous,const FormulaOrbit<R,F>*saved,
               uint32_t limit,const Cancellation&stop,bool allowTimeBudget) {
         R cr=cx,ci=cy;
         Count result;
