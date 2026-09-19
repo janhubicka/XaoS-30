@@ -198,8 +198,8 @@ void numericTests() {
     rotated.zoom(u,vv,.83,320,200);
     mapped=rotated.complexToScreen(anchor.first,anchor.second,320,200);
     CHECK(std::abs(mapped.first-u)<5e-5);CHECK(std::abs(mapped.second-vv)<5e-5);
-    CHECK((std::is_empty_v<Storage<false,double,Mandelbrot>>));
-    CHECK((std::is_empty_v<Storage<false,Big,Mandelbrot>>));
+    CHECK((std::is_empty_v<Storage<false,double>>));
+    CHECK((std::is_empty_v<Storage<false,Big>>));
     CHECK((FormulaTag<Formula::Mandelbrot>::stateScalars==2));
     CHECK((FormulaTag<Formula::Newton>::stateScalars==3));
     CHECK((FormulaTag<Formula::Phoenix>::stateScalars==4));
