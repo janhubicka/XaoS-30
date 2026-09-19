@@ -67,7 +67,8 @@ The computation state is a Cartesian grid of completed rows and columns whose
 complex coordinates are generally nonuniform. Display reconstruction is a
 separate step. **Nearest (XaoS)** reproduces the classic separable rule: for each
 missing column choose the nearest completed column in coordinate space, then do
-the same for rows (ties go left/down as in the original implementation).
+the same for rows. The original asymmetric tie rule is preserved: columns tie
+to the left source, rows to the higher-index row.
 **Bilinear** interpolates between the bracketing completed rows/columns at the
 actual nonuniform coordinates. **Bicubic** uses separable nonuniform cubic
 Hermite interpolation, falling back to bilinear and then nearest at sparse
