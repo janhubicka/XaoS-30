@@ -163,13 +163,21 @@ struct View {
         p=std::max({p,re.precision(),im.precision(),span.precision()});
         re=re.atPrecision(p); im=im.atPrecision(p); span=span.atPrecision(p);
     }
-    /// Returns the center projected onto the current horizontal/vertical screen basis.
-    std::pair<Big,Big> axisCenter() const {
-        if(rotation==0) return {re,im};
-        const double cs=std::cos(rotation),sn=std::sin(rotation);
-        return {add(scale(re,cs),scale(im,sn)),
-                add(scale(re,-sn),scale(im,cs))};
+    /// Projects a mathematical vector onto the current screen basis.
+    std::pair<Big,Big> axesFromComplex(const Big&real,const Big&imag) const {
+        if(rotation==0) return {real,imag};
+        const mp_bitcnt_t p=std::max(real.precision(),imag.precision());
+        const Big cs=Big::fromDouble(std::cos(rotation),p);
+        const Big sn=Big::fromDouble(std::sin(rotation),p);
+        // Binary cos/sin approximations are not exactly unit length. Use the
+        // actual inverse of [[c,-s],[s,c]] instead of its transpose; otherwise
+        // an O(1e-16) absolute center error destroys a deep viewport.
+        const Big determinant=add(mul(cs,cs),mul(sn,sn));
+        return {div(add(mul(real,cs),mul(imag,sn)),determinant),
+                div(add(mul(real,negate(sn)),mul(imag,cs)),determinant)};
     }
+    /// Returns the center projected onto the current horizontal/vertical screen basis.
+    std::pair<Big,Big> axisCenter() const { return axesFromComplex(re,im); }
     /// Converts coordinates in the rotated screen basis back to the mathematical plane.
     std::pair<Big,Big> complexFromAxes(const Big&x,const Big&y) const {
         if(rotation==0) return {x,y};
@@ -194,14 +202,7 @@ struct View {
     std::pair<double,double> complexToScreen(const Big&real,const Big&imag,int width,int height) const {
         if(width<1||height<1) throw std::invalid_argument("invalid screen size");
         const Big dr=sub(real,re),di=sub(im,im);
-        Big horizontal,vertical;
-        if(rotation==0) {
-            horizontal=dr;vertical=di;
-        } else {
-            const double cs=std::cos(rotation),sn=std::sin(rotation);
-            horizontal=add(scale(dr,cs),scale(di,sn));
-            vertical=add(scale(dr,-sn),scale(di,cs));
-        }
+        const auto [horizontal,vertical]=axesFromComplex(dr,di);
         const double u=.5+div(horizontal,span).toDouble();
         const double v=.5-div(vertical,span).toDouble()*static_cast<double>(width)/height;
         return {u,v};
