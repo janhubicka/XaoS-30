@@ -111,10 +111,14 @@ std::vector<int> exactSources(const std::vector<Big>& target,const std::vector<B
     }
     return source;
 }
-bool compatible(const FrameBase& old,const Request&r,mp_bitcnt_t bits) {
+bool displayCompatible(const FrameBase&old,const Request&r) {
     const auto&s=old.request.settings;
-    return old.stats.bits==bits && s.formula==r.settings.formula && s.analytic==r.settings.analytic &&
+    return s.formula==r.settings.formula &&
         (s.formula!=Formula::Julia || (s.juliaRe==r.settings.juliaRe && s.juliaIm==r.settings.juliaIm));
+}
+bool compatible(const FrameBase& old,const Request&r,mp_bitcnt_t bits) {
+    return displayCompatible(old,r) && old.stats.bits==bits &&
+           old.request.settings.analytic==r.settings.analytic;
 }
 struct alignas(64) LocalStats { uint64_t reused=0,started=0,resumed=0,steps=0; };
 struct LineTask { bool row=false; int index=0; double priority=0; size_t serial=0; };
@@ -499,6 +503,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                          const std::shared_ptr<const FrameBase>&gridPrevious,
                                          mp_bitcnt_t bits) {
     const auto begin=std::chrono::steady_clock::now();
+    const FrameBase*displayOld=statePrevious.get();
+    if(displayOld && !displayCompatible(*displayOld,r)) displayOld=nullptr;
     const auto*stateOld=dynamic_cast<const Frame<Real,Save>*>(statePrevious.get());
     const FrameBase*gridOld=gridPrevious.get();
     if(stateOld && !compatible(*stateOld,r,bits)) stateOld=nullptr;
@@ -1007,7 +1013,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->stats.reusableGrid=
         f->stats.gridRows>=static_cast<uint32_t>(std::min(3,r.height)) &&
         f->stats.gridColumns>=static_cast<uint32_t>(std::min(3,r.width));
-    postprocess(*f,step,rowReady,colReady,gridOld);
+    postprocess(*f,step,rowReady,colReady,displayOld);
     f->stats.milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
     return f;
 }
