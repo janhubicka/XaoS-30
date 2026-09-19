@@ -29,11 +29,37 @@ public:
     /// Distinguishes a renderer-budget refusal from arithmetic overflow.
     MemoryBudgetExceeded():std::length_error("estimated renderer memory exceeds budget") {}
 };
+const char* backendName(QuadraticBackend backend) noexcept {
+    switch(backend) {
+    case QuadraticBackend::DoubleDouble:return "double-double";
+    case QuadraticBackend::Fixed128:return "fixed128";
+    case QuadraticBackend::Fixed192:return "fixed192";
+    case QuadraticBackend::Fixed256:return "fixed256";
+    case QuadraticBackend::GMP:return "GMP";
+    }
+    return "GMP";
+}
+QuadraticBackend backendFromName(std::string_view name) noexcept {
+    if(name=="double-double") return QuadraticBackend::DoubleDouble;
+    if(name=="fixed128") return QuadraticBackend::Fixed128;
+    if(name=="fixed192") return QuadraticBackend::Fixed192;
+    if(name=="fixed256") return QuadraticBackend::Fixed256;
+    return QuadraticBackend::GMP;
+}
 /// Estimates memory consumed by one frame and optional saved orbit state.
-size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state,unsigned stateScalars) {
+size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state,unsigned stateScalars,
+                QuadraticBackend backend=QuadraticBackend::GMP) {
     size_t each=sizeof(Count)+sizeof(uint32_t)+sizeof(uint8_t);
     if(state) {
-        if(big) {
+        if(big && backend!=QuadraticBackend::GMP) {
+            switch(backend) {
+            case QuadraticBackend::DoubleDouble: each=plusChecked(each,4*sizeof(double));break;
+            case QuadraticBackend::Fixed128: each=plusChecked(each,4*sizeof(uint64_t));break;
+            case QuadraticBackend::Fixed192: each=plusChecked(each,6*sizeof(uint64_t));break;
+            case QuadraticBackend::Fixed256: each=plusChecked(each,8*sizeof(uint64_t));break;
+            case QuadraticBackend::GMP:break;
+            }
+        } else if(big) {
             const size_t scalarBytes=plusChecked(sizeof(Big),
                 plusChecked(static_cast<size_t>(bits/8),3*sizeof(mp_limb_t)));
             each=plusChecked(each,plusChecked(sizeof(std::shared_ptr<const void>)+32,
@@ -422,7 +448,8 @@ template<class Real,bool Save>
 std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const Cancellation&stop,
                                          const std::shared_ptr<const FrameBase>&statePrevious,
                                          const std::shared_ptr<const FrameBase>&gridPrevious,
-                                         mp_bitcnt_t bits) {
+                                         mp_bitcnt_t bits,
+                                         QuadraticBackend quadraticBackend=QuadraticBackend::GMP) {
     const auto begin=std::chrono::steady_clock::now();
     const auto*stateOld=dynamic_cast<const Frame<Real,Save>*>(statePrevious.get());
     const FrameBase*gridOld=gridPrevious.get();
@@ -434,12 +461,13 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     const size_t pixels=multiplyChecked(static_cast<size_t>(f->stride),static_cast<size_t>(r.height));
     const bool big=std::is_same_v<Real,Big>;
     const unsigned stateScalars=formulaStateScalars(r.settings.formula);
-    size_t bytes=estimate(pixels,bits,big,Save,stateScalars);
+    size_t bytes=estimate(pixels,bits,big,Save,stateScalars,quadraticBackend);
     auto addPreviousBytes=[&](const std::shared_ptr<const FrameBase>&previous) {
         if(previous) bytes=plusChecked(bytes,estimate(
             previous->counts.size(),previous->stats.bits,
-            previous->stats.backend=="GMP",previous->request.settings.saveState,
-            formulaStateScalars(previous->request.settings.formula)));
+            previous->stats.backend!="double",previous->request.settings.saveState,
+            formulaStateScalars(previous->request.settings.formula),
+            backendFromName(previous->stats.backend)));
     };
     addPreviousBytes(statePrevious);
     if(gridPrevious && gridPrevious!=statePrevious) addPreviousBytes(gridPrevious);
@@ -486,12 +514,15 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     }
     f->stats.lineCost=ax.cost+ay.cost;
     f->stats.uniform=ax.uniform && ay.uniform;
-    f->stats.bits=bits; f->stats.backend=big?"GMP":"double";
+    f->stats.bits=bits;
+    f->stats.backend=big?backendName(quadraticBackend):"double";
     const bool quadratic=r.settings.formula==Formula::Mandelbrot ||
                          r.settings.formula==Formula::Julia ||
                          r.settings.formula==Formula::BurningShip;
-    f->stats.simd=!big && quadratic && r.settings.simd && hasNativeSIMD();
-    f->counts.resize(pixels); f->state.resize(pixels,stateScalars);
+    f->stats.simd=quadratic && r.settings.simd &&
+        ((!big && hasNativeSIMD()) ||
+         (big && quadraticBackend==QuadraticBackend::DoubleDouble && hasDoubleDoubleSIMD()));
+    f->counts.resize(pixels); f->state.resize(pixels,stateScalars,quadraticBackend);
     f->samplePixels.assign(pixels,0xff000000u);
     f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
 
