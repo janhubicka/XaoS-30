@@ -24,7 +24,9 @@ const FormulaInfo& formulaInfo(Formula);
 std::optional<Formula> formulaFromName(std::string_view) noexcept;
 /// Reports whether resumable iteration needs a second complex orbit value.
 bool formulaNeedsAuxiliaryState(Formula) noexcept;
-/// Returns the number of scalar values required to resume this formula.\nunsigned formulaStateScalars(Formula) noexcept;\n
+/// Returns the number of scalar values required to resume this formula.
+unsigned formulaStateScalars(Formula) noexcept;
+
 namespace detail {
 
 template<class Real> struct NumberOps;
