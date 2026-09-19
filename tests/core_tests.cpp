@@ -66,6 +66,46 @@ void axisTests() {
     rejects([]{matchAxis(std::vector<double>{1,0},3);});
     rejects([]{matchAxis({},0);});
     rejects([]{matchAxis({},3,0);});
+
+    // Original XaoS newpositions()/addprices() directional policy. Use isolated
+    // dirty lines so the recursive midpoint/span multiplier does not obscure the
+    // movement-dependent base price.
+    constexpr int count=21;
+    constexpr int focus=6;
+    std::vector<Big> current,zoomInOld,zoomOutOld;
+    current.reserve(count); zoomInOld.reserve(count); zoomOutOld.reserve(count);
+    for(int i=0;i<count;++i) {
+        current.push_back(Big::fromDouble(static_cast<double>(i),128));
+        zoomInOld.push_back(Big::fromDouble(focus+(i-focus)/.8,128));
+        zoomOutOld.push_back(Big::fromDouble(focus+(i-focus)/1.25,128));
+    }
+    const Big one=Big::fromDouble(1.0,128);
+    const Big begin=Big::fromDouble(-.5,128),end=Big::fromDouble(20.5,128);
+    CHECK(classifyAxisMotion(begin,end,&zoomInOld)==AxisMotion::ZoomIn);
+    CHECK(classifyAxisMotion(begin,end,&zoomOutOld)==AxisMotion::ZoomOut);
+
+    std::vector<uint8_t> dirty(count);
+    for(int i:{0,6,12,18,20}) dirty[static_cast<size_t>(i)]=1;
+    const auto inPrice=linePriorities(current,&zoomInOld,dirty,one,begin,end);
+    CHECK(inPrice[focus]>inPrice[0]);
+    CHECK(inPrice[focus]>inPrice[12]);
+    CHECK(inPrice[focus]>inPrice[20]);
+
+    const auto outPrice=linePriorities(current,&zoomOutOld,dirty,one,begin,end);
+    CHECK(outPrice[0]>outPrice[6]);
+    CHECK(outPrice[20]>outPrice[12]);
+    CHECK(outPrice[0]>100.0*outPrice[6]);
+    CHECK(outPrice[20]>100.0*outPrice[12]);
+
+    // Motion classification must use the actual viewport bounds, not the reused
+    // first/last sample positions. Distort the visible endpoints as DP reuse may
+    // do and verify the zoom mode is unchanged.
+    auto nonuniform=current;
+    nonuniform.front()=Big::fromDouble(.25,128);
+    nonuniform.back()=Big::fromDouble(19.75,128);
+    CHECK(classifyAxisMotion(begin,end,&zoomInOld)==AxisMotion::ZoomIn);
+    const auto nonuniformPrice=linePriorities(nonuniform,&zoomInOld,dirty,one,begin,end);
+    CHECK(nonuniformPrice[focus]>nonuniformPrice[12]);
 }
 /// Runs regression checks for numeric.
 void numericTests() {

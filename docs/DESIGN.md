@@ -176,11 +176,18 @@ zooms. A compute coordinator owns the renderer and its multithreaded Qt worker
 pool. Each immutable grid frame is handed to a separate presentation thread,
 which uses a small persistent worker pool for nearest/bilinear/bicubic
 reconstruction while compute immediately continues the next refinement slice.
-Same-view presentation is allowed to finish so progressive updates remain
-visible; a newer user request cancels stale presentation and replaces its
-pending frame. QImage conversion also runs on the presentation thread using
-row-wise copies. Display fallback, interpolation, and timeout source maps are
-never read back as mathematical state.
+
+Geometry-only motion (continuous zoom, wheel zoom, and pan) **coalesces**: it
+replaces the pending viewport but does not cancel the active bounded compute
+slice. A completed slightly older viewport is still useful because `drawView()`
+transforms it into the current viewport; rejecting such frames would starve
+progressive display while the button is held. Formula, iteration, reconstruction,
+precision/Julia, and size changes advance a semantic epoch and cancel incompatible
+compute/presentation immediately.
+
+Same-view presentation is allowed to finish while only its pending successor is
+replaced. Display fallback, interpolation, and timeout source maps are never read
+back as mathematical state.
 
 Qt-specific paths have been statically reviewed but could not be compiled in the
 local container because Qt 6 development files are unavailable; repository CI

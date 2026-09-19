@@ -144,61 +144,6 @@ bool previewKnown(uint8_t q) noexcept {
     return q!=static_cast<uint8_t>(DisplayQuality::Missing);
 }
 
-/// Measures arbitrary-precision coordinate distance in pixel units.
-double pixelDistance(const Big&a,const Big&b,const Big&step) {
-    const double d=div(sub(a,b),step).toDouble();
-    return std::isfinite(d)?std::abs(d):1.e12;
-}
-
-enum class MovementMode { Neutral, ZoomIn, ZoomOut };
-/// Classifies an axis update as zoom-in, zoom-out, or neutral motion.
-MovementMode movementMode(const std::vector<Big>&now,const std::vector<Big>*old,const Big&step) {
-    if(!old || old->size()!=now.size() || now.empty()) return MovementMode::Neutral;
-    const Big low=sub(now.front(),scale(step,.5)),high=add(now.back(),scale(step,.5));
-    if((*old)[0]<low && high<old->back()) return MovementMode::ZoomIn;
-    if(low<(*old)[0] && old->back()<high) return MovementMode::ZoomOut;
-    return MovementMode::Neutral;
-}
-
-/// Computes XaoS-style significance priorities for missing rows or columns.
-std::vector<double> linePriorities(const std::vector<Big>&now,const std::vector<Big>*old,
-                                   const std::vector<uint8_t>&dirty,const Big&step) {
-    const int n=static_cast<int>(now.size());
-    std::vector<double> base(static_cast<size_t>(n),1.0),price(static_cast<size_t>(n),1.0);
-    const auto mode=movementMode(now,old,step);
-    if(old && old->size()==now.size()) {
-        for(int i=0;i<n;++i) if(dirty[static_cast<size_t>(i)]) {
-            const double d=pixelDistance((*old)[static_cast<size_t>(i)],now[static_cast<size_t>(i)],step);
-            if(mode==MovementMode::ZoomIn) base[static_cast<size_t>(i)]=1.0/(1.0+d);
-            else if(mode==MovementMode::ZoomOut) {
-                base[static_cast<size_t>(i)]=d;
-                if(i==0 || i==n-1) base[static_cast<size_t>(i)]*=500.0;
-            }
-        }
-    }
-    price=base;
-    // Port of zoom.cpp:addprices(): recursively prefer the midpoint of every
-    // contiguous block of newly-created lines, then the midpoints of its halves.
-    std::function<void(int,int)> addPrices=[&](int left,int boundary) {
-        while(left<boundary) {
-            const int mid=left+(boundary-left)/2;
-            const double span=pixelDistance(now[static_cast<size_t>(boundary)],now[static_cast<size_t>(mid)],step);
-            price[static_cast<size_t>(mid)]=span*base[static_cast<size_t>(mid)];
-            addPrices(left,mid);
-            left=mid+1;
-        }
-    };
-    int i=0;
-    while(i<n) {
-        if(!dirty[static_cast<size_t>(i)]) { ++i; continue; }
-        const int start=i;
-        while(i<n && dirty[static_cast<size_t>(i)]) ++i;
-        const int boundary=i<n?i:i-1;
-        if(start<boundary) addPrices(start,boundary);
-    }
-    return price;
-}
-
 /// Builds the classic interlaced row-refinement order.
 std::vector<int> interlacedOrder(int n,int range) {
     range=std::clamp(range,1,16);
@@ -276,9 +221,9 @@ std::vector<int> classicColumnSources(const std::vector<Big>&coordinates,
         while(right<n && !ready[static_cast<size_t>(right)]) ++right;
         int chosen=-1;
         if(right<n &&
-           (left<0 || pixelDistance(coordinates[static_cast<size_t>(start)],
+           (left<0 || axisPixelDistance(coordinates[static_cast<size_t>(start)],
                                     coordinates[static_cast<size_t>(left)],step) >
-                      pixelDistance(coordinates[static_cast<size_t>(right)],
+                      axisPixelDistance(coordinates[static_cast<size_t>(right)],
                                     coordinates[static_cast<size_t>(start)],step)))
             chosen=right;
         else if(left>=0)
@@ -310,9 +255,9 @@ std::vector<int> classicRowSources(const std::vector<Big>&coordinates,
             if(down<0) source[static_cast<size_t>(i)]=up;
             else if(up<0) source[static_cast<size_t>(i)]=down;
             else source[static_cast<size_t>(i)]=
-                pixelDistance(coordinates[static_cast<size_t>(i)],
+                axisPixelDistance(coordinates[static_cast<size_t>(i)],
                               coordinates[static_cast<size_t>(down)],step) <
-                pixelDistance(coordinates[static_cast<size_t>(up)],
+                axisPixelDistance(coordinates[static_cast<size_t>(up)],
                               coordinates[static_cast<size_t>(i)],step)
                     ? down : up; // original filly() chooses the upper row on a tie
         }
@@ -814,8 +759,14 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         std::vector<uint8_t> xDirty(colReady.size()),yDirty(rowReady.size());
         for(size_t i=0;i<colReady.size();++i) xDirty[i]=static_cast<uint8_t>(!colReady[i]);
         for(size_t i=0;i<rowReady.size();++i) yDirty[i]=static_cast<uint8_t>(!rowReady[i]);
-        const auto px=linePriorities(f->xs,oldPreviewX,xDirty,step);
-        const auto py=linePriorities(f->ys,oldPreviewY,yDirty,step);
+        const Big xExtent=scale(step,static_cast<double>(r.width));
+        const Big yExtent=scale(step,static_cast<double>(r.height));
+        const Big xBegin=sub(r.view.re,scale(xExtent,.5));
+        const Big xEnd=add(r.view.re,scale(xExtent,.5));
+        const Big yBegin=sub(r.view.im,scale(yExtent,.5));
+        const Big yEnd=add(r.view.im,scale(yExtent,.5));
+        const auto px=linePriorities(f->xs,oldPreviewX,xDirty,step,xBegin,xEnd);
+        const auto py=linePriorities(f->ys,oldPreviewY,yDirty,step,yBegin,yEnd);
         std::vector<LineTask> tasks;
         tasks.reserve(static_cast<size_t>(r.width+r.height));
         size_t serial=0;
