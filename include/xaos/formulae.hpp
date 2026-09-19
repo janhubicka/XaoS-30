@@ -29,6 +29,17 @@ unsigned formulaStateScalars(Formula) noexcept;
 
 namespace detail {
 
+#if defined(__GNUC__) || defined(__clang__)
+#define XAOS_ALWAYS_INLINE inline __attribute__((always_inline))
+#define XAOS_FLATTEN __attribute__((flatten))
+#elif defined(_MSC_VER)
+#define XAOS_ALWAYS_INLINE __forceinline
+#define XAOS_FLATTEN
+#else
+#define XAOS_ALWAYS_INLINE inline
+#define XAOS_FLATTEN
+#endif
+
 template<class Real> struct NumberOps;
 
 template<> struct NumberOps<double> {
@@ -63,25 +74,25 @@ template<> struct NumberOps<Big> {
     static bool gt(const Big&a,const Big&b) { return b<a; }
 };
 
-template<class R> R sq(const R&a) {
+template<class R> XAOS_ALWAYS_INLINE R sq(const R&a) {
     return NumberOps<R>::mul(a,a);
 }
-template<class R> R mag2(const R&x,const R&y) {
+template<class R> XAOS_ALWAYS_INLINE R mag2(const R&x,const R&y) {
     return NumberOps<R>::add(sq(x),sq(y));
 }
-template<class R> bool less(const R&a,double b) {
+template<class R> XAOS_ALWAYS_INLINE bool less(const R&a,double b) {
     return NumberOps<R>::lt(a,NumberOps<R>::value(b,a));
 }
-template<class R> bool greater(const R&a,double b) {
+template<class R> XAOS_ALWAYS_INLINE bool greater(const R&a,double b) {
     return NumberOps<R>::gt(a,NumberOps<R>::value(b,a));
 }
 
-template<class R> void cmul(const R&ar,const R&ai,const R&br,const R&bi,R&rr,R&ri) {
+template<class R> XAOS_ALWAYS_INLINE void cmul(const R&ar,const R&ai,const R&br,const R&bi,R&rr,R&ri) {
     auto ac=NumberOps<R>::mul(ar,br),bd=NumberOps<R>::mul(ai,bi);
     auto ad=NumberOps<R>::mul(ar,bi),bc=NumberOps<R>::mul(ai,br);
     rr=NumberOps<R>::sub(ac,bd);ri=NumberOps<R>::add(ad,bc);
 }
-template<class R> bool cdiv(const R&ar,const R&ai,const R&br,const R&bi,R&rr,R&ri) {
+template<class R> XAOS_ALWAYS_INLINE bool cdiv(const R&ar,const R&ai,const R&br,const R&bi,R&rr,R&ri) {
     auto den=NumberOps<R>::add(sq(br),sq(bi));
     if(NumberOps<R>::zero(den)) return false;
     auto nr=NumberOps<R>::add(NumberOps<R>::mul(ar,br),NumberOps<R>::mul(ai,bi));
@@ -89,7 +100,7 @@ template<class R> bool cdiv(const R&ar,const R&ai,const R&br,const R&bi,R&rr,R&r
     rr=NumberOps<R>::div(nr,den);ri=NumberOps<R>::div(ni,den);
     return true;
 }
-template<unsigned Power,class R> void cpowFixed(const R&x,const R&y,R&rr,R&ri) {
+template<unsigned Power,class R> XAOS_ALWAYS_INLINE void cpowFixed(const R&x,const R&y,R&rr,R&ri) {
     static_assert(Power>=1);
     if constexpr(Power==1) {
         rr=x;ri=y;
@@ -103,6 +114,365 @@ template<unsigned Power,class R> void cpowFixed(const R&x,const R&y,R&rr,R&ri) {
         cmul(pr,pi,x,y,rr,ri);
     }
 }
+
+
+template<Formula Value> struct FormulaDefinition;
+
+struct Escape4Formula {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool running(const R&x,const R&y,const R&,const R&,
+                                           const R&,const R&) {
+        return less(mag2(x,y),4.0);
+    }
+};
+
+template<unsigned Power> struct PowerFormula:Escape4Formula {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;
+        R nr=x,ni=y;cpowFixed<Power>(x,y,nr,ni);
+        x=O::add(nr,cr);y=O::add(ni,ci);return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Mandelbrot3>:PowerFormula<3> {};
+template<> struct FormulaDefinition<Formula::Mandelbrot4>:PowerFormula<4> {};
+template<> struct FormulaDefinition<Formula::Mandelbrot5>:PowerFormula<5> {};
+template<> struct FormulaDefinition<Formula::Mandelbrot6>:PowerFormula<6> {};
+template<> struct FormulaDefinition<Formula::Mandelbrot9>:PowerFormula<9> {};
+
+template<> struct FormulaDefinition<Formula::Newton> {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool running(const R&,const R&,const R&a,const R&,
+                                           const R&,const R&) { return greater(a,1.e-6); }
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&a,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;
+        R oldx=x,oldy=y;
+        auto yy=sq(y),xx=sq(x),sum=O::add(xx,yy);
+        auto den=sq(sum);if(O::zero(den)) return false;
+        auto n=O::div(O::value(.3333333333,x),den);
+        y=O::add(O::sub(O::scale(oldy,.66666666),O::mul(O::scale(O::mul(oldx,oldy),2),n)),ci);
+        x=O::add(O::add(O::scale(oldx,.66666666),O::mul(O::sub(xx,yy),n)),cr);
+        a=mag2(O::sub(oldx,x),O::sub(oldy,y));return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Newton4> {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool running(const R&,const R&,const R&a,const R&,
+                                           const R&,const R&) { return greater(a,1.e-6); }
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&a,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;
+        R oldx=x,oldy=y;
+        auto xx=sq(x),yy=sq(y),sum=O::add(xx,yy);
+        auto den=O::mul(O::mul(sum,sum),sum);if(O::zero(den)) return false;
+        auto n=O::div(O::value(1,x),den);
+        y=O::add(O::scale(O::mul(oldy,O::add(O::value(3,x),O::mul(O::sub(yy,O::scale(xx,3)),n))),.25),ci);
+        x=O::add(O::scale(O::mul(oldx,O::add(O::value(3,x),O::mul(O::sub(xx,O::scale(yy,3)),n))),.25),cr);
+        a=mag2(O::sub(oldx,x),O::sub(oldy,y));return true;
+    }
+};
+
+template<> struct FormulaDefinition<Formula::Barnsley1>:Escape4Formula {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;
+        R t=less(x,0.0)?O::add(x,O::value(1,x)):O::sub(x,O::value(1,x));
+        R nr=x,ni=y;cmul(t,y,cr,ci,nr,ni);x=std::move(nr);y=std::move(ni);return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Barnsley2>:Escape4Formula {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;
+        auto sign=O::add(O::mul(x,ci),O::mul(y,cr));
+        R t=O::lt(sign,O::value(0,x))?O::add(x,O::value(1,x)):O::sub(x,O::value(1,x));
+        R nr=x,ni=y;cmul(t,y,cr,ci,nr,ni);x=std::move(nr);y=std::move(ni);return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Barnsley3>:Escape4Formula {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;
+        R ox=x,oy=y;
+        if(!less(O::scale(ox,-1),0.0)) {
+            y=O::add(O::scale(O::mul(ox,oy),2),O::mul(ci,ox));
+            x=O::add(O::sub(O::sub(sq(ox),sq(oy)),O::value(1,x)),O::mul(cr,ox));
+        } else {
+            y=O::scale(O::mul(ox,oy),2);
+            x=O::sub(O::sub(sq(ox),sq(oy)),O::value(1,x));
+        }
+        return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Octo> {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool running(const R&,const R&,const R&a,const R&b,
+                                           const R&,const R&) { return less(mag2(a,b),4.0); }
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&a,R&b,const R&cr,const R&ci) {
+        using O=NumberOps<R>;
+        R ox=x,oy=y,nr=x,ni=y;cpowFixed<3>(ox,oy,nr,ni);
+        x=O::add(nr,a);y=O::add(ni,b);a=O::add(ox,cr);b=O::add(oy,ci);return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Phoenix>:Escape4Formula {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&a,R&b,const R&cr,const R&ci) {
+        using O=NumberOps<R>;
+        R ox=x,oy=y;
+        x=O::add(O::add(O::sub(sq(ox),sq(oy)),cr),O::mul(ci,a));
+        y=O::add(O::scale(O::mul(ox,oy),2),O::mul(ci,b));
+        a=std::move(ox);b=std::move(oy);return true;
+    }
+};
+
+struct MagnetRunning {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool running(const R&x,const R&y,const R&,const R&,
+                                           const R&,const R&) {
+        using O=NumberOps<R>;
+        const auto m=mag2(x,y);
+        auto dx=O::sub(x,O::value(1,x));
+        return less(m,10000.0) && greater(mag2(dx,y),.01);
+    }
+};
+template<> struct FormulaDefinition<Formula::Magnet>:MagnetRunning {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;
+        R ox=x,oy=y;
+        auto br=O::add(O::add(O::scale(ox,2),cr),O::value(-2,x));
+        auto di=O::add(O::scale(oy,2),ci);
+        auto nr=O::add(O::sub(sq(ox),sq(oy)),O::sub(cr,O::value(1,x)));
+        auto ni=O::add(O::scale(O::mul(ox,oy),2),ci);
+        R qr=x,qi=y;if(!cdiv(nr,ni,br,di,qr,qi)) return false;
+        cmul(qr,qi,qr,qi,x,y);return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Magnet2>:MagnetRunning {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;
+        R ox=x,oy=y;
+        auto inre=O::sub(O::sub(sq(cr),sq(ci)),O::scale(cr,3));
+        auto inim=O::sub(O::scale(O::mul(cr,ci),2),O::scale(ci,3));
+        auto tmp1=O::sub(sq(ox),sq(oy));
+        auto tmp2=O::sub(O::sub(O::mul(ox,cr),O::mul(oy,ci)),ox);
+        auto dnre=O::add(O::add(O::sub(O::add(O::scale(tmp1,3),O::scale(tmp2,3)),O::scale(ox,3)),inre),O::value(3,x));
+        auto nmre=O::add(O::add(O::add(O::sub(O::mul(ox,sq(ox)),O::scale(O::mul(ox,sq(oy)),3)),O::scale(tmp2,3)),inre),O::value(2,x));
+        tmp2=O::sub(O::add(O::mul(ox,ci),O::mul(oy,cr)),oy);
+        auto dnim=O::add(O::sub(O::add(O::scale(O::mul(ox,oy),6),O::scale(tmp2,3)),O::scale(oy,3)),inim);
+        auto nmim=O::add(O::add(O::sub(O::scale(O::mul(oy,sq(ox)),3),O::mul(oy,sq(oy))),O::scale(tmp2,3)),inim);
+        R qr=x,qi=y;if(!cdiv(nmre,nmim,dnre,dnim,qr,qi)) return false;
+        cmul(qr,qi,qr,qi,x,y);return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Triceratops>:Escape4Formula {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;R ox=x,oy=y;
+        y=O::add(O::add(O::mul(ox,oy),O::scale(oy,.5)),ci);
+        x=O::add(O::scale(O::add(O::sub(sq(ox),sq(oy)),ox),.5),cr);return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Catseye> {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool running(const R&x,const R&y,const R&,const R&,
+                                           const R&,const R&) {
+        return less(mag2(x,y),4.00000001);
+    }
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;
+        R r1=x,i1=y,r2=x,i2=y;
+        if(!cdiv(cr,ci,x,y,r1,i1) || !cdiv(x,y,cr,ci,r2,i2)) return false;
+        x=O::add(r1,r2);y=O::add(i1,i2);return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Mandelbar>:Escape4Formula {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;R ox=x,oy=y;
+        y=O::add(O::scale(O::mul(ox,oy),-2),ci);
+        x=O::add(O::sub(sq(ox),sq(oy)),cr);return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Lambda>:Escape4Formula {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;R ox=x,oy=y;
+        auto nr=O::add(O::sub(sq(oy),sq(ox)),ox);
+        auto ni=O::sub(oy,O::scale(O::mul(ox,oy),2));
+        cmul(nr,ni,cr,ci,x,y);return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Manowar>:Escape4Formula {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&a,R&b,const R&cr,const R&ci) {
+        using O=NumberOps<R>;R ox=x,oy=y;
+        x=O::add(O::add(O::sub(sq(ox),sq(oy)),cr),a);
+        y=O::add(O::add(O::scale(O::mul(ox,oy),2),ci),b);
+        a=std::move(ox);b=std::move(oy);return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Spider>:Escape4Formula {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&a,R&b,const R&,const R&) {
+        using O=NumberOps<R>;R ox=x,oy=y;
+        x=O::add(O::sub(sq(ox),sq(oy)),a);
+        y=O::add(O::scale(O::mul(ox,oy),2),b);
+        a=O::add(O::scale(a,.5),x);b=O::add(O::scale(b,.5),y);return true;
+    }
+};
+
+struct SierpinskiRunning {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool running(const R&x,const R&y,const R&,const R&,
+                                           const R&cr,const R&ci) {
+        using O=NumberOps<R>;
+        return O::lt(O::add(O::mul(ci,x),O::mul(O::sub(O::value(1,x),cr),y)),ci);
+    }
+};
+template<> struct FormulaDefinition<Formula::Sierpinski>:SierpinskiRunning {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;x=O::scale(x,2);y=O::scale(y,2);
+        if(O::gt(O::sub(O::mul(ci,x),O::mul(cr,y)),ci)) x=O::sub(x,O::value(1,x));
+        if(O::gt(y,ci)) {y=O::sub(y,ci);x=O::sub(x,cr);}return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::GoldenSierpinski>:SierpinskiRunning {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;constexpr double phi=1.6180339,inv=.6180339;
+        x=O::scale(x,phi);y=O::scale(y,phi);
+        if(O::gt(O::sub(O::mul(ci,x),O::mul(cr,y)),O::scale(ci,inv))) x=O::sub(x,O::value(inv,x));
+        if(O::gt(y,O::scale(ci,inv))) {y=O::sub(y,O::scale(ci,inv));x=O::sub(x,O::scale(cr,inv));}
+        return true;
+    }
+};
+
+template<unsigned Scale> struct CarpetFormula {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool running(const R&x,const R&y,const R&,const R&,
+                                           const R&cr,const R&ci) {
+        using O=NumberOps<R>;
+        constexpr double lower=1.0/Scale,upper=1.0-lower;
+        return O::lt(x,O::scale(cr,lower)) || O::gt(x,O::scale(cr,upper)) ||
+               O::lt(y,O::scale(ci,lower)) || O::gt(y,O::scale(ci,upper));
+    }
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;x=O::scale(x,Scale);y=O::scale(y,Scale);
+        for(int n=static_cast<int>(Scale)-1;n>=1;--n)
+            if(O::gt(x,O::scale(cr,n))) {x=O::sub(x,O::scale(cr,n));break;}
+        for(int n=static_cast<int>(Scale)-1;n>=1;--n)
+            if(O::gt(y,O::scale(ci,n))) {y=O::sub(y,O::scale(ci,n));break;}
+        return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::SierpinskiCarpet>:CarpetFormula<3> {};
+template<> struct FormulaDefinition<Formula::SierpinskiCarpet4>:CarpetFormula<4> {};
+
+template<> struct FormulaDefinition<Formula::KochSnowflake> {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool running(const R&x,const R&y,const R&,const R&,
+                                           const R&,const R&) {
+        using O=NumberOps<R>;
+        auto p=O::add(O::scale(x,1.5),O::scale(y,.8660254038));
+        auto q=O::sub(O::scale(y,.8660254038),O::scale(x,1.5));
+        return (greater(p,.8660254038)||greater(q,.8660254038)||less(y,-.5)) &&
+               (less(p,-.8660254038)||less(q,-.8660254038)||greater(y,.5));
+    }
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&,const R&) {
+        using O=NumberOps<R>;x=O::scale(x,3);y=O::scale(y,3);
+        auto q=O::sub(O::scale(y,.2886751346),O::scale(x,.5));
+        auto p=O::add(O::scale(y,.2886751346),O::scale(x,.5));
+        if(greater(q,0.0)) {
+            if(greater(p,0.0)) y=O::sub(y,O::value(2,y));
+            else {x=O::add(x,O::value(1.732050808,x));y=O::add(y,O::value(greater(y,0.0)?-1.0:1.0,y));}
+        } else {
+            if(less(p,0.0)) y=O::add(y,O::value(2,y));
+            else {x=O::sub(x,O::value(1.732050808,x));y=O::add(y,O::value(greater(y,0.0)?-1.0:1.0,y));}
+        }
+        return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::SpidronHornflake> {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool running(const R&x,const R&y,const R&,const R&,
+                                           const R&,const R&) {
+        using O=NumberOps<R>;
+        return !(less(x,0.0)&&greater(y,0.0)&&
+                 less(O::add(O::scale(x,-1),O::scale(y,1.732050808)),1.732050808));
+    }
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&,const R&) {
+        using O=NumberOps<R>;R ox=x,oy=y;
+        x=O::add(O::sub(O::scale(ox,1.5),O::value(.866,x)),O::scale(oy,.866));
+        y=O::sub(O::sub(O::scale(oy,1.5),O::value(1.5,y)),O::scale(ox,.866));return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Beryl> {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool running(const R&x,const R&y,const R&a,const R&b,
+                                           const R&,const R&) {
+        using O=NumberOps<R>;const auto m=mag2(x,y);
+        return less(m,9.0) || O::lt(mag2(a,b),O::scale(m,4));
+    }
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&a,R&b,const R&,const R&) {
+        using O=NumberOps<R>;R ox=x,oy=y,oa=a,ob=b;
+        x=O::add(ox,oa);y=O::add(oy,ob);cmul(ox,oy,oa,ob,a,b);return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Circle7> {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool running(const R&x,const R&y,const R&,const R&,
+                                           const R&,const R&) { return less(mag2(x,y),1.0); }
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&,const R&) {
+        using O=NumberOps<R>;x=O::scale(x,3);y=O::scale(y,3);
+        auto shift=[&](double dx,double dy) {
+            auto xx=O::sub(x,O::value(dx,x)),yy=O::sub(y,O::value(dy,y));
+            if(less(mag2(xx,yy),1.0)) {x=std::move(xx);y=std::move(yy);}
+        };
+        shift(0,2);shift(0,-2);shift(1.7320508,1);shift(1.7320508,-1);
+        shift(-1.7320508,1);shift(-1.7320508,-1);return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::Clock> {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool running(const R&x,const R&y,const R&,const R&,
+                                           const R&,const R&) {
+        return less(mag2(x,y),.6944444444444445);
+    }
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&,const R&) {
+        using O=NumberOps<R>;x=O::scale(x,3);y=O::scale(y,3);
+        constexpr double s=1.7320508075688772,rd=.25;
+        auto shift=[&](double dx,double dy) {
+            auto xx=O::sub(x,O::value(dx,x)),yy=O::sub(y,O::value(dy,y));
+            if(less(mag2(xx,yy),rd)) {x=std::move(xx);y=std::move(yy);}
+        };
+        shift(0,-2);shift(-1,-s);shift(-s,-1);shift(-2,0);shift(-s,1);shift(-1,s);
+        shift(0,2);shift(1,s);shift(s,1);shift(2,0);shift(s,-1);shift(1,-s);return true;
+    }
+};
+template<> struct FormulaDefinition<Formula::SymmetricBarnsley> {
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool running(const R&x,const R&y,const R&,const R&,
+                                           const R&,const R&) { return less(mag2(x,y),16.0); }
+    template<class R>
+    static XAOS_ALWAYS_INLINE bool step(R&x,R&y,R&,R&,const R&cr,const R&ci) {
+        using O=NumberOps<R>;
+        R xr=less(x,0.0)?O::add(x,O::value(1,x)):O::sub(x,O::value(1,x));
+        R yi=less(y,0.0)?O::add(y,O::value(1,y)):O::sub(y,O::value(1,y));
+        cmul(xr,yi,cr,ci,x,y);return true;
+    }
+};
 
 template<class R,class F> struct FixedFormulaKernel {
     static_assert(F::generic,"fixed scalar kernel is only used for non-quadratic formulas");
@@ -193,217 +563,19 @@ private:
         }
     }
 
-    /// Tests the compile-time formula continuation/bailout predicate.
-    bool running(const R&cr,const R&ci) const {
-        using O=NumberOps<R>;
-        if constexpr(F::formula==Formula::Newton || F::formula==Formula::Newton4) {
-            return greater(a,1.e-6);
-        } else if constexpr(F::formula==Formula::Octo) {
-            return less(mag2(a,b),4.0);
-        } else if constexpr(F::formula==Formula::Magnet || F::formula==Formula::Magnet2) {
-            const auto m=mag2(x,y);
-            auto dx=O::sub(x,O::value(1,x));
-            return less(m,10000.0) && greater(mag2(dx,y),.01);
-        } else if constexpr(F::formula==Formula::Catseye) {
-            return less(mag2(x,y),4.00000001);
-        } else if constexpr(F::formula==Formula::SymmetricBarnsley) {
-            return less(mag2(x,y),16.0);
-        } else if constexpr(F::formula==Formula::Sierpinski ||
-                            F::formula==Formula::GoldenSierpinski) {
-            return O::lt(O::add(O::mul(ci,x),O::mul(O::sub(O::value(1,x),cr),y)),ci);
-        } else if constexpr(F::formula==Formula::SierpinskiCarpet) {
-            return O::lt(x,O::scale(cr,1.0/3)) || O::gt(x,O::scale(cr,2.0/3)) ||
-                   O::lt(y,O::scale(ci,1.0/3)) || O::gt(y,O::scale(ci,2.0/3));
-        } else if constexpr(F::formula==Formula::SierpinskiCarpet4) {
-            return O::lt(x,O::scale(cr,.25)) || O::gt(x,O::scale(cr,.75)) ||
-                   O::lt(y,O::scale(ci,.25)) || O::gt(y,O::scale(ci,.75));
-        } else if constexpr(F::formula==Formula::KochSnowflake) {
-            auto p=O::add(O::scale(x,1.5),O::scale(y,.8660254038));
-            auto q=O::sub(O::scale(y,.8660254038),O::scale(x,1.5));
-            return (greater(p,.8660254038)||greater(q,.8660254038)||less(y,-.5)) &&
-                   (less(p,-.8660254038)||less(q,-.8660254038)||greater(y,.5));
-        } else if constexpr(F::formula==Formula::SpidronHornflake) {
-            return !(less(x,0.0)&&greater(y,0.0)&&
-                     less(O::add(O::scale(x,-1),O::scale(y,1.732050808)),1.732050808));
-        } else if constexpr(F::formula==Formula::Beryl) {
-            const auto m=mag2(x,y);
-            return less(m,9.0) || O::lt(mag2(a,b),O::scale(m,4));
-        } else if constexpr(F::formula==Formula::Circle7) {
-            return less(mag2(x,y),1.0);
-        } else if constexpr(F::formula==Formula::Clock) {
-            return less(mag2(x,y),.6944444444444445);
-        } else {
-            return less(mag2(x,y),4.0);
-        }
+    /// Tests the formula-specific continuation predicate.
+    XAOS_ALWAYS_INLINE bool running(const R&cr,const R&ci) const {
+        return FormulaDefinition<F::formula>::running(x,y,a,b,cr,ci);
     }
 
-    /// Executes one iteration with no runtime formula dispatch.
-    bool step(const R&cr,const R&ci) {
-        using O=NumberOps<R>;
-        if constexpr(F::formula==Formula::Mandelbrot3 || F::formula==Formula::Mandelbrot4 ||
-                     F::formula==Formula::Mandelbrot5 || F::formula==Formula::Mandelbrot6 ||
-                     F::formula==Formula::Mandelbrot9) {
-            constexpr unsigned power=
-                F::formula==Formula::Mandelbrot3?3u:F::formula==Formula::Mandelbrot4?4u:
-                F::formula==Formula::Mandelbrot5?5u:F::formula==Formula::Mandelbrot6?6u:9u;
-            R nr=x,ni=y;cpowFixed<power>(x,y,nr,ni);
-            x=O::add(nr,cr);y=O::add(ni,ci);return true;
-        } else if constexpr(F::formula==Formula::Newton) {
-            R oldx=x,oldy=y;
-            auto yy=sq(y),xx=sq(x),sum=O::add(xx,yy);
-            auto den=sq(sum); if(O::zero(den)) return false;
-            auto n=O::div(O::value(.3333333333,x),den);
-            y=O::add(O::sub(O::scale(oldy,.66666666),O::mul(O::scale(O::mul(oldx,oldy),2),n)),ci);
-            x=O::add(O::add(O::scale(oldx,.66666666),O::mul(O::sub(xx,yy),n)),cr);
-            a=mag2(O::sub(oldx,x),O::sub(oldy,y));return true;
-        } else if constexpr(F::formula==Formula::Newton4) {
-            R oldx=x,oldy=y;
-            auto xx=sq(x),yy=sq(y),sum=O::add(xx,yy);
-            auto den=O::mul(O::mul(sum,sum),sum); if(O::zero(den)) return false;
-            auto n=O::div(O::value(1,x),den);
-            y=O::add(O::scale(O::mul(oldy,O::add(O::value(3,x),O::mul(O::sub(yy,O::scale(xx,3)),n))),.25),ci);
-            x=O::add(O::scale(O::mul(oldx,O::add(O::value(3,x),O::mul(O::sub(xx,O::scale(yy,3)),n))),.25),cr);
-            a=mag2(O::sub(oldx,x),O::sub(oldy,y));return true;
-        } else if constexpr(F::formula==Formula::Barnsley1) {
-            R t=less(x,0.0)?O::add(x,O::value(1,x)):O::sub(x,O::value(1,x));
-            R nr=x,ni=y;cmul(t,y,cr,ci,nr,ni);x=std::move(nr);y=std::move(ni);return true;
-        } else if constexpr(F::formula==Formula::Barnsley2) {
-            auto sign=O::add(O::mul(x,ci),O::mul(y,cr));
-            R t=O::lt(sign,O::value(0,x))?O::add(x,O::value(1,x)):O::sub(x,O::value(1,x));
-            R nr=x,ni=y;cmul(t,y,cr,ci,nr,ni);x=std::move(nr);y=std::move(ni);return true;
-        } else if constexpr(F::formula==Formula::Barnsley3) {
-            R ox=x,oy=y;
-            if(!less(O::scale(ox,-1),0.0)) {
-                y=O::add(O::scale(O::mul(ox,oy),2),O::mul(ci,ox));
-                x=O::add(O::sub(O::sub(sq(ox),sq(oy)),O::value(1,x)),O::mul(cr,ox));
-            } else {
-                y=O::scale(O::mul(ox,oy),2);
-                x=O::sub(O::sub(sq(ox),sq(oy)),O::value(1,x));
-            }
-            return true;
-        } else if constexpr(F::formula==Formula::Octo) {
-            R ox=x,oy=y,nr=x,ni=y;cpowFixed<3>(ox,oy,nr,ni);
-            x=O::add(nr,a);y=O::add(ni,b);a=O::add(ox,cr);b=O::add(oy,ci);return true;
-        } else if constexpr(F::formula==Formula::Phoenix) {
-            R ox=x,oy=y;
-            x=O::add(O::add(O::sub(sq(ox),sq(oy)),cr),O::mul(ci,a));
-            y=O::add(O::scale(O::mul(ox,oy),2),O::mul(ci,b));
-            a=std::move(ox);b=std::move(oy);return true;
-        } else if constexpr(F::formula==Formula::Magnet) {
-            R ox=x,oy=y;
-            auto br=O::add(O::add(O::scale(ox,2),cr),O::value(-2,x));
-            auto di=O::add(O::scale(oy,2),ci);
-            auto nr=O::add(O::sub(sq(ox),sq(oy)),O::sub(cr,O::value(1,x)));
-            auto ni=O::add(O::scale(O::mul(ox,oy),2),ci);
-            R qr=x,qi=y;if(!cdiv(nr,ni,br,di,qr,qi)) return false;
-            cmul(qr,qi,qr,qi,x,y);return true;
-        } else if constexpr(F::formula==Formula::Magnet2) {
-            R ox=x,oy=y;
-            auto inre=O::sub(O::sub(sq(cr),sq(ci)),O::scale(cr,3));
-            auto inim=O::sub(O::scale(O::mul(cr,ci),2),O::scale(ci,3));
-            auto tmp1=O::sub(sq(ox),sq(oy));
-            auto tmp2=O::sub(O::sub(O::mul(ox,cr),O::mul(oy,ci)),ox);
-            auto dnre=O::add(O::add(O::sub(O::add(O::scale(tmp1,3),O::scale(tmp2,3)),O::scale(ox,3)),inre),O::value(3,x));
-            auto nmre=O::add(O::add(O::add(O::sub(O::mul(ox,sq(ox)),O::scale(O::mul(ox,sq(oy)),3)),O::scale(tmp2,3)),inre),O::value(2,x));
-            tmp2=O::sub(O::add(O::mul(ox,ci),O::mul(oy,cr)),oy);
-            auto dnim=O::add(O::sub(O::add(O::scale(O::mul(ox,oy),6),O::scale(tmp2,3)),O::scale(oy,3)),inim);
-            auto nmim=O::add(O::add(O::sub(O::scale(O::mul(oy,sq(ox)),3),O::mul(oy,sq(oy))),O::scale(tmp2,3)),inim);
-            R qr=x,qi=y;if(!cdiv(nmre,nmim,dnre,dnim,qr,qi)) return false;
-            cmul(qr,qi,qr,qi,x,y);return true;
-        } else if constexpr(F::formula==Formula::Triceratops) {
-            R ox=x,oy=y;
-            y=O::add(O::add(O::mul(ox,oy),O::scale(oy,.5)),ci);
-            x=O::add(O::scale(O::add(O::sub(sq(ox),sq(oy)),ox),.5),cr);return true;
-        } else if constexpr(F::formula==Formula::Catseye) {
-            R r1=x,i1=y,r2=x,i2=y;
-            if(!cdiv(cr,ci,x,y,r1,i1) || !cdiv(x,y,cr,ci,r2,i2)) return false;
-            x=O::add(r1,r2);y=O::add(i1,i2);return true;
-        } else if constexpr(F::formula==Formula::Mandelbar) {
-            R ox=x,oy=y;
-            y=O::add(O::scale(O::mul(ox,oy),-2),ci);
-            x=O::add(O::sub(sq(ox),sq(oy)),cr);return true;
-        } else if constexpr(F::formula==Formula::Lambda) {
-            R ox=x,oy=y;
-            auto nr=O::add(O::sub(sq(oy),sq(ox)),ox);
-            auto ni=O::sub(oy,O::scale(O::mul(ox,oy),2));
-            cmul(nr,ni,cr,ci,x,y);return true;
-        } else if constexpr(F::formula==Formula::Manowar) {
-            R ox=x,oy=y;
-            x=O::add(O::add(O::sub(sq(ox),sq(oy)),cr),a);
-            y=O::add(O::add(O::scale(O::mul(ox,oy),2),ci),b);
-            a=std::move(ox);b=std::move(oy);return true;
-        } else if constexpr(F::formula==Formula::Spider) {
-            R ox=x,oy=y;
-            x=O::add(O::sub(sq(ox),sq(oy)),a);
-            y=O::add(O::scale(O::mul(ox,oy),2),b);
-            a=O::add(O::scale(a,.5),x);b=O::add(O::scale(b,.5),y);return true;
-        } else if constexpr(F::formula==Formula::Sierpinski) {
-            x=O::scale(x,2);y=O::scale(y,2);
-            if(O::gt(O::sub(O::mul(ci,x),O::mul(cr,y)),ci)) x=O::sub(x,O::value(1,x));
-            if(O::gt(y,ci)) {y=O::sub(y,ci);x=O::sub(x,cr);} return true;
-        } else if constexpr(F::formula==Formula::GoldenSierpinski) {
-            constexpr double phi=1.6180339,inv=.6180339;
-            x=O::scale(x,phi);y=O::scale(y,phi);
-            if(O::gt(O::sub(O::mul(ci,x),O::mul(cr,y)),O::scale(ci,inv))) x=O::sub(x,O::value(inv,x));
-            if(O::gt(y,O::scale(ci,inv))) {y=O::sub(y,O::scale(ci,inv));x=O::sub(x,O::scale(cr,inv));}
-            return true;
-        } else if constexpr(F::formula==Formula::SierpinskiCarpet ||
-                            F::formula==Formula::SierpinskiCarpet4) {
-            constexpr double k=F::formula==Formula::SierpinskiCarpet?3.0:4.0;
-            constexpr int top=F::formula==Formula::SierpinskiCarpet?2:3;
-            x=O::scale(x,k);y=O::scale(y,k);
-            for(int n=top;n>=1;--n) if(O::gt(x,O::scale(cr,n))) {x=O::sub(x,O::scale(cr,n));break;}
-            for(int n=top;n>=1;--n) if(O::gt(y,O::scale(ci,n))) {y=O::sub(y,O::scale(ci,n));break;}
-            return true;
-        } else if constexpr(F::formula==Formula::KochSnowflake) {
-            x=O::scale(x,3);y=O::scale(y,3);
-            auto q=O::sub(O::scale(y,.2886751346),O::scale(x,.5));
-            auto p=O::add(O::scale(y,.2886751346),O::scale(x,.5));
-            if(greater(q,0.0)) {
-                if(greater(p,0.0)) y=O::sub(y,O::value(2,y));
-                else {x=O::add(x,O::value(1.732050808,x));y=O::add(y,O::value(greater(y,0.0)?-1.0:1.0,y));}
-            } else {
-                if(less(p,0.0)) y=O::add(y,O::value(2,y));
-                else {x=O::sub(x,O::value(1.732050808,x));y=O::add(y,O::value(greater(y,0.0)?-1.0:1.0,y));}
-            }
-            return true;
-        } else if constexpr(F::formula==Formula::SpidronHornflake) {
-            R ox=x,oy=y;
-            x=O::add(O::sub(O::scale(ox,1.5),O::value(.866,x)),O::scale(oy,.866));
-            y=O::sub(O::sub(O::scale(oy,1.5),O::value(1.5,y)),O::scale(ox,.866));return true;
-        } else if constexpr(F::formula==Formula::Beryl) {
-            R ox=x,oy=y,oa=a,ob=b;
-            x=O::add(ox,oa);y=O::add(oy,ob);
-            cmul(ox,oy,oa,ob,a,b);return true;
-        } else if constexpr(F::formula==Formula::Circle7) {
-            x=O::scale(x,3);y=O::scale(y,3);
-            auto shift=[&](double dx,double dy) {
-                auto xx=O::sub(x,O::value(dx,x)),yy=O::sub(y,O::value(dy,y));
-                if(less(mag2(xx,yy),1.0)) {x=std::move(xx);y=std::move(yy);}
-            };
-            shift(0,2);shift(0,-2);shift(1.7320508,1);shift(1.7320508,-1);
-            shift(-1.7320508,1);shift(-1.7320508,-1);return true;
-        } else if constexpr(F::formula==Formula::Clock) {
-            x=O::scale(x,3);y=O::scale(y,3);
-            constexpr double s=1.7320508075688772,rd=.25;
-            auto shift=[&](double dx,double dy) {
-                auto xx=O::sub(x,O::value(dx,x)),yy=O::sub(y,O::value(dy,y));
-                if(less(mag2(xx,yy),rd)) {x=std::move(xx);y=std::move(yy);}
-            };
-            shift(0,-2);shift(-1,-s);shift(-s,-1);shift(-2,0);shift(-s,1);shift(-1,s);
-            shift(0,2);shift(1,s);shift(s,1);shift(2,0);shift(s,-1);shift(1,-s);return true;
-        } else if constexpr(F::formula==Formula::SymmetricBarnsley) {
-            R xr=less(x,0.0)?O::add(x,O::value(1,x)):O::sub(x,O::value(1,x));
-            R yi=less(y,0.0)?O::add(y,O::value(1,y)):O::sub(y,O::value(1,y));
-            cmul(xr,yi,cr,ci,x,y);return true;
-        } else {
-            static_assert(F::formula!=F::formula,"unsupported fixed formula");
-        }
+    /// Executes one formula-specific iteration. There is no common case statement.
+    XAOS_ALWAYS_INLINE bool step(const R&cr,const R&ci) {
+        return FormulaDefinition<F::formula>::step(x,y,a,b,cr,ci);
     }
 
 public:
     /// Iterates one fixed formula. The compiler sees a unique loop for every F.
-    Count run(const R&cx,const R&cy,const Count&previous,const FormulaOrbit<R,F>*saved,
+    XAOS_FLATTEN Count run(const R&cx,const R&cy,const Count&previous,const FormulaOrbit<R,F>*saved,
               uint32_t limit,const Cancellation&stop,bool allowTimeBudget) {
         R cr=cx,ci=cy;
         Count result;
@@ -434,5 +606,7 @@ public:
         return result;
     }
 };
+#undef XAOS_ALWAYS_INLINE
+#undef XAOS_FLATTEN
 } // namespace detail
 } // namespace xaos
