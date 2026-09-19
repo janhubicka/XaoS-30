@@ -33,7 +33,6 @@
 #include <cmath>
 #include <charconv>
 #include <condition_variable>
-#include <cstring>
 #include <functional>
 #include <optional>
 
@@ -52,16 +51,19 @@ size_t presentationWorkerCount() noexcept {
     return cpus>=8?2:1;
 }
 
-/// Copies a reconstructed display frame into Qt's top-to-bottom image storage.
-QImage makeImage(const DisplayFrame&f) {
-    QImage image(f.request.width,f.request.height,QImage::Format_ARGB32_Premultiplied);
-    if(image.isNull()) throw std::bad_alloc();
-    const size_t bytes=static_cast<size_t>(f.request.width)*sizeof(uint32_t);
-    for(int row=0;row<f.request.height;++row) {
-        const int y=f.request.height-1-row;
-        std::memcpy(image.scanLine(row),
-                    f.pixels.data()+static_cast<size_t>(y)*static_cast<size_t>(f.request.width),
-                    bytes);
+/// Wraps immutable presentation storage in a QImage without another framebuffer copy.
+QImage makeImage(std::shared_ptr<const DisplayFrame> frame) {
+    if(!frame || frame->pixels.empty()) throw std::bad_alloc();
+    auto* owner=new std::shared_ptr<const DisplayFrame>(std::move(frame));
+    const auto&f=**owner;
+    QImage image(reinterpret_cast<const uchar*>(f.pixels.data()),f.request.width,f.request.height,
+                 static_cast<qsizetype>(f.request.width)*static_cast<qsizetype>(sizeof(uint32_t)),
+                 QImage::Format_ARGB32_Premultiplied,
+                 [](void* info){delete static_cast<std::shared_ptr<const DisplayFrame>*>(info);},
+                 owner);
+    if(image.isNull()) {
+        delete owner;
+        throw std::bad_alloc();
     }
     return image;
 }
@@ -127,9 +129,7 @@ class Canvas final:public QWidget {
                     if(presentationActive_==token) presentationActive_.reset();
                     continue;
                 }
-                QElapsedTimer copyTimer; copyTimer.start();
-                auto image=makeImage(*display);
-                const double copyMs=static_cast<double>(copyTimer.nsecsElapsed())/1.0e6;
+                auto image=makeImage(display);
                 if(token->cancelled.load(std::memory_order_relaxed)) {
                     std::lock_guard lock(presentationMutex_);
                     if(presentationActive_==token) presentationActive_.reset();
@@ -139,7 +139,7 @@ class Canvas final:public QWidget {
                 const auto stats=job.frame->stats;
                 const auto view=job.frame->request.view;
                 const auto reconstruction=job.frame->request.settings.reconstruction;
-                const double presentationMs=display->milliseconds+copyMs;
+                const double presentationMs=display->milliseconds;
                 QMetaObject::invokeMethod(this,
                     [this,image=std::move(image),view,stats,reconstruction,presentationMs,id=job.serial] {
                         if(id<serial_ || id<shown_) return;
