@@ -225,8 +225,14 @@ public:
             if(analytic && mainInterior(cx.toDouble(),cy.toDouble()))
                 return {0,Status::Interior};
         }
+        const Fixed<N> two=Fixed<N>::fromDouble(2.0);
+        const Fixed<N> four=Fixed<N>::fromDouble(4.0);
+        auto outside=[&] {
+            return fixedGreater(absolute(x),two) || fixedGreater(absolute(y),two);
+        };
+        if(outside()) return {result.iterations,Status::Escaped};
         auto xx=x*x,yy=y*y;
-        if(greaterThan4(xx+yy)) return {result.iterations,Status::Escaped};
+        if(fixedGreater(xx,four-yy)) return {result.iterations,Status::Escaped};
         unsigned poll=0;
         while(result.iterations<limit) {
             if(!poll) {if(stop.requested(allowTimeBudget)) break;poll=64;}
@@ -234,9 +240,10 @@ public:
             auto xy=x*y;
             if constexpr(F::ship) xy=absolute(xy);
             x=xx-yy+cr;y=xy+xy+ci;
-            xx=x*x;yy=y*y;
             ++result.iterations;
-            if(greaterThan4(xx+yy)) {result.status=Status::Escaped;break;}
+            if(outside()) {result.status=Status::Escaped;break;}
+            xx=x*x;yy=y*y;
+            if(fixedGreater(xx,four-yy)) {result.status=Status::Escaped;break;}
         }
         return result;
     }
