@@ -2,6 +2,7 @@
 #include "xaos/axis.hpp"
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 namespace xaos {
@@ -58,5 +59,76 @@ AxisMatch matchAxis(std::span<const double> pos,int n,double radius) {
         result.source[static_cast<size_t>(node.index)]=node.old;
     }
     return result;
+}
+
+/// Measures the distance between two coordinates in units of the new pixel step.
+double axisPixelDistance(const Big&a,const Big&b,const Big&step) {
+    const double d=div(sub(a,b),step).toDouble();
+    return std::isfinite(d)?std::abs(d):1.e12;
+}
+
+/// Classifies motion using the exact viewport-containment cases from XaoS newpositions().
+AxisMotion classifyAxisMotion(const std::vector<Big>&current,const std::vector<Big>*old,
+                              const Big&step) {
+    if(!old || old->size()!=current.size() || current.empty()) return AxisMotion::Neutral;
+    const Big begin=sub(current.front(),scale(step,.5));
+    const Big end=add(current.back(),scale(step,.5));
+
+    // This is mkrealloc_table()'s yend logic verbatim in geometric form:
+    //   1: the new viewport lies strictly inside the old one (zoom in);
+    //   2: the old sample extent lies strictly inside the new viewport (zoom out).
+    if(begin>(*old)[0] && end<old->back()) return AxisMotion::ZoomIn;
+    if((*old)[0]>begin && old->back()<end) return AxisMotion::ZoomOut;
+    return AxisMotion::Neutral;
+}
+
+/// Computes the original XaoS new-line significance prices before global sorting.
+std::vector<double> linePriorities(const std::vector<Big>&current,const std::vector<Big>*old,
+                                   const std::vector<uint8_t>&dirty,const Big&step) {
+    const int n=static_cast<int>(current.size());
+    if(dirty.size()!=current.size()) throw std::invalid_argument("line-priority axis size mismatch");
+    std::vector<double> base(static_cast<size_t>(n),1.0),price(static_cast<size_t>(n),1.0);
+    const auto motion=classifyAxisMotion(current,old,step);
+
+    if(old && old->size()==current.size()) {
+        for(int i=0;i<n;++i) if(dirty[static_cast<size_t>(i)]) {
+            const double movement=axisPixelDistance((*old)[static_cast<size_t>(i)],
+                                                    current[static_cast<size_t>(i)],step);
+            if(motion==AxisMotion::ZoomIn) {
+                // newpositions(yend==1): the zoom fixed point moves least and gets
+                // the largest base price, so refinement follows the zoom focus.
+                base[static_cast<size_t>(i)]=1.0/(1.0+movement);
+            } else if(motion==AxisMotion::ZoomOut) {
+                // newpositions(yend==2): newly exposed outer regions move most.
+                // XaoS gives the literal screen endpoints an overwhelming boost.
+                base[static_cast<size_t>(i)]=movement;
+                if(i==0 || i==n-1) base[static_cast<size_t>(i)]*=500.0;
+            }
+        }
+    }
+    price=base;
+
+    // Exact translation of addprices(): recursively select the midpoint of each
+    // contiguous run and multiply its base price by the distance to the run's
+    // right boundary. The caller globally sorts rows and columns by this result.
+    std::function<void(int,int)> addPrices=[&](int left,int boundary) {
+        while(left<boundary) {
+            const int mid=left+(boundary-left)/2;
+            const double span=axisPixelDistance(current[static_cast<size_t>(boundary)],
+                                                current[static_cast<size_t>(mid)],step);
+            price[static_cast<size_t>(mid)]=span*base[static_cast<size_t>(mid)];
+            addPrices(left,mid);
+            left=mid+1;
+        }
+    };
+    int i=0;
+    while(i<n) {
+        if(!dirty[static_cast<size_t>(i)]) { ++i; continue; }
+        const int start=i;
+        while(i<n && dirty[static_cast<size_t>(i)]) ++i;
+        const int boundary=i<n?i:i-1;
+        if(start<boundary) addPrices(start,boundary);
+    }
+    return price;
 }
 }
