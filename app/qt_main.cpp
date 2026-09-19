@@ -68,8 +68,8 @@ QImage makeImage(std::shared_ptr<const DisplayFrame> frame) {
     return image;
 }
 class Canvas final:public QWidget {
-    struct Job { Request request; size_t threads; uint64_t serial; bool interactive; };
-    struct PresentationJob { std::shared_ptr<const FrameBase> frame; uint64_t serial; };
+    struct Job { Request request; size_t threads; uint64_t serial,epoch; bool interactive; };
+    struct PresentationJob { std::shared_ptr<const FrameBase> frame; uint64_t serial,epoch; };
     std::mutex mutex_;
     std::condition_variable_any wake_;
     std::optional<Job> pending_;
@@ -80,7 +80,7 @@ class Canvas final:public QWidget {
     std::optional<PresentationJob> presentationPending_;
     std::shared_ptr<Cancellation> presentationActive_;
     std::jthread presenter_;
-    uint64_t serial_=0,shown_=0;
+    uint64_t serial_=0,shown_=0,epoch_=1;
     QImage image_,fallback_;
     View imageView_,fallbackView_;
     QTimer motion_,idle_;
@@ -90,18 +90,18 @@ class Canvas final:public QWidget {
     bool dragging_=false;
     size_t threads_=std::max<size_t>(1,defaultWorkerCount()-presentationWorkerCount());
     /// Queues the newest computed grid for asynchronous presentation.
-    void queuePresentation(std::shared_ptr<const FrameBase> frame,uint64_t serial) {
+    void queuePresentation(std::shared_ptr<const FrameBase> frame,uint64_t serial,uint64_t epoch) {
         {
             std::lock_guard stateLock(mutex_);
-            if(serial<serial_) return; // computation was superseded while finishing a safe line
+            if(epoch!=epoch_) return; // semantic settings changed while the grid was computing
         }
         {
             std::lock_guard lock(presentationMutex_);
-            // Refinement slices of the same request should not starve display:
-            // let the active presentation finish, while replacing only the
-            // pending frame with the newest grid. New user requests are cancelled
-            // eagerly by submit(), which also clears this pending slot.
-            presentationPending_=PresentationJob{std::move(frame),serial};
+            // Geometry-only motion intentionally does not invalidate an older
+            // completed grid: drawView() can transform that source image into the
+            // current viewport, exactly as classic XaoS keeps showing/refining
+            // frames while the zoom target moves. Keep only the newest pending grid.
+            presentationPending_=PresentationJob{std::move(frame),serial,epoch};
         }
         presentationWake_.notify_one();
     }
@@ -141,8 +141,9 @@ class Canvas final:public QWidget {
                 const auto reconstruction=job.frame->request.settings.reconstruction;
                 const double presentationMs=display->milliseconds;
                 QMetaObject::invokeMethod(this,
-                    [this,image=std::move(image),view,stats,reconstruction,presentationMs,id=job.serial] {
-                        if(id<serial_ || id<shown_) return;
+                    [this,image=std::move(image),view,stats,reconstruction,presentationMs,
+                     id=job.serial,epoch=job.epoch] {
+                        if(epoch!=epoch_ || id<shown_) return;
                         shown_=id;
                         fallback_=image_; fallbackView_=imageView_;
                         image_=image; imageView_=view;
@@ -170,8 +171,8 @@ class Canvas final:public QWidget {
             } catch(const std::exception&e) {
                 if(token->cancelled.load(std::memory_order_relaxed)) continue;
                 const QString message=QString::fromUtf8(e.what());
-                QMetaObject::invokeMethod(this,[this,message,id=job.serial] {
-                    if(id==serial_ && onStatus) onStatus("Presentation error: "+message);
+                QMetaObject::invokeMethod(this,[this,message,id=job.serial,epoch=job.epoch] {
+                    if(epoch==epoch_ && id>=shown_ && onStatus) onStatus("Presentation error: "+message);
                 },Qt::QueuedConnection);
             }
             std::lock_guard lock(presentationMutex_);
@@ -225,7 +226,7 @@ class Canvas final:public QWidget {
                     executor=std::make_unique<QtExecutor>(job.threads);
                 auto frame=renderer.render(job.request,*executor,*token);
                 budget.observe(frame->stats.milliseconds);
-                queuePresentation(frame,job.serial);
+                queuePresentation(frame,job.serial,job.epoch);
                 std::lock_guard lock(mutex_);
                 if(active_==token) active_.reset();
                 // Compute refinement continues immediately; it no longer waits for
@@ -235,8 +236,8 @@ class Canvas final:public QWidget {
                 if(pending_) wake_.notify_one();
             } catch(const std::exception&e) {
                 const QString message=QString::fromUtf8(e.what());
-                QMetaObject::invokeMethod(this,[this,message,id=job.serial] {
-                    if(id==serial_ && onStatus) onStatus("Render error: "+message);
+                QMetaObject::invokeMethod(this,[this,message,id=job.serial,epoch=job.epoch] {
+                    if(epoch==epoch_ && id>=shown_ && onStatus) onStatus("Render error: "+message);
                 },Qt::QueuedConnection);
                 std::lock_guard lock(mutex_);
                 if(active_==token) active_.reset();
@@ -297,7 +298,7 @@ protected:
         p.drawText(12,22,"Hold left/right: zoom   |   Middle drag: pan   |   Wheel: zoom   |   I: more iterations");
     }
     /// Submits a new render request after the canvas size changes.
-    void resizeEvent(QResizeEvent*e) override { QWidget::resizeEvent(e); submit(false); }
+    void resizeEvent(QResizeEvent*e) override { QWidget::resizeEvent(e); submit(false,true); }
     /// Starts zooming or panning in response to a mouse press.
     void mousePressEvent(QMouseEvent*e) override {
         pointer_=e->position();
@@ -370,23 +371,31 @@ public:
         if(coordinator_.joinable()) coordinator_.join();
         if(presenter_.joinable()) presenter_.join();
     }
-    /// Queues the newest render request and cancels obsolete work.
-    void submit(bool interactive=false) {
+    /// Queues the newest request, coalescing viewport motion without starving active refinement.
+    void submit(bool interactive=false,bool invalidate=false) {
         if(width()<1||height()<1) return;
         const double dpr=devicePixelRatioF();
         Request request{view,std::max(1,static_cast<int>(std::ceil(width()*dpr))),
                              std::max(1,static_cast<int>(std::ceil(height()*dpr))),settings};
-        // Never switch to an ideal uniform grid merely because the pointer stopped.
-        // Classic XaoS keeps its DP-selected row/column coordinates and progressively
-        // inserts missing resolution. Forcing uniform here discarded almost every
-        // moved row/column and caused the visible full recomputation after zooming.
         request.settings.uniform=false;
         request.settings.focusX=pointer_.x()/width();request.settings.focusY=pointer_.y()/height();
+
+        uint64_t serial=0,epoch=0;
         {
             std::lock_guard lock(mutex_);
-            if(active_) active_->cancelled.store(true,std::memory_order_relaxed);
-            pending_=Job{std::move(request),threads_,++serial_,interactive};
-            {
+            serial=++serial_;
+            if(invalidate) ++epoch_;
+            epoch=epoch_;
+
+            // Continuous zoom/pan only replaces the pending target. Let the active
+            // bounded slice reach its normal line/time boundary, otherwise a 16 ms
+            // mouse timer can repeatedly kill the very row/column work that should
+            // become the next visible refinement.
+            if(invalidate && active_)
+                active_->cancelled.store(true,std::memory_order_relaxed);
+            pending_=Job{std::move(request),threads_,serial,epoch,interactive};
+
+            if(invalidate) {
                 std::lock_guard presentationLock(presentationMutex_);
                 if(presentationActive_)
                     presentationActive_->cancelled.store(true,std::memory_order_relaxed);
@@ -434,7 +443,7 @@ public:
                 auto bits=readInteger<mp_bitcnt_t>(precision.text());
                 const auto r=jr.text().trimmed().toStdString(),i=ji.text().trimmed().toStdString();
                 Big real=Big::parse(r,View::textBits(r,i,"")),imag=Big::parse(i,View::textBits(r,i,""));
-                view=std::move(next);settings.minimumPrecision=bits;settings.juliaRe=std::move(real);settings.juliaIm=std::move(imag);submit();
+                view=std::move(next);settings.minimumPrecision=bits;settings.juliaRe=std::move(real);settings.juliaIm=std::move(imag);submit(false,true);
             }catch(const std::exception&e){QMessageBox::warning(this,"Invalid view",e.what());}
         }
     }
@@ -458,11 +467,11 @@ public:
         bar->addWidget(new QLabel("  Workers ",bar));auto*threads=new QSpinBox(bar);threads->setRange(1,1024);
         threads->setValue(static_cast<int>(canvas->workerCount()));bar->addWidget(threads);
         auto*coords=bar->addAction("Coordinates / bits");auto*reset=bar->addAction("Reset");
-        connect(formula,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int i){canvas->settings.formula=static_cast<Formula>(i);canvas->submit();});
-        connect(iterations,qOverload<int>(&QSpinBox::valueChanged),this,[this](int n){canvas->settings.iterations=static_cast<uint32_t>(n);canvas->submit();});
+        connect(formula,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int i){canvas->settings.formula=static_cast<Formula>(i);canvas->submit(false,true);});
+        connect(iterations,qOverload<int>(&QSpinBox::valueChanged),this,[this](int n){canvas->settings.iterations=static_cast<uint32_t>(n);canvas->submit(false,true);});
         connect(states,&QCheckBox::toggled,this,[this](bool b){canvas->settings.saveState=b;canvas->submit();});
         connect(reconstruction,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int i){
-            canvas->settings.reconstruction=static_cast<Reconstruction>(i);canvas->submit();
+            canvas->settings.reconstruction=static_cast<Reconstruction>(i);canvas->submit(false,true);
         });
         connect(threads,qOverload<int>(&QSpinBox::valueChanged),this,[this](int n){canvas->setThreads(static_cast<size_t>(n));});
         connect(coords,&QAction::triggered,canvas,&Canvas::coordinates);connect(reset,&QAction::triggered,canvas,&Canvas::reset);
@@ -488,7 +497,7 @@ int main(int argc,char**argv) {
     if(smoke) {
         QTimer::singleShot(200,&window,[&]{window.canvas->view.zoom(.4,.6,.97,std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));window.canvas->submit(true);});
         QTimer::singleShot(400,&window,[&]{window.iterations->setValue(128);});
-        QTimer::singleShot(600,&window,[&]{window.canvas->settings.minimumPrecision=128;window.canvas->submit();});
+        QTimer::singleShot(600,&window,[&]{window.canvas->settings.minimumPrecision=128;window.canvas->submit(false,true);});
         QTimer::singleShot(1200,&window,[&]{window.canvas->settings.saveState=false;window.canvas->submit();});
         QTimer::singleShot(3000,&window,[&]{app.exit(window.canvas->completedFrames?0:2);});
     }
