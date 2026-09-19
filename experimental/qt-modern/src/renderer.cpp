@@ -405,11 +405,45 @@ bool bicubicColor(const FrameBase&frame,const CubicPoint&x,const CubicPoint&y,
     return true;
 }
 
+std::vector<int> reprojectAxis(const Big&newCenter,const Big&newStep,int newSize,
+                               const Big&oldCenter,const Big&oldStep,int oldSize) {
+    std::vector<int> source(static_cast<size_t>(newSize),0);
+    if(newSize<1 || oldSize<1) return source;
+    const Big newFirst=add(sub(newCenter,scale(newStep,static_cast<double>(newSize)*.5)),
+                           scale(newStep,.5));
+    const Big oldFirst=add(sub(oldCenter,scale(oldStep,static_cast<double>(oldSize)*.5)),
+                           scale(oldStep,.5));
+    for(int i=0;i<newSize;++i) {
+        const Big coordinate=add(newFirst,scale(newStep,static_cast<double>(i)));
+        const double p=div(sub(coordinate,oldFirst),oldStep).toDouble();
+        long nearest=std::isfinite(p)?std::lround(p):0;
+        nearest=std::clamp(nearest,0L,static_cast<long>(oldSize-1));
+        source[static_cast<size_t>(i)]=static_cast<int>(nearest);
+    }
+    return source;
+}
+
+void seedPreviousDisplay(FrameBase&frame,const FrameBase*old,const Big&step) {
+    frame.displayPixels.assign(frame.samplePixels.size(),0u);
+    if(!old || old->displayPixels.empty() || old->request.width<1 || old->request.height<1)
+        return;
+    const Big oldStep=divide(old->request.view.span.atPrecision(
+        std::max(frame.stats.bits,old->request.view.span.precision())),
+        static_cast<unsigned long>(old->request.width));
+    const auto sx=reprojectAxis(frame.request.view.re,step,frame.request.width,
+                                old->request.view.re,oldStep,old->request.width);
+    const auto sy=reprojectAxis(frame.request.view.im,step,frame.request.height,
+                                old->request.view.im,oldStep,old->request.height);
+    for(int y=0;y<frame.request.height;++y) for(int x=0;x<frame.request.width;++x)
+        frame.displayPixels[frame.index(x,y)]=
+            old->displayAt(sx[static_cast<size_t>(x)],sy[static_cast<size_t>(y)]);
+}
+
 void postprocess(FrameBase&frame,const Big&step,const std::vector<uint8_t>&rowReady,
-                 const std::vector<uint8_t>&colReady) {
+                 const std::vector<uint8_t>&colReady,const FrameBase*old) {
     const AxisSupport xaxis=buildAxisSupport(frame.xs,colReady,step);
     const AxisSupport yaxis=buildAxisSupport(frame.ys,rowReady,step);
-    frame.displayPixels.assign(frame.samplePixels.size(),0u);
+    seedPreviousDisplay(frame,old,step);
     if(xaxis.index.empty() || yaxis.index.empty()) return;
 
     const auto nearestX=classicColumnSources(frame.xs,colReady,step);
@@ -455,7 +489,7 @@ void postprocess(FrameBase&frame,const Big&step,const std::vector<uint8_t>&rowRe
                              nearestY[static_cast<size_t>(y)],color);
             break;
         }
-        frame.displayPixels[frame.index(x,y)]=ok?color:0u;
+        if(ok) frame.displayPixels[frame.index(x,y)]=color;
     }
 }
 
@@ -582,7 +616,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         for(size_t i=0;i<executor.concurrency();++i) bigScratch.push_back(std::make_unique<BigKernel<F>>(bits));
     }
 
-    auto calculateList=[&](const std::vector<size_t>&list) {
+    auto calculateList=[&](const std::vector<size_t>&list,const Cancellation&calculationStop) {
         if(list.empty()) return;
         std::atomic<size_t> next{0};
         executor.run([&](size_t worker) {
@@ -590,11 +624,11 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
             if constexpr(big) {
                 auto&scratch=*bigScratch.at(worker);
                 constexpr size_t chunk=8;
-                while(!workStop.requested()) {
+                while(!calculationStop.requested()) {
                     const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
                     if(first>=list.size()) break;
                     const size_t last=std::min(first+chunk,list.size());
-                    for(size_t k=first;k<last && !workStop.requested();++k) {
+                    for(size_t k=first;k<last && !calculationStop.requested();++k) {
                         const size_t index=list[k];
                         const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
                         const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
@@ -608,7 +642,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         if constexpr(Save) saved=f->state.orbit[index].get();
                         const uint32_t start=saved?before.iterations:0;
                         Count result=scratch.run(f->xs[static_cast<size_t>(x)],f->ys[static_cast<size_t>(y)],
-                            r.settings.juliaRe,r.settings.juliaIm,before,saved,r.settings.iterations,workStop,Save,r.settings.analytic);
+                            r.settings.juliaRe,r.settings.juliaIm,before,saved,r.settings.iterations,calculationStop,Save,r.settings.analytic);
                         stat.steps+=result.iterations-start;
                         if(saved && start) ++stat.resumed; else ++stat.started;
                         if(!Save && result.status==Status::Pending && result.iterations<before.iterations) continue;
@@ -629,12 +663,12 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 std::array<size_t,4> indexes{};
                 std::array<uint32_t,4> starts{};
                 const size_t chunk=list.size()>512?64:4;
-                while(!workStop.requested()) {
+                while(!calculationStop.requested()) {
                     const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
                     if(first>=list.size()) break;
                     const size_t last=std::min(first+chunk,list.size());
                     size_t k=first;
-                    while(k<last && !workStop.requested()) {
+                    while(k<last && !calculationStop.requested()) {
                         size_t used=0;
                         while(used<4 && k<last) {
                             const size_t index=list[k++];
@@ -657,7 +691,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             ++used;
                         }
                         if(!used) continue;
-                        iterateFour(lanes,used,r.settings.iterations,workStop,Save,F::ship,r.settings.simd);
+                        iterateFour(lanes,used,r.settings.iterations,calculationStop,Save,F::ship,r.settings.simd);
                         for(size_t j=0;j<used;++j) {
                             const size_t index=indexes[j]; auto&l=lanes[j];
                             stat.steps+=l.count.iterations-starts[j];
@@ -674,6 +708,12 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
             }
         });
     };
+
+    // Classic XaoS observes the frame deadline between complete line operations.
+    // Once a row/column starts, do not let the time slice cut it in half. New user
+    // input may still cancel through the parent token; an incomplete cancelled line
+    // is never promoted to rowReady/colReady.
+    Cancellation lineStop; lineStop.parent=&stop;
 
     std::vector<uint8_t> rowReady(static_cast<size_t>(r.height),1),colReady(static_cast<size_t>(r.width),1);
     bool hasNewLines=false;
@@ -725,25 +765,36 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     auto rasterRefine=[&]() {
         const int range=std::clamp(static_cast<int>(r.settings.solidGuessRange)*2,1,16);
         const auto rowOrder=interlacedOrder(r.height,range);
-        std::vector<size_t> list;
-        list.reserve(static_cast<size_t>(r.width)*static_cast<size_t>(r.height));
-        for(int y:rowOrder) for(int x=0;x<r.width;++x) {
-            const size_t index=f->index(x,y);
-            if(!f->counts[index].known(r.settings.iterations)) list.push_back(index);
-            else if(f->sampleQuality[index]!=static_cast<uint8_t>(DisplayQuality::Exact)) {
-                f->samplePixels[index]=pixelColor(f->counts[index],r.settings.iterations);
-                f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+        std::vector<size_t> row;
+        row.reserve(static_cast<size_t>(r.width));
+        for(int y:rowOrder) {
+            if(workStop.requested()) break;
+            row.clear();
+            for(int x=0;x<r.width;++x) {
+                const size_t index=f->index(x,y);
+                if(!f->counts[index].known(r.settings.iterations)) row.push_back(index);
+                else if(f->sampleQuality[index]!=static_cast<uint8_t>(DisplayQuality::Exact)) {
+                    f->samplePixels[index]=pixelColor(f->counts[index],r.settings.iterations);
+                    f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                }
             }
-        }
-        calculateList(list);
-        // A completed raster row/column can act as an exact source for the same
-        // nearest-line timeout fill used by the classic renderer.
-        for(int y=0;y<r.height;++y) {
-            bool ready=true;for(int x=0;x<r.width;++x) if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) {ready=false;break;}
+            calculateList(row,lineStop);
+            bool ready=true;
+            for(int x=0;x<r.width;++x)
+                if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) {
+                    ready=false;break;
+                }
             if(ready) rowReady[static_cast<size_t>(y)]=1;
+            if(stop.requested()) break;
         }
+        // Columns become usable only when every currently reusable/calculated row
+        // has a sample at that coordinate.
         for(int x=0;x<r.width;++x) {
-            bool ready=true;for(int y=0;y<r.height;++y) if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) {ready=false;break;}
+            bool ready=true;
+            for(int y=0;y<r.height;++y) if(rowReady[static_cast<size_t>(y)] &&
+                f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) {
+                ready=false;break;
+            }
             if(ready) colReady[static_cast<size_t>(x)]=1;
         }
     };
@@ -786,7 +837,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     const size_t index=f->index(positions[j],y);
                     if(!f->counts[index].known(r.settings.iterations)) anchors.push_back(index);
                 }
-                calculateList(anchors);
+                calculateList(anchors,lineStop);
                 for(int x:positions) {
                     const size_t index=f->index(x,y);
                     if(f->counts[index].known(r.settings.iterations)) {
@@ -801,7 +852,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         } else calculate.push_back(index);
                     }
                 }
-                calculateList(calculate);
+                calculateList(calculate,lineStop);
                 for(int x:positions) if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) { visuallyComplete=false;break; }
                 if(visuallyComplete) rowReady[static_cast<size_t>(y)]=1;
             } else {
@@ -813,7 +864,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     const size_t index=f->index(x,positions[j]);
                     if(!f->counts[index].known(r.settings.iterations)) anchors.push_back(index);
                 }
-                calculateList(anchors);
+                calculateList(anchors,lineStop);
                 for(int y:positions) {
                     const size_t index=f->index(x,y);
                     if(f->counts[index].known(r.settings.iterations)) {
@@ -828,7 +879,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         } else calculate.push_back(index);
                     }
                 }
-                calculateList(calculate);
+                calculateList(calculate,lineStop);
                 for(int y:positions) if(f->sampleQuality[f->index(x,y)]==static_cast<uint8_t>(DisplayQuality::Missing)) { visuallyComplete=false;break; }
                 if(visuallyComplete) colReady[static_cast<size_t>(x)]=1;
             }
@@ -898,7 +949,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     f->stats.complete=r.settings.sliceMilliseconds?visualPending==0:f->stats.pending==0;
     if(!f->previewXs.empty() || !f->previewYs.empty())
         f->stats.uniform=f->stats.uniform && f->previewXs==f->xs && f->previewYs==f->ys;
-    postprocess(*f,step,rowReady,colReady);
+    postprocess(*f,step,rowReady,colReady,old);
     f->stats.milliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
     return f;
 }
