@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "xaos/kernel.hpp"
+#include <algorithm>
 #if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
 #define XAOS_X86_AVX2 1
 #include <immintrin.h>
