@@ -87,6 +87,11 @@ template<size_t N> struct Fixed {
         mpz_t integer;mpz_init(integer);mpz_set_f(integer,scaled.get());
         const bool negative=mpz_sgn(integer)<0;
         if(negative) mpz_neg(integer,integer);
+        const size_t usedBits=mpz_sgn(integer)?mpz_sizeinbase(integer,2):0;
+        if(usedBits>=N*64) {
+            mpz_clear(integer);
+            throw std::overflow_error("fixed-point range exceeded");
+        }
         Fixed r;size_t count=0;
         mpz_export(r.limb.data(),&count,-1,sizeof(uint64_t),0,0,integer);
         mpz_clear(integer);
