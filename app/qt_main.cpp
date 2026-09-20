@@ -126,6 +126,7 @@ class Canvas final:public QWidget {
     bool dragging_=false;
     bool mobileUi_=false;
     bool initialSubmitted_=false;
+    int submittedPixelWidth_=0,submittedPixelHeight_=0;
     bool nativeGestureActive_=false,gestureChanged_=false;
     enum class TouchMode { None, Pan, Pinch };
     TouchMode touchMode_=TouchMode::None;
@@ -138,8 +139,11 @@ class Canvas final:public QWidget {
     bool touchAfterPinchSingle_=false,touchStoppedMotion_=false,touchRotationActive_=false;
 #ifdef Q_OS_ANDROID
     QTiltSensor tiltSensor_;
+    QPointF tiltSteeringFiltered_;
     bool tiltSteeringAvailable_=false,tiltSteeringEnabled_=true;
     bool tiltSteeringFlight_=false,tiltSteeringInverted_=false;
+    bool tiltSteeringSuspended_=false;
+    uint64_t tiltCalibrationSerial_=0;
 #endif
     QElapsedTimer lastTapClock_;
     size_t threads_=std::max<size_t>(1,defaultWorkerCount()-presentationWorkerCount());
@@ -152,6 +156,8 @@ class Canvas final:public QWidget {
         touchRotationVelocity_=0;
 #ifdef Q_OS_ANDROID
         tiltSteeringFlight_=false;
+        tiltSteeringFiltered_=QPointF{};
+        tiltSteeringSuspended_=false;
 #endif
         if(was && refine) submit(false);
         return was;
@@ -187,7 +193,11 @@ class Canvas final:public QWidget {
         // panning flight begins. Zoom velocity remains independent of tilt.
         tiltSteeringFlight_=tiltSteeringEnabled_ && tiltSteeringAvailable_ &&
             std::hypot(touchPanVelocity_.x(),touchPanVelocity_.y())>12.0;
-        if(tiltSteeringFlight_) tiltSensor_.calibrate();
+        if(tiltSteeringFlight_) {
+            tiltSteeringFiltered_=QPointF{};
+            tiltSteeringSuspended_=false;
+            tiltSensor_.calibrate();
+        }
 #endif
         touchMomentumClock_.restart();
         touchMomentum_.start();
@@ -196,31 +206,41 @@ class Canvas final:public QWidget {
     /// Steers Frax-style free motion from relative phone tilt without changing zoom.
     void applyTiltSteering(double seconds) {
 #ifdef Q_OS_ANDROID
-        if(!tiltSteeringFlight_ || !tiltSteeringEnabled_ || !tiltSteeringAvailable_)
+        if(!tiltSteeringFlight_ || !tiltSteeringEnabled_ || !tiltSteeringAvailable_ ||
+           tiltSteeringSuspended_)
             return;
         const auto*reading=tiltSensor_.reading();
         if(!reading) return;
         auto dead=[](double degrees) {
-            constexpr double zone=.8;
+            constexpr double zone=1.5;
             const double magnitude=std::abs(degrees);
-            return magnitude<=zone?0.0:std::copysign(magnitude-zone,degrees);
+            const double active=magnitude<=zone?0.0:magnitude-zone;
+            return std::copysign(std::min(active,12.0),degrees);
         };
-        double tx=dead(reading->xRotation());
-        double ty=dead(reading->yRotation());
-        if(tiltSteeringInverted_) {tx=-tx;ty=-ty;}
+        const double pitch=dead(reading->xRotation());
+        const double roll=dead(reading->yRotation());
 
-        // A few degrees should be enough to stop/reverse an ordinary throw.
-        // Preserve the last zoom velocity exactly, as Frax Motion does.
-        constexpr double panAcceleration=300.0; // logical pixels/s^2 per degree
-        touchPanVelocity_+=QPointF(-tx,ty)*(panAcceleration*seconds);
+        // AutomaticOrientation already expresses the reading in current screen
+        // axes. Rotation about screen X is pitch (vertical steering); rotation
+        // about screen Y is roll (horizontal steering). The old mapping used X
+        // horizontally and Y vertically, which became especially confusing in
+        // landscape orientation.
+        QPointF target(roll,pitch);
+        if(tiltSteeringInverted_) target=-target;
+
+        // Smooth sensor jitter and make tilt an assist to a thrown pan, not a
+        // high-gain joystick. Five degrees now changes velocity by roughly
+        // 450 logical px/s over one second instead of ~1500.
+        constexpr double filterMix=.18;
+        tiltSteeringFiltered_=tiltSteeringFiltered_*(1.0-filterMix)+target*filterMix;
+        constexpr double panAcceleration=90.0; // logical pixels/s^2 per degree
+        touchPanVelocity_+=tiltSteeringFiltered_*(panAcceleration*seconds);
         const double speed=std::hypot(touchPanVelocity_.x(),touchPanVelocity_.y());
-        if(speed>5000.0) touchPanVelocity_*=5000.0/speed;
+        if(speed>3000.0) touchPanVelocity_*=3000.0/speed;
 
-        // Tilt also steers an already-spinning flight, but never creates rotation
-        // from a pure pan. This avoids accidental grid invalidation.
-        if(std::abs(touchRotationVelocity_)>.018)
-            touchRotationVelocity_=std::clamp(
-                touchRotationVelocity_-tx*.02*seconds,-6.0,6.0);
+        // Phone tilt only steers translation. Coupling roll into spin made a
+        // straight thrown pan unexpectedly rotate and invalidated the reusable
+        // row/column grid.
 #else
         (void)seconds;
 #endif
@@ -570,15 +590,32 @@ protected:
             pointer_.setX(pointer_.x()*widthRatio);
             pointer_.setY(pointer_.y()*static_cast<double>(height())/old.height());
 
-            // On phones a portrait/landscape rotation should preserve fractal
-            // scale, not preserve horizontal field of view. Keeping span/width
-            // constant leaves the overlapping old/new viewport on the same
-            // row/column lattice, so exact samples survive the orientation change.
-            if(mobileUi_ && publishedFrames>0)
-                view.span=scale(view.span,widthRatio);
+            if(mobileUi_ && submittedPixelWidth_>0 && submittedPixelHeight_>0) {
+                const double dpr=devicePixelRatioF();
+                const int pixelWidth=std::max(1,static_cast<int>(std::ceil(width()*dpr)));
+                const int pixelHeight=std::max(1,static_cast<int>(std::ceil(height()*dpr)));
+                // Preserve both physical pixel scale and the half-pixel lattice
+                // phase. Without the parity correction an odd<->even orientation
+                // change can make every old row/column miss the new grid.
+                view.resizePreservingPixelGrid(
+                    submittedPixelWidth_,submittedPixelHeight_,pixelWidth,pixelHeight);
+            }
         }
 #ifdef Q_OS_ANDROID
-        if(tiltSteeringFlight_) tiltSensor_.calibrate();
+        if(tiltSteeringFlight_) {
+            // Automatic sensor-axis orientation may update just after the Qt
+            // resize. Suspend steering briefly so the transition cannot inject a
+            // large sideways kick, then calibrate in the settled screen axes.
+            tiltSteeringFiltered_=QPointF{};
+            tiltSteeringSuspended_=true;
+            const uint64_t serial=++tiltCalibrationSerial_;
+            QTimer::singleShot(120,this,[this,serial] {
+                if(serial!=tiltCalibrationSerial_) return;
+                if(tiltSteeringFlight_) tiltSensor_.calibrate();
+                tiltSteeringFiltered_=QPointF{};
+                tiltSteeringSuspended_=false;
+            });
+        }
 #endif
         // Before showEvent there is intentionally no work. Afterwards even
         // a resize that arrives before frame 1 is published must replace the
@@ -1148,8 +1185,11 @@ public:
     void submit(bool interactive=false,bool invalidate=false) {
         if(width()<1||height()<1) return;
         const double dpr=devicePixelRatioF();
-        Request request{view,std::max(1,static_cast<int>(std::ceil(width()*dpr))),
-                             std::max(1,static_cast<int>(std::ceil(height()*dpr))),settings};
+        const int pixelWidth=std::max(1,static_cast<int>(std::ceil(width()*dpr)));
+        const int pixelHeight=std::max(1,static_cast<int>(std::ceil(height()*dpr)));
+        Request request{view,pixelWidth,pixelHeight,settings};
+        submittedPixelWidth_=pixelWidth;
+        submittedPixelHeight_=pixelHeight;
         request.settings.uniform=false;
         request.settings.focusX=pointer_.x()/width();request.settings.focusY=pointer_.y()/height();
 
@@ -1325,7 +1365,11 @@ public:
     void setTiltSteering(bool enabled) {
 #ifdef Q_OS_ANDROID
         tiltSteeringEnabled_=enabled;
-        if(!enabled) tiltSteeringFlight_=false;
+        if(!enabled) {
+            tiltSteeringFlight_=false;
+            tiltSteeringFiltered_=QPointF{};
+            tiltSteeringSuspended_=false;
+        }
         if(onStatus) onStatus(enabled?"Tilt steering on":"Tilt steering off");
 #else
         (void)enabled;
