@@ -1558,6 +1558,8 @@ int main(int argc,char**argv) {
         QTimer::singleShot(1400,&window,[&window]{window.canvas->settings.minimumPrecision=128;window.canvas->submit(false,true);});
         QTimer::singleShot(1900,&window,[&window]{window.canvas->settings.saveState=false;window.canvas->submit();});
         QTimer::singleShot(2400,&window,[&window]{window.canvas->setAutopilot(true);});
+        QTimer::singleShot(2700,&window,[&window]{window.canvas->setPaletteCycling(1);});
+        QTimer::singleShot(3200,&window,[&window]{window.canvas->setPaletteCycling(0);});
         QTimer::singleShot(3300,&window,[&window]{window.canvas->setAutopilot(false);});
         QTimer::singleShot(4500,&window,[&window,&app,state]{
             const bool ok=window.canvas->completedFrames && state->publishedDuringMotion;
