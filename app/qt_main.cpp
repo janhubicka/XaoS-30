@@ -1306,6 +1306,7 @@ class Window final:public QMainWindow {
         // WA_AcceptTouchEvents ancestor), and Canvas consumes it as a pan/tap.
         mobileBadge_=new QLabel(this);
         mobileBadge_->setAttribute(Qt::WA_StyledBackground,true);
+        mobileBadge_->setAttribute(Qt::WA_TransparentForMouseEvents,true);
         mobileBadge_->setStyleSheet(
             "QLabel{color:white;background:rgba(8,10,16,190);"
             "border:1px solid rgba(255,255,255,36);border-radius:16px;"
