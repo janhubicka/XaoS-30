@@ -704,7 +704,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     // Presentation reuse follows the collapsed preview coordinate
                     // tables, as the old image mover did.  If that visual sample is
                     // not also our true sample coordinate, downgrade it to Fill.
-                    if(gridOld && !coloringChanged && r.settings.sliceMilliseconds &&
+                    if(gridOld && r.settings.sliceMilliseconds &&
                        psx>=0 && psy>=0 &&
                        gridOld->request.settings.iterations==r.settings.iterations) {
                         // Timeout fill is stored as row/column source maps rather
@@ -1167,7 +1167,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                 const size_t index=list[k++];
                                 Count before=f->counts[index];
                                 if(before.known(r.settings.iterations)) {
-                                    f->samplePixels[index]=colorForIndex(index);
+                                    f->setSampleIterationCode(index,previewIterationCode(f->counts[index],r.settings.iterations));
                                     f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                                     continue;
                                 }
@@ -1196,7 +1196,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                 rememberOrbitColor(index,lane.x,lane.y);
                                 if constexpr(Save) state->store(index,lane);
                                 if(lane.count.known(r.settings.iterations)) {
-                                    f->samplePixels[index]=colorForIndex(index);
+                                    f->setSampleIterationCode(index,previewIterationCode(f->counts[index],r.settings.iterations));
                                     f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                                 }
                             }
@@ -1258,7 +1258,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                 const size_t index=list[k++];
                                 Count before=f->counts[index];
                                 if(before.known(r.settings.iterations)) {
-                                    f->samplePixels[index]=colorForIndex(index);
+                                    f->setSampleIterationCode(index,previewIterationCode(f->counts[index],r.settings.iterations));
                                     f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                                     continue;
                                 }
@@ -1290,7 +1290,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                 rememberOrbitColor(index,lane.x,lane.y);
                                 if constexpr(Save) state->store(index,lane);
                                 if(lane.count.known(r.settings.iterations)) {
-                                    f->samplePixels[index]=colorForIndex(index);
+                                    f->setSampleIterationCode(index,previewIterationCode(f->counts[index],r.settings.iterations));
                                     f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                                 }
                             }
@@ -1494,7 +1494,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 for(int x:positions) {
                     const size_t index=f->index(x,y);
                     if(f->counts[index].known(r.settings.iterations)) {
-                        f->samplePixels[index]=colorForIndex(index);
+                        f->setSampleIterationCode(index,previewIterationCode(f->counts[index],r.settings.iterations));
                         f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                     } else {
                         uint32_t guessed=0;
@@ -1524,7 +1524,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 for(int y:positions) {
                     const size_t index=f->index(x,y);
                     if(f->counts[index].known(r.settings.iterations)) {
-                        f->samplePixels[index]=colorForIndex(index);
+                        f->setSampleIterationCode(index,previewIterationCode(f->counts[index],r.settings.iterations));
                         f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                     } else {
                         uint32_t guessed=0;
@@ -1555,7 +1555,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         // apparent full recomputation after zooming stopped.  Exact/unbounded
         // requests, explicit uniform-grid requests, and iteration-limit changes do
         // require mathematical refinement.
-        if(!r.settings.sliceMilliseconds || r.settings.uniform || !sameIteration || coloringChanged)
+        if(!r.settings.sliceMilliseconds || r.settings.uniform || !sameIteration)
             rasterRefine();
     }
 
