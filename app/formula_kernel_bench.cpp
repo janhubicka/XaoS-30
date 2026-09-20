@@ -149,7 +149,6 @@ int main(int argc,char**argv) {
     benchMultiplication<Formula::Phoenix>(count,limit);
     benchMultiplication<Formula::Manowar>(count,limit);
     benchMultiplication<Formula::Spider>(count,limit);
-    benchMultiplication<Formula::Sierpinski>(count,limit);
     benchMultiplication<Formula::Beryl>(count,limit);
 
     benchDivision<Formula::Newton>(count,limit);
