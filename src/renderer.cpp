@@ -55,8 +55,11 @@ QuadraticBackend backendFromName(std::string_view name) noexcept {
 }
 /// Estimates memory consumed by one frame and optional saved orbit state.
 size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state,unsigned stateScalars,
+                uint32_t iterationLimit,
                 QuadraticBackend backend=QuadraticBackend::GMP) {
-    size_t each=sizeof(Count)+sizeof(uint32_t)+sizeof(uint8_t)+2*sizeof(float);
+    const size_t previewBytes=iterationLimit<std::numeric_limits<uint16_t>::max()
+        ? sizeof(uint16_t) : sizeof(uint32_t);
+    size_t each=sizeof(Count)+previewBytes+sizeof(uint8_t)+2*sizeof(float);
     if(state) {
         if(big && backend!=QuadraticBackend::GMP) {
             switch(backend) {
@@ -542,12 +545,14 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     const size_t pixels=multiplyChecked(static_cast<size_t>(f->stride),static_cast<size_t>(r.height));
     const bool big=std::is_same_v<Real,Big>;
     const unsigned stateScalars=formulaStateScalars(r.settings.formula);
-    size_t bytes=estimate(pixels,bits,big,Save,stateScalars,quadraticBackend);
+    size_t bytes=estimate(pixels,bits,big,Save,stateScalars,
+                          r.settings.iterations,quadraticBackend);
     auto addPreviousBytes=[&](const std::shared_ptr<const FrameBase>&previous) {
         if(previous) bytes=plusChecked(bytes,estimate(
             previous->counts.size(),previous->stats.bits,
             previous->stats.backend!="double",previous->request.settings.saveState,
             formulaStateScalars(previous->request.settings.formula),
+            previous->request.settings.iterations,
             backendFromName(previous->stats.backend)));
     };
     addPreviousBytes(statePrevious);
@@ -610,7 +615,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
          (big && quadraticBackend==QuadraticBackend::DoubleDouble && hasDoubleDoubleSIMD()));
     f->counts.resize(pixels); f->state.resize(pixels,stateScalars,quadraticBackend);
     f->colorRe.assign(pixels,0.0f);f->colorIm.assign(pixels,0.0f);
-    f->samplePixels.assign(pixels,0xff000000u);
+    f->resizeSampleIterations(pixels,r.settings.iterations);
     f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
 
     const double rotationCos=std::cos(r.view.rotation);
