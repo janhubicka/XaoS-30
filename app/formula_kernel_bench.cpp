@@ -120,6 +120,53 @@ void benchFormula(size_t count,uint32_t limit,unsigned fastBits,const char*fastN
 }
 
 template<Formula Value>
+void benchPowerNative(size_t count,uint32_t limit) {
+    using F=FormulaTag<Value>;
+    static_assert(F::powerFormula);
+    const auto samples=makeSamples(Value,count,128);
+    std::vector<std::pair<double,double>> points;
+    points.reserve(samples.size());
+    for(const auto&s:samples) points.emplace_back(s.re.toDouble(),s.im.toDouble());
+
+    uint64_t scalarSteps=0;
+    const double scalarSeconds=timed([&] {
+        Cancellation stop;uint64_t total=0;
+        for(const auto&[re,im]:points) {
+            std::array<Lane,4> lanes{};
+            lanes[0]=preparePowerLane<F>(re,im,{},nullptr);
+            iteratePowerFour(lanes,1,limit,F::power,stop,false,false);
+            total+=lanes[0].count.iterations;
+            sink+=(lanes[0].x+lanes[0].y)*1e-300;
+        }
+        return total;
+    },scalarSteps);
+    std::cout<<formulaInfo(Value).shortName<<",native-scalar,53,"
+             <<std::fixed<<std::setprecision(6)<<scalarSeconds<<','<<scalarSteps<<','
+             <<std::setprecision(2)<<(scalarSteps/1e6/scalarSeconds)<<'\n';
+
+    uint64_t simdSteps=0;
+    const double simdSeconds=timed([&] {
+        Cancellation stop;uint64_t total=0;
+        for(size_t first=0;first<points.size();first+=4) {
+            std::array<Lane,4> lanes{};
+            const size_t valid=std::min<size_t>(4,points.size()-first);
+            for(size_t lane=0;lane<valid;++lane)
+                lanes[lane]=preparePowerLane<F>(points[first+lane].first,
+                                               points[first+lane].second,{},nullptr);
+            iteratePowerFour(lanes,valid,limit,F::power,stop,false,true);
+            for(size_t lane=0;lane<valid;++lane) {
+                total+=lanes[lane].count.iterations;
+                sink+=(lanes[lane].x+lanes[lane].y)*1e-300;
+            }
+        }
+        return total;
+    },simdSteps);
+    std::cout<<formulaInfo(Value).shortName<<",native-simd,53,"
+             <<std::fixed<<std::setprecision(6)<<simdSeconds<<','<<simdSteps<<','
+             <<std::setprecision(2)<<(simdSteps/1e6/simdSeconds)<<'\n';
+}
+
+template<Formula Value>
 void benchMultiplication(size_t count,uint32_t limit) {
     using F=FormulaTag<Value>;
     static_assert(F::generic && !F::needsDivision);
@@ -140,6 +187,9 @@ int main(int argc,char**argv) {
     if(argc>2) limit=static_cast<uint32_t>(std::stoul(argv[2]));
     std::cout<<"formula,backend,bits,seconds,steps,million_steps_per_second\n";
 
+    benchPowerNative<Formula::Mandelbrot3>(count,limit);
+    benchPowerNative<Formula::Mandelbrot5>(count,limit);
+    benchPowerNative<Formula::Mandelbrot9>(count,limit);
     benchMultiplication<Formula::Mandelbrot3>(count,limit);
     benchMultiplication<Formula::Mandelbrot9>(count,limit);
     benchMultiplication<Formula::Barnsley1>(count,limit);
