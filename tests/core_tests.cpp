@@ -585,29 +585,19 @@ void fastPrecisionTests() {
         }
     }
 
-    // At a depth where native doubles cannot distinguish adjacent coordinates,
-    // the DD backend must still agree with a forced-GMP render. Under fast-math
-    // reassociation its compensated low word used to collapse and this became
-    // visible as coarse/pixelated blocks before the next precision tier.
+    // The compensated low word must survive arithmetic even though callers are
+    // compiled with fast-math. A reassociated renormalization can otherwise turn
+    // the nominal 106-bit backend into ordinary double precision.
     {
-        Request r;
-        r.width=24;r.height=16;
-        r.view=View::parse("-0.743643887037151","0.13182590420533","1e-18",r.width);
-        r.settings.minimumPrecision=0;
-        r.settings.iterations=600;
-        r.settings.analytic=false;
-        r.settings.uniform=true;
-        r.settings.solidGuessRange=0;
-        Renderer fast;
-        auto dd=fast.render(r,many,stop);
-        if(dd->stats.backend=="double-double") {
-            Request exact=r;
-            exact.settings.fastPrecision=false;
-            Renderer gmp;
-            auto reference=gmp.render(exact,one,stop);
-            CHECK(reference->stats.backend=="GMP");
-            samePixelCounts(*dd,*reference);
-        }
+        const double e=std::ldexp(1.0,-60);
+        const auto sum=DoubleDouble{1.0,e}+DoubleDouble{0.0,e*.5};
+        CHECK(sum.hi==1.0);
+        CHECK(sum.lo>e);
+        CHECK(sum.lo<2.0*e);
+        const auto product=DoubleDouble{1.0,e}*DoubleDouble{1.0,-e};
+        CHECK(product.hi==1.0);
+        CHECK(product.lo<0.0);
+        CHECK(std::abs(product.lo+e*e)<e*e*.01);
     }
 
     // Precision above the fixed-size range must transparently fall back to GMP.
