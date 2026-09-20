@@ -1035,6 +1035,48 @@ void previewTests() {
     auto increased=renderer.render(r,pool,stop);
     Renderer fresh; auto expected=fresh.render(r,pool,stop);
     sameCounts(*increased,*expected);
+
+    // A guess stores the iteration code plus one neighbour's final z. That is
+    // sufficient for classic Iter/Black, but not for metadata-sensitive
+    // incoloring. Switching modes must discard old guesses rather than paint
+    // copied-neighbour z values as block artifacts.
+    {
+        Request inside;inside.width=128;inside.height=80;
+        inside.settings.iterations=600;inside.settings.analytic=true;
+        inside.view=View::parse("0","0","0.02",inside.width);
+        Renderer rr;
+        auto exactInside=rr.render(inside,pool,stop);CHECK(exactInside->stats.complete);
+        inside.view.zoom(.41,.59,.985,inside.width,inside.height);
+        inside.settings.sliceMilliseconds=120;
+        auto guessed=rr.render(inside,pool,stop);
+        CHECK(guessed->stats.solidGuessed>0);
+
+        inside.settings.inColoring=InColoring::ZMag;
+        auto zmag=rr.render(inside,pool,stop);
+        CHECK(zmag->stats.solidGuessed==0);
+        CHECK(std::none_of(zmag->sampleQuality.begin(),zmag->sampleQuality.end(),
+            [](uint8_t q){return q==static_cast<uint8_t>(DisplayQuality::Guess);}));
+    }
+
+    // The same applies outside: Smooth and the decomposition modes use final z,
+    // so iteration-only solid guessing must be disabled for them.
+    {
+        Request outside;outside.width=128;outside.height=80;
+        outside.settings.iterations=120;outside.settings.analytic=false;
+        outside.view=View::parse("2","0","0.12",outside.width);
+        Renderer rr;
+        auto exactOutside=rr.render(outside,pool,stop);CHECK(exactOutside->stats.complete);
+        outside.view.zoom(.44,.56,.982,outside.width,outside.height);
+        outside.settings.sliceMilliseconds=120;
+        auto guessed=rr.render(outside,pool,stop);
+        CHECK(guessed->stats.solidGuessed>0);
+
+        outside.settings.outColoring=OutColoring::Smooth;
+        auto smooth=rr.render(outside,pool,stop);
+        CHECK(smooth->stats.solidGuessed==0);
+        CHECK(std::none_of(smooth->sampleQuality.begin(),smooth->sampleQuality.end(),
+            [](uint8_t q){return q==static_cast<uint8_t>(DisplayQuality::Guess);}));
+    }
 }
 
 
@@ -1232,6 +1274,23 @@ void rapidZoomDisplayTests() {
     }
     CHECK(shown->at(0,0)!=0u);
     CHECK(shown->at(r.width-1,r.height-1)!=0u);
+
+    // Pure pan is classified as neutral by the old zoom-direction heuristic.
+    // The newly exposed edge still has to be computed before the bounded slice
+    // expires; otherwise a large nearest-filled block remains stuck to the edge.
+    r.view.pan(28,0,r.width);
+    frame=renderer.render(r,pool,go);
+    shown=presentFrame(*frame,pool,go,shown.get());
+    CHECK(fullyVisible(*shown));
+    CHECK(frame->displayXSource.front()==0);
+    CHECK(frame->displayXSource.back()==r.width-1);
+
+    r.view.pan(0,19,r.width);
+    frame=renderer.render(r,pool,go);
+    shown=presentFrame(*frame,pool,go,shown.get());
+    CHECK(fullyVisible(*shown));
+    CHECK(frame->displayYSource.front()==0);
+    CHECK(frame->displayYSource.back()==r.height-1);
 
     // With motion stopped, repeated bounded passes must refine the existing grid
     // rather than replace it with a fresh raster. Reuse should persist and the
