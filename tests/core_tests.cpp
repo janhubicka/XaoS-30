@@ -806,6 +806,7 @@ void rotationTests() {
             deep.settings.iterations=700;
             deep.settings.analytic=false;
             deep.settings.solidGuessRange=3;
+            deep.settings.reconstruction=Reconstruction::Bicubic;
             Renderer deepRenderer;
             auto deepBase=deepRenderer.render(deep,pool,stop);
             CHECK(deepBase->stats.complete);
