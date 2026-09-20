@@ -667,6 +667,20 @@ void rotationTests() {
             Request orientationRequest=r;
             std::swap(orientationRequest.width,orientationRequest.height);
             verifyFallback(orientationRequest);
+
+            // A changed basis must not be presentation-only. Even a tiny bounded
+            // slice has to start computing samples in the new rotated grid.
+            Renderer rotating;
+            auto rotatingBase=rotating.render(r,pool,stop);
+            CHECK(rotatingBase->stats.complete);
+            Request partialRotation=r;
+            partialRotation.view.rotate(.5,.5,.31,r.width,r.height);
+            partialRotation.settings.sliceMilliseconds=1;
+            auto partial=rotating.render(partialRotation,pool,stop);
+            CHECK(partial->stats.steps>0);
+            CHECK(partial->stats.gridRows>=static_cast<uint32_t>(std::min(3,r.height)));
+            CHECK(partial->stats.gridColumns>=static_cast<uint32_t>(std::min(3,r.width)));
+            CHECK(partial->stats.reusableGrid);
         }
 
         r.view.rotate(.31,.64,.47,r.width,r.height);
@@ -1113,6 +1127,13 @@ void rapidZoomDisplayTests() {
         CHECK(fullyVisible(*shown));
         CHECK(uniqueAxis(frame->previewXs)>=static_cast<size_t>(std::min(3,r.width)));
         CHECK(uniqueAxis(frame->previewYs)>=static_cast<size_t>(std::min(3,r.height)));
+        // The first bounded zoom-out slice must calculate literal boundary
+        // support, not leave the newly exposed strip dependent on an interior
+        // clamped line from the previous image.
+        CHECK(frame->displayXSource.front()==0);
+        CHECK(frame->displayXSource.back()==r.width-1);
+        CHECK(frame->displayYSource.front()==0);
+        CHECK(frame->displayYSource.back()==r.height-1);
         if(frame->stats.reused>0)
             CHECK(frame->stats.started<static_cast<uint64_t>(r.width*r.height)/2);
     }
