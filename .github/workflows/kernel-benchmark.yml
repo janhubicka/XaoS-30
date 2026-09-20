@@ -56,9 +56,9 @@ jobs:
       - name: Build benchmarks
         run: cmake --build build --target xaos-kernel-bench xaos-formula-kernel-bench
       - name: Run Mandelbrot arithmetic benchmark
-        run: ./build/xaos-kernel-bench 4096 512 | tee "kernel-benchmark-${{ matrix.arch }}.csv"
+        run: set -o pipefail; ./build/xaos-kernel-bench 4096 512 | tee "kernel-benchmark-${{ matrix.arch }}.csv"
       - name: Run cross-formula benchmark
-        run: ./build/xaos-formula-kernel-bench 1024 256 | tee "formula-kernel-benchmark-${{ matrix.arch }}.csv"
+        run: set -o pipefail; ./build/xaos-formula-kernel-bench 1024 256 | tee "formula-kernel-benchmark-${{ matrix.arch }}.csv"
       - name: Upload benchmarks
         uses: actions/upload-artifact@v4
         with:
