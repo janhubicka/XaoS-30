@@ -16,6 +16,7 @@ enum class QuadraticBackend:uint8_t {
 
 struct DoubleDouble {
     double hi=0,lo=0;
+    static DoubleDouble fromDouble(double value) noexcept { return {value,0}; }
     static DoubleDouble fromBig(const Big&);
     double toDouble() const noexcept { return hi+lo; }
 };
