@@ -1672,7 +1672,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
 std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,const Cancellation&s) {
     (void)formulaInfo(r.settings.formula);
     if(r.width<1||r.height<1 || r.width>std::numeric_limits<int>::max()-64 ||
-       r.height>std::numeric_limits<int>::max()-8 || !r.settings.iterations || !e.concurrency())
+       r.height>std::numeric_limits<int>::max()-8 || !r.settings.iterations ||
+       r.settings.iterations==std::numeric_limits<uint32_t>::max() || !e.concurrency())
         throw std::invalid_argument("invalid dimensions, iteration cap, or executor");
     if(!(r.settings.reuseRadius>0 && r.settings.reuseRadius<=32) ||
        !std::isfinite(r.settings.focusX) || !std::isfinite(r.settings.focusY) ||
