@@ -125,10 +125,18 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   # already express the optimized vector operations explicitly.
   set_source_files_properties(src/simd.cpp PROPERTIES
     COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
+  # Double-double relies on error-free transforms such as two-sum and an FMA
+  # residual. Reassociation from -ffast-math can algebraically cancel the low
+  # word, reducing the advertised ~106-bit backend back toward double precision.
+  # Keep this small arithmetic/SIMD TU strict; its AVX2/NEON paths are explicit.
+  set_source_files_properties(src/fast_mandel.cpp PROPERTIES
+    COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
 elseif(MSVC)
   set_source_files_properties(src/palette.cpp PROPERTIES
     COMPILE_OPTIONS "/fp:precise")
   set_source_files_properties(src/simd.cpp PROPERTIES
+    COMPILE_OPTIONS "/fp:precise")
+  set_source_files_properties(src/fast_mandel.cpp PROPERTIES
     COMPILE_OPTIONS "/fp:precise")
 endif()
 
@@ -138,8 +146,8 @@ if(NOT ANDROID)
     add_executable(xaos-bench app/bench.cpp)
     target_link_libraries(xaos-bench PRIVATE xaos_core)
     xaos_optimize_release_target(xaos-bench)
-    add_executable(xaos-kernel-bench app/kernel_bench.cpp)
-    target_include_directories(xaos-kernel-bench PRIVATE ${GMP_INCLUDE_DIR})
+    add_executable(xaos-kernel-bench app/kernel_bench.cpp src/fast_mandel.cpp)
+    target_include_directories(xaos-kernel-bench PRIVATE include ${GMP_INCLUDE_DIR})
     target_link_libraries(xaos-kernel-bench PRIVATE ${GMP_LIBRARY})
     xaos_optimize_release_target(xaos-kernel-bench)
     add_executable(xaos-formula-kernel-bench app/formula_kernel_bench.cpp)

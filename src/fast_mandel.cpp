@@ -11,6 +11,41 @@
 
 namespace xaos {
 
+namespace {
+DoubleDouble ddRenormStrict(double hi,double lo) noexcept {
+    const double s=hi+lo;
+    return {s,lo-(s-hi)};
+}
+}
+
+DoubleDouble ddAdd(DoubleDouble a,DoubleDouble b) noexcept {
+    const double s=a.hi+b.hi;
+    const double v=s-a.hi;
+    const double e=(a.hi-(s-v))+(b.hi-v)+a.lo+b.lo;
+    return ddRenormStrict(s,e);
+}
+
+DoubleDouble ddMul(DoubleDouble a,DoubleDouble b) noexcept {
+    const double p=a.hi*b.hi;
+    double e=std::fma(a.hi,b.hi,-p);
+    e+=a.hi*b.lo+a.lo*b.hi;
+    e+=a.lo*b.lo;
+    return ddRenormStrict(p,e);
+}
+
+DoubleDouble ddDiv(DoubleDouble a,DoubleDouble b) noexcept {
+    // Bailey-style compensated quotient. Two residual corrections are cheap
+    // compared with GMP and recover close to the full double-double mantissa.
+    const double q1=a.hi/b.hi;
+    DoubleDouble q{q1,0};
+    DoubleDouble r=ddAdd(a,-ddMul(b,q));
+    const double q2=r.hi/b.hi;
+    q=ddAdd(q,DoubleDouble{q2,0});
+    r=ddAdd(a,-ddMul(b,q));
+    const double q3=r.hi/b.hi;
+    return ddAdd(q,DoubleDouble{q3,0});
+}
+
 DoubleDouble DoubleDouble::fromBig(const Big&value) {
     const double hi=value.toDouble();
     const Big high=Big::fromDouble(hi,value.precision());

@@ -558,6 +558,48 @@ void fastPrecisionTests() {
         }
     }
 
+    // Adaptive precision must keep climbing past the double-double tier as
+    // the viewport shrinks. This is the GUI path (minimumPrecision == 0), not a
+    // manually forced backend test.
+    {
+        static constexpr std::array<const char*,5> spans{{
+            "1e-18","1e-28","1e-45","1e-65","1e-90"}};
+        mp_bitcnt_t previousBits=0;
+        for(const char*span:spans) {
+            Request r;
+            r.width=32;r.height=20;
+            r.view=View::parse("-0.743643887037151","0.13182590420533",span,r.width);
+            r.settings.minimumPrecision=0;
+            r.settings.iterations=32;
+            r.settings.analytic=false;
+            r.settings.uniform=true;
+            r.settings.solidGuessRange=0;
+            Renderer adaptive;
+            auto frame=adaptive.render(r,one,stop);
+            const auto required=r.view.requiredBits(r.width,r.settings.guardBits);
+            CHECK(frame->stats.bits>=required);
+            CHECK(frame->stats.bits>=previousBits);
+            if(required>106) CHECK(frame->stats.backend!="double-double");
+            if(required>248) CHECK(frame->stats.backend=="GMP");
+            previousBits=frame->stats.bits;
+        }
+    }
+
+    // The compensated low word must survive arithmetic even though callers are
+    // compiled with fast-math. A reassociated renormalization can otherwise turn
+    // the nominal 106-bit backend into ordinary double precision.
+    {
+        const double e=std::ldexp(1.0,-60);
+        const auto sum=DoubleDouble{1.0,e}+DoubleDouble{0.0,e*.5};
+        CHECK(sum.hi==1.0);
+        CHECK(sum.lo>e);
+        CHECK(sum.lo<2.0*e);
+        const auto product=DoubleDouble{1.0,e}*DoubleDouble{1.0,-e};
+        CHECK(product.hi==1.0);
+        CHECK(product.lo<0.0);
+        CHECK(std::abs(product.lo+e*e)<e*e*.01);
+    }
+
     // Precision above the fixed-size range must transparently fall back to GMP.
     Request deep;
     deep.width=16;deep.height=8;

@@ -20,37 +20,18 @@ struct DoubleDouble {
     static DoubleDouble fromBig(const Big&);
     double toDouble() const noexcept { return hi+lo; }
 };
-inline DoubleDouble ddRenorm(double hi,double lo) noexcept {
-    const double s=hi+lo;
-    return {s,lo-(s-hi)};
-}
-inline DoubleDouble operator+(DoubleDouble a,DoubleDouble b) noexcept {
-    const double s=a.hi+b.hi;
-    const double v=s-a.hi;
-    const double e=(a.hi-(s-v))+(b.hi-v)+a.lo+b.lo;
-    return ddRenorm(s,e);
-}
+
+// These compensated primitives are intentionally out-of-line. Their definitions
+// live in the strict-FP fast_mandel.cpp translation unit so a fast-math caller
+// cannot reassociate away the error terms that carry the second ~53 bits.
+DoubleDouble ddAdd(DoubleDouble,DoubleDouble) noexcept;
+DoubleDouble ddMul(DoubleDouble,DoubleDouble) noexcept;
+DoubleDouble ddDiv(DoubleDouble,DoubleDouble) noexcept;
+inline DoubleDouble operator+(DoubleDouble a,DoubleDouble b) noexcept { return ddAdd(a,b); }
 inline DoubleDouble operator-(DoubleDouble a) noexcept { return {-a.hi,-a.lo}; }
-inline DoubleDouble operator-(DoubleDouble a,DoubleDouble b) noexcept { return a+(-b); }
-inline DoubleDouble operator*(DoubleDouble a,DoubleDouble b) noexcept {
-    const double p=a.hi*b.hi;
-    double e=std::fma(a.hi,b.hi,-p);
-    e+=a.hi*b.lo+a.lo*b.hi;
-    e+=a.lo*b.lo;
-    return ddRenorm(p,e);
-}
-inline DoubleDouble operator/(DoubleDouble a,DoubleDouble b) noexcept {
-    // Bailey-style compensated quotient. Two residual corrections are cheap
-    // compared with GMP and recover close to the full double-double mantissa.
-    const double q1=a.hi/b.hi;
-    DoubleDouble q{q1,0};
-    DoubleDouble r=a-b*q;
-    const double q2=r.hi/b.hi;
-    q=q+DoubleDouble{q2,0};
-    r=a-b*q;
-    const double q3=r.hi/b.hi;
-    return q+DoubleDouble{q3,0};
-}
+inline DoubleDouble operator-(DoubleDouble a,DoubleDouble b) noexcept { return ddAdd(a,-b); }
+inline DoubleDouble operator*(DoubleDouble a,DoubleDouble b) noexcept { return ddMul(a,b); }
+inline DoubleDouble operator/(DoubleDouble a,DoubleDouble b) noexcept { return ddDiv(a,b); }
 inline DoubleDouble twice(DoubleDouble a) noexcept { return a+a; }
 inline DoubleDouble absolute(DoubleDouble a) noexcept {
     return a.hi<0 || (a.hi==0 && a.lo<0)?-a:a;
