@@ -172,60 +172,108 @@ template<unsigned Scalars> struct BigStateStorage {
     void copy(size_t d,const BigStateStorage&s,size_t i) { orbit[d]=s.orbit[i]; }
 };
 
-struct DoubleDoubleStateStorage {
-    using State=OrbitScalars<DoubleDouble,2>;
-    AlignedVector<double> xhi,xlo,yhi,ylo;
-    void resize(size_t n) {xhi.resize(n);xlo.resize(n);yhi.resize(n);ylo.resize(n);}
+template<unsigned Scalars> struct DoubleDoubleStateStorage {
+    using State=OrbitScalars<DoubleDouble,Scalars>;
+    std::array<AlignedVector<double>,2*Scalars> values;
+    void resize(size_t n) {for(auto&v:values)v.resize(n);}
     void copy(size_t d,const DoubleDoubleStateStorage&s,size_t i) {
-        xhi[d]=s.xhi[i];xlo[d]=s.xlo[i];yhi[d]=s.yhi[i];ylo[d]=s.ylo[i];
-    }
-    State load(size_t i) const {
-        State s;s.x={xhi[i],xlo[i]};s.y={yhi[i],ylo[i]};return s;
-    }
-    template<class Kernel> void store(size_t i,const Kernel&k) {
-        xhi[i]=k.x.hi;xlo[i]=k.x.lo;yhi[i]=k.y.hi;ylo[i]=k.y.lo;
-    }
-};
-
-template<size_t N> struct FixedStateStorage {
-    using Real=Fixed<N>;
-    using State=OrbitScalars<Real,2>;
-    std::array<AlignedVector<uint64_t>,N> x,y;
-    void resize(size_t n) {for(auto&v:x)v.resize(n);for(auto&v:y)v.resize(n);}
-    void copy(size_t d,const FixedStateStorage&s,size_t i) {
-        for(size_t limb=0;limb<N;++limb) {x[limb][d]=s.x[limb][i];y[limb][d]=s.y[limb][i];}
+        for(size_t k=0;k<values.size();++k) values[k][d]=s.values[k][i];
     }
     State load(size_t i) const {
         State s;
-        for(size_t limb=0;limb<N;++limb) {s.x.limb[limb]=x[limb][i];s.y.limb[limb]=y[limb][i];}
+        s.x={values[0][i],values[1][i]};
+        s.y={values[2][i],values[3][i]};
+        if constexpr(Scalars>=3) s.a={values[4][i],values[5][i]};
+        if constexpr(Scalars>=4) s.b={values[6][i],values[7][i]};
         return s;
     }
     template<class Kernel> void store(size_t i,const Kernel&k) {
-        for(size_t limb=0;limb<N;++limb) {x[limb][i]=k.x.limb[limb];y[limb][i]=k.y.limb[limb];}
+        values[0][i]=k.x.hi;values[1][i]=k.x.lo;
+        values[2][i]=k.y.hi;values[3][i]=k.y.lo;
+        if constexpr(Scalars>=3) {values[4][i]=k.a.hi;values[5][i]=k.a.lo;}
+        if constexpr(Scalars>=4) {values[6][i]=k.b.hi;values[7][i]=k.b.lo;}
+    }
+};
+
+template<size_t N,unsigned I,unsigned Scalars> struct FixedStateStorage {
+    using Real=Fixed<N,I>;
+    using State=OrbitScalars<Real,Scalars>;
+    std::array<std::array<AlignedVector<uint64_t>,N>,Scalars> values;
+    void resize(size_t n) {
+        for(auto&scalar:values) for(auto&limb:scalar) limb.resize(n);
+    }
+    void copy(size_t d,const FixedStateStorage&s,size_t i) {
+        for(size_t scalar=0;scalar<Scalars;++scalar)
+            for(size_t limb=0;limb<N;++limb)
+                values[scalar][limb][d]=s.values[scalar][limb][i];
+    }
+    State load(size_t i) const {
+        State s;
+        auto loadOne=[&](Real&v,size_t scalar) {
+            for(size_t limb=0;limb<N;++limb) v.limb[limb]=values[scalar][limb][i];
+        };
+        loadOne(s.x,0);loadOne(s.y,1);
+        if constexpr(Scalars>=3) loadOne(s.a,2);
+        if constexpr(Scalars>=4) loadOne(s.b,3);
+        return s;
+    }
+    template<class Kernel> void store(size_t i,const Kernel&k) {
+        auto storeOne=[&](const Real&v,size_t scalar) {
+            for(size_t limb=0;limb<N;++limb) values[scalar][limb][i]=v.limb[limb];
+        };
+        storeOne(k.x,0);storeOne(k.y,1);
+        if constexpr(Scalars>=3) storeOne(k.a,2);
+        if constexpr(Scalars>=4) storeOne(k.b,3);
     }
 };
 
 template<> struct Storage<true,Big> {
-    using Variant=std::variant<BigStateStorage<2>,BigStateStorage<3>,BigStateStorage<4>,
-                               DoubleDoubleStateStorage,FixedStateStorage<2>,
-                               FixedStateStorage<3>,FixedStateStorage<4>>;
+    using Variant=std::variant<
+        BigStateStorage<2>,BigStateStorage<3>,BigStateStorage<4>,
+        DoubleDoubleStateStorage<2>,DoubleDoubleStateStorage<3>,DoubleDoubleStateStorage<4>,
+        FixedStateStorage<2,4,2>,FixedStateStorage<3,4,2>,FixedStateStorage<4,4,2>,
+        FixedStateStorage<2,24,2>,FixedStateStorage<2,24,3>,FixedStateStorage<2,24,4>,
+        FixedStateStorage<3,24,2>,FixedStateStorage<3,24,3>,FixedStateStorage<3,24,4>,
+        FixedStateStorage<4,24,2>,FixedStateStorage<4,24,3>,FixedStateStorage<4,24,4>>;
     Variant data;
+
+    template<class T> void emplaceAndResize(size_t n) {
+        data.emplace<T>();std::get<T>(data).resize(n);
+    }
     void resize(size_t n,unsigned scalars,QuadraticBackend backend=QuadraticBackend::GMP) {
+        auto dd=[&] {
+            switch(scalars) {
+            case 2:emplaceAndResize<DoubleDoubleStateStorage<2>>(n);break;
+            case 3:emplaceAndResize<DoubleDoubleStateStorage<3>>(n);break;
+            case 4:emplaceAndResize<DoubleDoubleStateStorage<4>>(n);break;
+            default:throw std::logic_error("invalid formula state width");
+            }
+        };
+        auto fixed=[&]<size_t N,unsigned I>() {
+            switch(scalars) {
+            case 2:emplaceAndResize<FixedStateStorage<N,I,2>>(n);break;
+            case 3:emplaceAndResize<FixedStateStorage<N,I,3>>(n);break;
+            case 4:emplaceAndResize<FixedStateStorage<N,I,4>>(n);break;
+            default:throw std::logic_error("invalid formula state width");
+            }
+        };
         switch(backend) {
-        case QuadraticBackend::DoubleDouble:data.emplace<DoubleDoubleStateStorage>();break;
-        case QuadraticBackend::Fixed128:data.emplace<FixedStateStorage<2>>();break;
-        case QuadraticBackend::Fixed192:data.emplace<FixedStateStorage<3>>();break;
-        case QuadraticBackend::Fixed256:data.emplace<FixedStateStorage<4>>();break;
+        case QuadraticBackend::DoubleDouble:dd();break;
+        case QuadraticBackend::Fixed128:fixed.template operator()<2,4>();break;
+        case QuadraticBackend::Fixed192:fixed.template operator()<3,4>();break;
+        case QuadraticBackend::Fixed256:fixed.template operator()<4,4>();break;
+        case QuadraticBackend::WideFixed128:fixed.template operator()<2,24>();break;
+        case QuadraticBackend::WideFixed192:fixed.template operator()<3,24>();break;
+        case QuadraticBackend::WideFixed256:fixed.template operator()<4,24>();break;
         case QuadraticBackend::GMP:
             switch(scalars) {
-            case 2:data.emplace<BigStateStorage<2>>();break;
-            case 3:data.emplace<BigStateStorage<3>>();break;
-            case 4:data.emplace<BigStateStorage<4>>();break;
+            case 2:emplaceAndResize<BigStateStorage<2>>(n);break;
+            case 3:emplaceAndResize<BigStateStorage<3>>(n);break;
+            case 4:emplaceAndResize<BigStateStorage<4>>(n);break;
             default:throw std::logic_error("invalid formula state width");
             }
             break;
         }
-        std::visit([&](auto&state){state.resize(n);},data);
     }
     void copy(size_t d,const Storage&s,size_t i) {
         std::visit([&](auto&dst) {
@@ -241,10 +289,18 @@ template<> struct Storage<true,Big> {
     template<class F> const BigStateStorage<F::stateScalars>& get() const {
         return std::get<BigStateStorage<F::stateScalars>>(data);
     }
-    DoubleDoubleStateStorage& getDoubleDouble() {return std::get<DoubleDoubleStateStorage>(data);}
-    const DoubleDoubleStateStorage& getDoubleDouble() const {return std::get<DoubleDoubleStateStorage>(data);}
-    template<size_t N> FixedStateStorage<N>& getFixed() {return std::get<FixedStateStorage<N>>(data);}
-    template<size_t N> const FixedStateStorage<N>& getFixed() const {return std::get<FixedStateStorage<N>>(data);}
+    template<class F> DoubleDoubleStateStorage<F::stateScalars>& getDoubleDouble() {
+        return std::get<DoubleDoubleStateStorage<F::stateScalars>>(data);
+    }
+    template<class F> const DoubleDoubleStateStorage<F::stateScalars>& getDoubleDouble() const {
+        return std::get<DoubleDoubleStateStorage<F::stateScalars>>(data);
+    }
+    template<size_t N,unsigned I,class F> FixedStateStorage<N,I,F::stateScalars>& getFixed() {
+        return std::get<FixedStateStorage<N,I,F::stateScalars>>(data);
+    }
+    template<size_t N,unsigned I,class F> const FixedStateStorage<N,I,F::stateScalars>& getFixed() const {
+        return std::get<FixedStateStorage<N,I,F::stateScalars>>(data);
+    }
 };
 
 template<class Real,bool Save> struct Frame final:FrameBase {
