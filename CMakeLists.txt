@@ -99,6 +99,18 @@ elseif(MSVC)
 endif()
 xaos_optimize_release_target(xaos_core)
 
+# The default palette is a compatibility artifact: its 65,534 entries must be
+# bit-identical to the original XaoS floating-point mksmooth() loop. Fast-math
+# reassociation changes a few entries, so keep this tiny presentation-only TU
+# strict while the expensive fractal kernels remain aggressively optimized.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  set_source_files_properties(src/palette.cpp PROPERTIES
+    COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
+elseif(MSVC)
+  set_source_files_properties(src/palette.cpp PROPERTIES
+    COMPILE_OPTIONS "/fp:precise")
+endif()
+
 # Benchmark/test executables are host tools. Android only builds the Qt app.
 if(NOT ANDROID)
   if(XAOS_BUILD_TOOLS)
