@@ -527,7 +527,7 @@ protected:
                 const bool quick=touchGestureClock_.isValid() && touchGestureClock_.elapsed()<380;
                 const bool twoFingerTap=!cancelled && !touchStoppedMotion_ &&
                     touchGestureMaxPoints_>=2 && quick && touchGestureMaxTravel_<14.0 &&
-                    !touchChanged_;
+                    !touchRotationActive_ && !touchChanged_;
                 bool handledTap=false;
 
                 try {
