@@ -556,6 +556,9 @@ protected:
             pointer_.setX(pointer_.x()*static_cast<double>(width())/old.width());
             pointer_.setY(pointer_.y()*static_cast<double>(height())/old.height());
         }
+#ifdef Q_OS_ANDROID
+        if(tiltSteeringFlight_) tiltSensor_.calibrate();
+#endif
         if(publishedFrames>0) submit(true);
     }
 
