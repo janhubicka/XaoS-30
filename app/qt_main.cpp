@@ -41,6 +41,9 @@
 #include <QTouchEvent>
 #include <QTransform>
 #include <QWheelEvent>
+#ifdef Q_OS_ANDROID
+#include <QTiltSensor>
+#endif
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -131,6 +134,11 @@ class Canvas final:public QWidget {
     int touchGestureMaxPoints_=0,touchPointId0_=-1,touchPointId1_=-1;
     bool touchChanged_=false,touchTapCandidate_=false,touchPanStarted_=false;
     bool touchAfterPinchSingle_=false,touchStoppedMotion_=false,touchRotationActive_=false;
+#ifdef Q_OS_ANDROID
+    QTiltSensor tiltSensor_;
+    bool tiltSteeringAvailable_=false,tiltSteeringEnabled_=true;
+    bool tiltSteeringFlight_=false,tiltSteeringInverted_=false;
+#endif
     QElapsedTimer lastTapClock_;
     size_t threads_=std::max<size_t>(1,defaultWorkerCount()-presentationWorkerCount());
     /// Stops Frax-style kinetic touch motion. Returns whether anything was moving.
@@ -140,6 +148,9 @@ class Canvas final:public QWidget {
         touchPanVelocity_=QPointF{};
         touchZoomVelocity_=0;
         touchRotationVelocity_=0;
+#ifdef Q_OS_ANDROID
+        tiltSteeringFlight_=false;
+#endif
         if(was && refine) submit(false);
         return was;
     }
@@ -169,8 +180,48 @@ class Canvas final:public QWidget {
     void startTouchMomentum(const QPointF&anchor) {
         if(!hasTouchMomentum()) {stopTouchMomentum(false);idle_.start();return;}
         touchMomentumAnchor_=anchor;
+#ifdef Q_OS_ANDROID
+        // Frax-style tilt is relative to the phone angle at the instant a
+        // panning flight begins. Zoom velocity remains independent of tilt.
+        tiltSteeringFlight_=tiltSteeringEnabled_ && tiltSteeringAvailable_ &&
+            std::hypot(touchPanVelocity_.x(),touchPanVelocity_.y())>12.0;
+        if(tiltSteeringFlight_) tiltSensor_.calibrate();
+#endif
         touchMomentumClock_.restart();
         touchMomentum_.start();
+    }
+
+    /// Steers Frax-style free motion from relative phone tilt without changing zoom.
+    void applyTiltSteering(double seconds) {
+#ifdef Q_OS_ANDROID
+        if(!tiltSteeringFlight_ || !tiltSteeringEnabled_ || !tiltSteeringAvailable_)
+            return;
+        const auto*reading=tiltSensor_.reading();
+        if(!reading) return;
+        auto dead=[](double degrees) {
+            constexpr double zone=.8;
+            const double magnitude=std::abs(degrees);
+            return magnitude<=zone?0.0:std::copysign(magnitude-zone,degrees);
+        };
+        double tx=dead(reading->xRotation());
+        double ty=dead(reading->yRotation());
+        if(tiltSteeringInverted_) {tx=-tx;ty=-ty;}
+
+        // A few degrees should be enough to stop/reverse an ordinary throw.
+        // Preserve the last zoom velocity exactly, as Frax Motion does.
+        constexpr double panAcceleration=300.0; // logical pixels/s^2 per degree
+        touchPanVelocity_+=QPointF(-tx,ty)*(panAcceleration*seconds);
+        const double speed=std::hypot(touchPanVelocity_.x(),touchPanVelocity_.y());
+        if(speed>5000.0) touchPanVelocity_*=5000.0/speed;
+
+        // Tilt also steers an already-spinning flight, but never creates rotation
+        // from a pure pan. This avoids accidental grid invalidation.
+        if(std::abs(touchRotationVelocity_)>.018)
+            touchRotationVelocity_=std::clamp(
+                touchRotationVelocity_-tx*.02*seconds,-6.0,6.0);
+#else
+        (void)seconds;
+#endif
     }
 
     /// Frax tap zoom: exact 3x step and move the tapped mathematical point to center.
@@ -496,6 +547,29 @@ class Canvas final:public QWidget {
         p.restore();
     }
 protected:
+    /// Re-render adaptively after a phone orientation/window-size change while
+    /// immediately continuing to draw the transformed previous image.
+    void resizeEvent(QResizeEvent*event) override {
+        const QSize old=event->oldSize();
+        QWidget::resizeEvent(event);
+        if(old.width()>0 && old.height()>0 && width()>0 && height()>0) {
+            const double widthRatio=static_cast<double>(width())/old.width();
+            pointer_.setX(pointer_.x()*widthRatio);
+            pointer_.setY(pointer_.y()*static_cast<double>(height())/old.height());
+
+            // On phones a portrait/landscape rotation should preserve fractal
+            // scale, not preserve horizontal field of view. Keeping span/width
+            // constant leaves the overlapping old/new viewport on the same
+            // row/column lattice, so exact samples survive the orientation change.
+            if(mobileUi_ && publishedFrames>0)
+                view.span=scale(view.span,widthRatio);
+        }
+#ifdef Q_OS_ANDROID
+        if(tiltSteeringFlight_) tiltSensor_.calibrate();
+#endif
+        if(publishedFrames>0) submit(true);
+    }
+
     /// Handles direct mobile touch plus native trackpad and generic pinch gestures.
     bool event(QEvent*event) override {
         if(mobileUi_ && (event->type()==QEvent::TouchBegin ||
@@ -879,8 +953,6 @@ protected:
             p.drawText(12,22,"Hold left/right: zoom   |   Middle drag: pan   |   Wheel/pinch: zoom   |   Two-finger twist: rotate   |   A: autopilot");
         }
     }
-    /// Submits a new render request after the canvas size changes.
-    void resizeEvent(QResizeEvent*e) override { QWidget::resizeEvent(e); submit(false,true); }
     /// Starts zooming or panning in response to a mouse press.
     void mousePressEvent(QMouseEvent*e) override {
         if(mobileUi_ && e->source()!=Qt::MouseEventNotSynthesized) {e->accept();return;}
@@ -959,6 +1031,7 @@ public:
             const double seconds=std::clamp(touchMomentumClock_.restart()/1000.0,.001,.05);
             try {
                 bool changed=false;
+                applyTiltSteering(seconds);
                 const QPointF pan=touchPanVelocity_*seconds;
                 if(std::hypot(pan.x(),pan.y())>.01) {
                     view.pan(pan.x(),pan.y(),std::max(1,width()));
@@ -1182,10 +1255,64 @@ public:
         // mouse drag cannot win the race against Qt's pinch recognizer.
         if(enabled) ungrabGesture(Qt::PinchGesture);
         else grabGesture(Qt::PinchGesture);
+#ifdef Q_OS_ANDROID
+        if(enabled) {
+            tiltSensor_.setDataRate(60);
+            // Feature metadata is valid only after a backend is connected.
+            tiltSteeringAvailable_=tiltSensor_.connectToBackend();
+            if(tiltSteeringAvailable_ &&
+               tiltSensor_.isFeatureSupported(QSensor::AxesOrientation))
+                tiltSensor_.setAxesOrientationMode(QSensor::AutomaticOrientation);
+            if(tiltSteeringAvailable_)
+                tiltSteeringAvailable_=tiltSensor_.start();
+        } else {
+            tiltSensor_.stop();
+            tiltSteeringAvailable_=false;
+            tiltSteeringFlight_=false;
+        }
+#endif
         update();
     }
     /// Returns whether phone-oriented interaction is enabled.
     bool mobileUi() const noexcept { return mobileUi_; }
+
+    bool tiltSteeringAvailable() const noexcept {
+#ifdef Q_OS_ANDROID
+        return tiltSteeringAvailable_;
+#else
+        return false;
+#endif
+    }
+    bool tiltSteeringEnabled() const noexcept {
+#ifdef Q_OS_ANDROID
+        return tiltSteeringEnabled_;
+#else
+        return false;
+#endif
+    }
+    void setTiltSteering(bool enabled) {
+#ifdef Q_OS_ANDROID
+        tiltSteeringEnabled_=enabled;
+        if(!enabled) tiltSteeringFlight_=false;
+        if(onStatus) onStatus(enabled?"Tilt steering on":"Tilt steering off");
+#else
+        (void)enabled;
+#endif
+    }
+    bool tiltSteeringInverted() const noexcept {
+#ifdef Q_OS_ANDROID
+        return tiltSteeringInverted_;
+#else
+        return false;
+#endif
+    }
+    void setTiltSteeringInverted(bool inverted) {
+#ifdef Q_OS_ANDROID
+        tiltSteeringInverted_=inverted;
+#else
+        (void)inverted;
+#endif
+    }
     /// Returns the number of compute workers, excluding presentation workers.
     size_t workerCount() const noexcept { return threads_; }
     /// Changes the worker count and requests a new render.
@@ -1275,15 +1402,20 @@ class Window final:public QMainWindow {
     void layoutMobileChrome() {
         if(!mobile_ || !mobileDock_ || !mobileBadge_) return;
         const int w=canvas->width(),h=canvas->height();
+        const QPoint origin=canvas->mapTo(this,QPoint(0,0));
         const int margin=std::clamp(w/28,12,22);
         const int dockHeight=std::clamp(h/10,68,88);
-        mobileDock_->setGeometry(margin,h-dockHeight-margin,std::max(120,w-2*margin),dockHeight);
+        mobileDock_->setGeometry(origin.x()+margin,origin.y()+h-dockHeight-margin,
+                                 std::max(120,w-2*margin),dockHeight);
         mobileBadge_->adjustSize();
-        mobileBadge_->move(margin,margin);
+        mobileBadge_->move(origin.x()+margin,origin.y()+margin);
         mobileDock_->raise();mobileBadge_->raise();
     }
     QToolButton* mobileButton(const QString&text,QWidget*parent) {
         auto*b=new QToolButton(parent);
+        // Keep buttons on Qt's normal touch-to-mouse path. Canvas handles raw
+        // QTouchEvent only for the fractal surface.
+        b->setAttribute(Qt::WA_AcceptTouchEvents,false);
         b->setText(text);
         b->setToolButtonStyle(Qt::ToolButtonTextOnly);
         b->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Expanding);
@@ -1296,14 +1428,18 @@ class Window final:public QMainWindow {
         menuBar()->hide();statusBar()->hide();
         for(auto*bar:findChildren<QToolBar*>()) bar->hide();
 
-        mobileBadge_=new QLabel(canvas);
+        // Mobile chrome must be a sibling of the touch canvas, not its child.
+        // Otherwise Qt walks an unhandled button touch up to Canvas (the first
+        // WA_AcceptTouchEvents ancestor), and Canvas consumes it as a pan/tap.
+        mobileBadge_=new QLabel(this);
         mobileBadge_->setAttribute(Qt::WA_StyledBackground,true);
+        mobileBadge_->setAttribute(Qt::WA_TransparentForMouseEvents,true);
         mobileBadge_->setStyleSheet(
             "QLabel{color:white;background:rgba(8,10,16,190);"
             "border:1px solid rgba(255,255,255,36);border-radius:16px;"
             "padding:7px 12px;font-size:14px;font-weight:650;}");
 
-        mobileDock_=new QFrame(canvas);
+        mobileDock_=new QFrame(this);
         mobileDock_->setAttribute(Qt::WA_StyledBackground,true);
         mobileDock_->setStyleSheet(
             "QFrame{background:rgba(8,10,16,214);border:1px solid rgba(255,255,255,38);"
@@ -1410,6 +1546,14 @@ class Window final:public QMainWindow {
 
         mobileMoreMenu_=new QMenu(more);
         auto*coordinates=mobileMoreMenu_->addAction("Coordinates & precision");
+        auto*tilt=mobileMoreMenu_->addAction("Tilt steering");
+        tilt->setCheckable(true);
+        tilt->setChecked(canvas->tiltSteeringEnabled());
+        tilt->setEnabled(canvas->tiltSteeringAvailable());
+        auto*invertTilt=mobileMoreMenu_->addAction("Invert tilt steering");
+        invertTilt->setCheckable(true);
+        invertTilt->setChecked(canvas->tiltSteeringInverted());
+        invertTilt->setEnabled(canvas->tiltSteeringAvailable());
         auto*level=mobileMoreMenu_->addAction("Level rotation");
         auto*saveState=mobileMoreMenu_->addAction("Save orbit state");
         saveState->setCheckable(true);saveState->setChecked(canvas->settings.saveState);
@@ -1428,6 +1572,8 @@ class Window final:public QMainWindow {
         });
         connect(reset,&QToolButton::clicked,canvas,[this]{canvas->reset();refreshMobileChrome();});
         connect(coordinates,&QAction::triggered,canvas,&Canvas::coordinates);
+        connect(tilt,&QAction::toggled,canvas,&Canvas::setTiltSteering);
+        connect(invertTilt,&QAction::toggled,canvas,&Canvas::setTiltSteeringInverted);
         connect(level,&QAction::triggered,this,[this]{
             const double delta=-canvas->view.rotation;
             if(delta!=0) {
@@ -1445,6 +1591,8 @@ class Window final:public QMainWindow {
                 "Swipe with one finger to pan; release with speed to coast.\n"
                 "Move, pinch and twist two fingers together — pan, zoom and rotation combine.\n"
                 "Release a moving gesture to keep flying; tap once to stop and refine.\n"
+                "While a pan is flying, tilt the phone a few degrees to steer, stop or reverse it.\n"
+                "Tilt is relative to the phone angle at release and does not change zoom speed.\n"
                 "Double-tap one finger: exact 3× zoom in and center that point.\n"
                 "Tap with two fingers: exact 3× zoom out and center the midpoint.\n\n"
                 "Explore lets XaoS choose the next interesting boundary automatically.");
@@ -1599,6 +1747,12 @@ public:
         }
     }
     bool mobileUi() const noexcept { return mobile_; }
+    /// Verifies that phone controls cannot bubble unhandled touches into Canvas.
+    bool mobileInputHierarchyValid() const noexcept {
+        return !mobile_ || (mobileDock_ && mobileBadge_ &&
+                            mobileDock_->parentWidget()!=canvas &&
+                            mobileBadge_->parentWidget()!=canvas);
+    }
 };
 }
 /// Starts the Qt desktop application and optional smoke test.
@@ -1665,7 +1819,8 @@ int main(int argc,char**argv) {
         auto*finish=new QTimer(&window);
         finish->setInterval(100);
         QObject::connect(finish,&QTimer::timeout,&window,[&window,&app,state,finish] {
-            const bool ok=window.canvas->completedFrames && state->publishedDuringMotion;
+            const bool ok=window.canvas->completedFrames && state->publishedDuringMotion &&
+                          window.mobileInputHierarchyValid();
             if(ok || ++state->finishChecks>=75) {
                 finish->stop();
                 app.exit(ok?0:2);

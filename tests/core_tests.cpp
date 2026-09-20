@@ -590,6 +590,32 @@ void zoomTests() {
         }
         r.settings.iterations=250;
         a=renderer.render(r,pool,stop); verifyCoordinates<Mandelbrot>(*a);
+
+        // Phone portrait/landscape rotation preserves complex units per pixel by
+        // scaling horizontal span with width. With matching parity, the overlap
+        // lies on the exact same sample lattice and should retain a large block
+        // of already-computed mathematical state.
+        if(precision==0 && state) {
+            Request portrait=r;
+            portrait.width=40;portrait.height=64;
+            portrait.view=View::parse("-0.5","0","3.5",portrait.width);
+            portrait.settings.iterations=180;
+            portrait.settings.uniform=false;
+            Renderer orientation;
+            auto before=orientation.render(portrait,pool,stop);
+            CHECK(before->stats.complete);
+            Request landscape=portrait;
+            landscape.width=64;landscape.height=40;
+            landscape.view.span=scale(
+                landscape.view.span,
+                static_cast<double>(landscape.width)/portrait.width);
+            auto after=orientation.render(landscape,pool,stop);
+            CHECK(after->stats.complete);
+            CHECK(after->stats.reused>=
+                  static_cast<uint64_t>(landscape.width*landscape.height/3));
+            verifyCoordinates<Mandelbrot>(*after);
+        }
+
         r.settings.uniform=true; a=renderer.render(r,pool,stop);
         Renderer fresh; auto b=fresh.render(r,pool,stop); sameCounts(*a,*b);
         CHECK(a->stats.uniform);
@@ -606,6 +632,42 @@ void rotationTests() {
         r.settings.minimumPrecision=precision;r.settings.analytic=false;r.settings.solidGuessRange=0;
         Renderer renderer;
         auto base=renderer.render(r,pool,stop);CHECK(base->stats.complete);
+
+        // A basis rotation or a portrait/landscape size change must not discard
+        // the already-known display while the new adaptive grid is being built.
+        if(precision==0) {
+            auto baseDisplay=presentFrame(*base,pool,stop);
+            auto verifyFallback=[&](const Request&changed) {
+                Renderer emptyRenderer;
+                Cancellation cancelled;cancelled.cancelled.store(true);
+                auto empty=emptyRenderer.render(changed,pool,cancelled);
+                CHECK(empty->stats.steps==0);
+                auto transformed=presentFrame(*empty,pool,stop,baseDisplay.get());
+                for(int y=0;y<changed.height;++y) for(int x=0;x<changed.width;++x) {
+                    const double u=(x+.5)/changed.width;
+                    const double v=1.0-(y+.5)/changed.height;
+                    const auto point=changed.view.screenToComplex(
+                        u,v,changed.width,changed.height);
+                    const auto old=baseDisplay->request.view.complexToScreen(
+                        point.first,point.second,
+                        baseDisplay->request.width,baseDisplay->request.height);
+                    long sx=std::lround(old.first*baseDisplay->request.width-.5);
+                    long sy=std::lround((1.0-old.second)*baseDisplay->request.height-.5);
+                    sx=std::clamp(sx,0L,static_cast<long>(baseDisplay->request.width-1));
+                    sy=std::clamp(sy,0L,static_cast<long>(baseDisplay->request.height-1));
+                    CHECK(transformed->at(x,y)==
+                          baseDisplay->at(static_cast<int>(sx),static_cast<int>(sy)));
+                }
+            };
+
+            Request rotatedRequest=r;
+            rotatedRequest.view.rotate(.5,.5,.37,r.width,r.height);
+            verifyFallback(rotatedRequest);
+
+            Request orientationRequest=r;
+            std::swap(orientationRequest.width,orientationRequest.height);
+            verifyFallback(orientationRequest);
+        }
 
         r.view.rotate(.31,.64,.47,r.width,r.height);
         auto rotated=renderer.render(r,pool,stop);
