@@ -263,10 +263,10 @@ struct View {
            !std::isfinite(newU)||!std::isfinite(newV) ||
            !std::isfinite(scaleFactor)||scaleFactor<=0 || !std::isfinite(radians))
             throw std::invalid_argument("invalid gesture transform");
-        const auto anchor=screenToComplex(oldU,oldV,width,height);
         Big next=scale(span,1.0/scaleFactor);
         View future{re,im,next,normalizeRotation(rotation+radians)};
         ensure(std::max<mp_bitcnt_t>(128,future.requiredBits(width,32)));
+        const auto anchor=screenToComplex(oldU,oldV,width,height);
         span=scale(span,1.0/scaleFactor);
         rotation=normalizeRotation(rotation+radians);
         const auto moved=screenToComplex(newU,newV,width,height);
