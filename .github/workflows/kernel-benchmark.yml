@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - app/kernel_bench.cpp
+      - app/formula_kernel_bench.cpp
+      - include/xaos/formulae.hpp
+      - include/xaos/fast_mandel.hpp
       - .github/workflows/kernel-benchmark.yml
       - CMakeLists.txt
   workflow_dispatch:
@@ -50,13 +53,17 @@ jobs:
             -DXAOS_BUILD_GUI=OFF \
             -DGMP_INCLUDE_DIR="$(brew --prefix gmp)/include" \
             -DGMP_LIBRARY="$(brew --prefix gmp)/lib/libgmp.dylib"
-      - name: Build benchmark
-        run: cmake --build build --target xaos-kernel-bench
-      - name: Run kernel benchmark
+      - name: Build benchmarks
+        run: cmake --build build --target xaos-kernel-bench xaos-formula-kernel-bench
+      - name: Run Mandelbrot arithmetic benchmark
         run: ./build/xaos-kernel-bench 4096 512 | tee "kernel-benchmark-${{ matrix.arch }}.csv"
-      - name: Upload benchmark
+      - name: Run cross-formula benchmark
+        run: ./build/xaos-formula-kernel-bench 1024 256 | tee "formula-kernel-benchmark-${{ matrix.arch }}.csv"
+      - name: Upload benchmarks
         uses: actions/upload-artifact@v4
         with:
           name: kernel-benchmark-${{ matrix.arch }}
-          path: kernel-benchmark-${{ matrix.arch }}.csv
+          path: |
+            kernel-benchmark-${{ matrix.arch }}.csv
+            formula-kernel-benchmark-${{ matrix.arch }}.csv
           if-no-files-found: error
