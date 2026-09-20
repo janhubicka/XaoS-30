@@ -41,6 +41,9 @@
 #include <QTouchEvent>
 #include <QTransform>
 #include <QWheelEvent>
+#ifdef Q_OS_ANDROID
+#include <QTiltSensor>
+#endif
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -131,6 +134,11 @@ class Canvas final:public QWidget {
     int touchGestureMaxPoints_=0,touchPointId0_=-1,touchPointId1_=-1;
     bool touchChanged_=false,touchTapCandidate_=false,touchPanStarted_=false;
     bool touchAfterPinchSingle_=false,touchStoppedMotion_=false,touchRotationActive_=false;
+#ifdef Q_OS_ANDROID
+    QTiltSensor tiltSensor_;
+    bool tiltSteeringAvailable_=false,tiltSteeringEnabled_=true;
+    bool tiltSteeringFlight_=false,tiltSteeringInverted_=false;
+#endif
     QElapsedTimer lastTapClock_;
     size_t threads_=std::max<size_t>(1,defaultWorkerCount()-presentationWorkerCount());
     /// Stops Frax-style kinetic touch motion. Returns whether anything was moving.
@@ -140,6 +148,9 @@ class Canvas final:public QWidget {
         touchPanVelocity_=QPointF{};
         touchZoomVelocity_=0;
         touchRotationVelocity_=0;
+#ifdef Q_OS_ANDROID
+        tiltSteeringFlight_=false;
+#endif
         if(was && refine) submit(false);
         return was;
     }
@@ -169,8 +180,48 @@ class Canvas final:public QWidget {
     void startTouchMomentum(const QPointF&anchor) {
         if(!hasTouchMomentum()) {stopTouchMomentum(false);idle_.start();return;}
         touchMomentumAnchor_=anchor;
+#ifdef Q_OS_ANDROID
+        // Frax-style tilt is relative to the phone angle at the instant a
+        // panning flight begins. Zoom velocity remains independent of tilt.
+        tiltSteeringFlight_=tiltSteeringEnabled_ && tiltSteeringAvailable_ &&
+            std::hypot(touchPanVelocity_.x(),touchPanVelocity_.y())>12.0;
+        if(tiltSteeringFlight_) tiltSensor_.calibrate();
+#endif
         touchMomentumClock_.restart();
         touchMomentum_.start();
+    }
+
+    /// Steers Frax-style free motion from relative phone tilt without changing zoom.
+    void applyTiltSteering(double seconds) {
+#ifdef Q_OS_ANDROID
+        if(!tiltSteeringFlight_ || !tiltSteeringEnabled_ || !tiltSteeringAvailable_)
+            return;
+        const auto*reading=tiltSensor_.reading();
+        if(!reading) return;
+        auto dead=[](double degrees) {
+            constexpr double zone=.8;
+            const double magnitude=std::abs(degrees);
+            return magnitude<=zone?0.0:std::copysign(magnitude-zone,degrees);
+        };
+        double tx=dead(reading->xRotation());
+        double ty=dead(reading->yRotation());
+        if(tiltSteeringInverted_) {tx=-tx;ty=-ty;}
+
+        // A few degrees should be enough to stop/reverse an ordinary throw.
+        // Preserve the last zoom velocity exactly, as Frax Motion does.
+        constexpr double panAcceleration=45.0; // pixels/s^2 per degree
+        touchPanVelocity_+=QPointF(-tx,ty)*(panAcceleration*seconds);
+        const double speed=std::hypot(touchPanVelocity_.x(),touchPanVelocity_.y());
+        if(speed>5000.0) touchPanVelocity_*=5000.0/speed;
+
+        // Tilt also steers an already-spinning flight, but never creates rotation
+        // from a pure pan. This avoids accidental grid invalidation.
+        if(std::abs(touchRotationVelocity_)>.018)
+            touchRotationVelocity_=std::clamp(
+                touchRotationVelocity_-tx*.02*seconds,-6.0,6.0);
+#else
+        (void)seconds;
+#endif
     }
 
     /// Frax tap zoom: exact 3x step and move the tapped mathematical point to center.
