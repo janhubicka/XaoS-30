@@ -1608,6 +1608,12 @@ public:
         }
     }
     bool mobileUi() const noexcept { return mobile_; }
+    /// Verifies that phone controls cannot bubble unhandled touches into Canvas.
+    bool mobileInputHierarchyValid() const noexcept {
+        return !mobile_ || (mobileDock_ && mobileBadge_ &&
+                            mobileDock_->parentWidget()!=canvas &&
+                            mobileBadge_->parentWidget()!=canvas);
+    }
 };
 }
 /// Starts the Qt desktop application and optional smoke test.
@@ -1674,7 +1680,8 @@ int main(int argc,char**argv) {
         auto*finish=new QTimer(&window);
         finish->setInterval(100);
         QObject::connect(finish,&QTimer::timeout,&window,[&window,&app,state,finish] {
-            const bool ok=window.canvas->completedFrames && state->publishedDuringMotion;
+            const bool ok=window.canvas->completedFrames && state->publishedDuringMotion &&
+                          window.mobileInputHierarchyValid();
             if(ok || ++state->finishChecks>=75) {
                 finish->stop();
                 app.exit(ok?0:2);
