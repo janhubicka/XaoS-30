@@ -563,23 +563,52 @@ bool bicubicColor(const FrameBase&frame,const ColorContext&ctx,const Settings&di
     return true;
 }
 
-/// Maps target pixel centres to nearest source indices in another viewport.
-std::vector<int> reprojectAxis(const Big&newCenter,const Big&newStep,int newSize,
-                               const Big&oldCenter,const Big&oldStep,int oldSize) {
-    std::vector<int> source(static_cast<size_t>(newSize),0);
-    if(newSize<1 || oldSize<1) return source;
-    const Big newFirst=add(sub(newCenter,scale(newStep,static_cast<double>(newSize)*.5)),
-                           scale(newStep,.5));
-    const Big oldFirst=add(sub(oldCenter,scale(oldStep,static_cast<double>(oldSize)*.5)),
-                           scale(oldStep,.5));
-    for(int i=0;i<newSize;++i) {
-        const Big coordinate=add(newFirst,scale(newStep,static_cast<double>(i)));
-        const double p=div(sub(coordinate,oldFirst),oldStep).toDouble();
-        long nearest=std::isfinite(p)?std::lround(p):0;
-        nearest=std::clamp(nearest,0L,static_cast<long>(oldSize-1));
-        source[static_cast<size_t>(i)]=static_cast<int>(nearest);
+struct DisplayFallback {
+    bool valid=false;
+    int width=0,height=0;
+    double x0=0,y0=0,xx=0,xy=0,yx=0,yy=0;
+
+    std::pair<int,int> source(int x,int y) const noexcept {
+        const double sx=x0+xx*x+xy*y;
+        const double sy=y0+yx*x+yy*y;
+        long ix=std::isfinite(sx)?std::lround(sx):0;
+        long iy=std::isfinite(sy)?std::lround(sy):0;
+        ix=std::clamp(ix,0L,static_cast<long>(width-1));
+        iy=std::clamp(iy,0L,static_cast<long>(height-1));
+        return {static_cast<int>(ix),static_cast<int>(iy)};
     }
-    return source;
+};
+
+/// Builds the affine nearest-pixel map from the current view into a previous
+/// display. Unlike the old separable x/y map this remains valid when the screen
+/// basis rotates, so a partial rotated frame can keep the already-known image.
+DisplayFallback makeDisplayFallback(const Request&current,const DisplayFrame&previous) {
+    DisplayFallback out;
+    if(current.width<1 || current.height<1 ||
+       previous.request.width<1 || previous.request.height<1)
+        return out;
+    out.width=previous.request.width;
+    out.height=previous.request.height;
+
+    auto map=[&](double x,double y) {
+        const double u=(x+.5)/current.width;
+        const double v=1.0-(y+.5)/current.height;
+        const auto point=current.view.screenToComplex(u,v,current.width,current.height);
+        const auto old=previous.request.view.complexToScreen(
+            point.first,point.second,previous.request.width,previous.request.height);
+        return std::array<double,2>{
+            old.first*previous.request.width-.5,
+            (1.0-old.second)*previous.request.height-.5};
+    };
+
+    const auto p=map(0,0),px=map(1,0),py=map(0,1);
+    for(double value:{p[0],p[1],px[0],px[1],py[0],py[1]})
+        if(!std::isfinite(value)) return out;
+    out.x0=p[0];out.y0=p[1];
+    out.xx=px[0]-p[0];out.yx=px[1]-p[1];
+    out.xy=py[0]-p[0];out.yy=py[1]-p[1];
+    out.valid=true;
+    return out;
 }
 
 
@@ -1812,25 +1841,15 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
             cubicY[static_cast<size_t>(y)]=cubicPoint(yaxis,yaxis.target.empty()?0.0:yaxis.target[static_cast<size_t>(y)]);
     }
 
-    std::vector<int> fallbackX,fallbackY;
+    DisplayFallback fallback;
     if(previous && displayCompatible(previous->request,frame.request) &&
        previous->request.settings.inColoring==displaySettings.inColoring &&
        previous->request.settings.outColoring==displaySettings.outColoring &&
-       previous->request.view.rotation==frame.request.view.rotation &&
        previous->request.width>0 && previous->request.height>0 &&
        previous->pixels.size()==static_cast<size_t>(previous->request.width)*
                                 static_cast<size_t>(previous->request.height) &&
-       previous->paletteCodes.size()==previous->pixels.size()) {
-        const Big oldStep=divide(previous->request.view.span.atPrecision(
-            std::max(frame.stats.bits,previous->request.view.span.precision())),
-            static_cast<unsigned long>(previous->request.width));
-        const auto [newXCenter,newYCenter]=frame.request.view.axisCenter();
-        const auto [oldXCenter,oldYCenter]=previous->request.view.axisCenter();
-        fallbackX=reprojectAxis(newXCenter,step,frame.request.width,
-                                oldXCenter,oldStep,previous->request.width);
-        fallbackY=reprojectAxis(newYCenter,step,frame.request.height,
-                                oldYCenter,oldStep,previous->request.height);
-    }
+       previous->paletteCodes.size()==previous->pixels.size())
+        fallback=makeDisplayFallback(frame.request,*previous);
 
     std::atomic<int> nextRow{0};
     executor.run([&](size_t) {
@@ -1876,17 +1895,17 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
                     if(!ok) ok=gridColor(frame,colors,displaySettings,nx,ny,color);
                     break;
                 }
-                if(!ok && !fallbackX.empty() && !fallbackY.empty()) {
-                    const int fx=fallbackX[static_cast<size_t>(x)];
-                    const int fy=fallbackY[static_cast<size_t>(y)];
+                bool usedFallback=false;
+                if(!ok && fallback.valid) {
+                    const auto [fx,fy]=fallback.source(x,y);
                     paletteCode=previous->paletteCodeAt(fx,fy);
                     color=paletteColorFromCode(paletteCode,displaySettings.paletteShift);
-                    ok=true;
+                    ok=true;usedFallback=true;
                 }
                 const size_t outputIndex=outputRow+static_cast<size_t>(x);
                 out->pixels[outputIndex]=ok?color:0xff000000u;
                 out->paletteCodes[outputIndex]=
-                    (ok && (paletteCodeKnown || !fallbackX.empty()))?paletteCode:BlackPaletteCode;
+                    (ok && (paletteCodeKnown || usedFallback))?paletteCode:BlackPaletteCode;
             }
         }
     });
