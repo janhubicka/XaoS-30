@@ -1355,19 +1355,28 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     for(int y=0;y<r.height;++y) if(ay.source[static_cast<size_t>(y)]<0) rowReady[static_cast<size_t>(y)]=0,hasNewLines=true;
     for(int x=0;x<r.width;++x) if(ax.source[static_cast<size_t>(x)]<0) colReady[static_cast<size_t>(x)]=0,hasNewLines=true;
 
-    auto colorAt=[&](int x,int y,uint32_t&color)->bool {
+    auto sampleAt=[&](int x,int y,PreviewSample&sample)->bool {
         const size_t i=f->index(x,y);
         if(!previewKnown(f->sampleQuality[i])) return false;
-        color=f->samplePixels[i];return true;
-    };
-    auto sameSeven=[&](const std::array<std::pair<int,int>,7>&points,uint32_t&color)->bool {
-        if(!colorAt(points[0].first,points[0].second,color)) return false;
-        for(size_t i=1;i<points.size();++i) {
-            uint32_t c=0;if(!colorAt(points[i].first,points[i].second,c) || c!=color) return false;
-        }
+        sample.iteration=f->sampleIterationCode(i);
+        sample.re=f->colorRe[i];sample.im=f->colorIm[i];
         return true;
     };
-    auto guessRow=[&](int y,int x,uint32_t&color)->bool {
+    auto sameSeven=[&](const std::array<std::pair<int,int>,7>&points,
+                       PreviewSample&sample)->bool {
+        if(!sampleAt(points[0].first,points[0].second,sample)) return false;
+        for(size_t i=1;i<points.size();++i) {
+            PreviewSample other;
+            if(!sampleAt(points[i].first,points[i].second,other) ||
+               other.iteration!=sample.iteration)
+                return false;
+        }
+        // Deliberately compare only the iteration-space field. Palette phase and
+        // XaoS coloring modes are presentation transforms and must never change
+        // whether a region is considered solid.
+        return true;
+    };
+    auto guessRow=[&](int y,int x,PreviewSample&sample)->bool {
         if(!r.settings.solidGuessRange) return false;
         int down=y-1,up=y+1;
         while(down>=0 && !rowReady[static_cast<size_t>(down)] && y-down<=static_cast<int>(r.settings.solidGuessRange)) --down;
@@ -1377,9 +1386,9 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         while(left>=0 && !colReady[static_cast<size_t>(left)]) --left;
         while(right<r.width && !colReady[static_cast<size_t>(right)]) ++right;
         if(left<0 || right>=r.width) return false;
-        return sameSeven({{{x,down},{x,up},{left,y},{left,down},{right,down},{right,up},{left,up}}},color);
+        return sameSeven({{{x,down},{x,up},{left,y},{left,down},{right,down},{right,up},{left,up}}},sample);
     };
-    auto guessColumn=[&](int x,int y,uint32_t&color)->bool {
+    auto guessColumn=[&](int x,int y,PreviewSample&sample)->bool {
         if(!r.settings.solidGuessRange) return false;
         int left=x-1,right=x+1;
         while(left>=0 && !colReady[static_cast<size_t>(left)] && x-left<=static_cast<int>(r.settings.solidGuessRange)) --left;
@@ -1389,7 +1398,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         while(down>=0 && !rowReady[static_cast<size_t>(down)]) --down;
         while(up<r.height && !rowReady[static_cast<size_t>(up)]) ++up;
         if(down<0 || up>=r.height) return false;
-        return sameSeven({{{left,y},{right,y},{left,down},{right,down},{x,down},{right,up},{left,up}}},color);
+        return sameSeven({{{left,y},{right,y},{left,down},{right,down},{x,down},{right,up},{left,up}}},sample);
     };
 
     // The initial image has no rows/columns to reuse; calculate it as a normal
@@ -1497,9 +1506,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         f->setSampleIterationCode(index,previewIterationCode(f->counts[index],r.settings.iterations));
                         f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                     } else {
-                        uint32_t guessed=0;
+                        PreviewSample guessed;
                         if(guessRow(y,x,guessed)) {
-                            f->samplePixels[index]=guessed;
+                            f->setSampleIterationCode(index,guessed.iteration);
+                            f->colorRe[index]=guessed.re;f->colorIm[index]=guessed.im;
                             f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Guess);
                             ++f->stats.solidGuessed;
                         } else calculate.push_back(index);
@@ -1527,9 +1537,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         f->setSampleIterationCode(index,previewIterationCode(f->counts[index],r.settings.iterations));
                         f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                     } else {
-                        uint32_t guessed=0;
+                        PreviewSample guessed;
                         if(guessColumn(x,y,guessed)) {
-                            f->samplePixels[index]=guessed;
+                            f->setSampleIterationCode(index,guessed.iteration);
+                            f->colorRe[index]=guessed.re;f->colorIm[index]=guessed.im;
                             f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Guess);
                             ++f->stats.solidGuessed;
                         } else calculate.push_back(index);
