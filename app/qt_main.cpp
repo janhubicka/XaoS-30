@@ -103,6 +103,7 @@ class Canvas final:public QWidget {
     std::shared_ptr<Cancellation> presentationActive_;
     std::thread presenter_;
     uint64_t serial_=0,shown_=0,epoch_=1;
+    uint64_t latestFrameSerial_=0,latestFrameEpoch_=0;
     QImage image_,fallback_;
     View imageView_,fallbackView_;
     QTimer motion_,idle_,autopilotTimer_,touchMomentum_,paletteTimer_;
@@ -250,6 +251,7 @@ class Canvas final:public QWidget {
             std::lock_guard stateLock(mutex_);
             if(epoch!=epoch_) return; // semantic settings changed while the grid was computing
             latestFrame_=frame;
+            latestFrameSerial_=serial;latestFrameEpoch_=epoch;
         }
         const int paletteShift=presentationPaletteShift_.load(std::memory_order_relaxed);
         {
@@ -270,8 +272,8 @@ class Canvas final:public QWidget {
         {
             std::lock_guard lock(mutex_);
             frame=latestFrame_;
-            serial=++serial_;
-            epoch=epoch_;
+            serial=latestFrameSerial_;
+            epoch=latestFrameEpoch_;
         }
         if(!frame) {
             // During startup there may not be a grid yet; one ordinary request is
@@ -1055,6 +1057,7 @@ public:
                 autopilotEngine_.reset();
                 autopilotStep_=0;
                 latestFrame_.reset();
+                latestFrameSerial_=latestFrameEpoch_=0;
                 latestDisplay_.reset();
             }
             epoch=epoch_;
