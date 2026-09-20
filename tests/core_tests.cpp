@@ -227,16 +227,39 @@ void formulaTests() {
         Renderer nativeFresh;auto nativeBaseline=nativeFresh.render(r,one,stop);
         sameCounts(*nativeResumed,*nativeBaseline);
 
+        // At ~100 bits every formula should use an inline backend (wide fixed for
+        // multiplication-only formulas, DD for rational formulas) and agree with
+        // a separately forced GMP render.
+        r.settings.minimumPrecision=96;r.settings.iterations=36;r.settings.fastPrecision=true;
+        Renderer fast96;auto quick=fast96.render(r,many,stop);
+        CHECK(quick->stats.backend!="double");
+        CHECK(quick->stats.backend!="GMP");
+        Request gmp96=r;gmp96.settings.fastPrecision=false;
+        Renderer forced96;auto reference96=forced96.render(gmp96,one,stop);
+        CHECK(reference96->stats.backend=="GMP");
+        sameCounts(*quick,*reference96);
+
+        r.settings.iterations=52;
+        auto quickResumed=fast96.render(r,many,stop);
+        gmp96.settings.iterations=52;
+        Renderer forced96Fresh;auto reference96More=forced96Fresh.render(gmp96,one,stop);
+        sameCounts(*quickResumed,*reference96More);
+
+        // Higher precision exercises the 3-limb wide-fixed tier where applicable;
+        // division-heavy formulas intentionally fall back to GMP above DD.
         r.settings.minimumPrecision=128;r.settings.iterations=36;
         Renderer precise;auto big=precise.render(r,one,stop);
         CHECK(big->stats.bits>=128);
         CHECK(big->stats.complete);
+        Request gmp128=r;gmp128.settings.fastPrecision=false;
+        Renderer forced128;auto reference128=forced128.render(gmp128,one,stop);
+        sameCounts(*big,*reference128);
 
-        // Raising the limit must also preserve correctness for the formula-sized
-        // arbitrary-precision checkpoint objects.
+        // Raising the limit must preserve the exact 2/3/4-scalar fast checkpoint.
         r.settings.iterations=52;
         auto resumed=precise.render(r,one,stop);
-        Renderer fresh;auto baseline=fresh.render(r,one,stop);
+        gmp128.settings.iterations=52;
+        Renderer fresh;auto baseline=fresh.render(gmp128,one,stop);
         sameCounts(*resumed,*baseline);
     }
 
