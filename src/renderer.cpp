@@ -49,7 +49,7 @@ QuadraticBackend backendFromName(std::string_view name) noexcept {
 /// Estimates memory consumed by one frame and optional saved orbit state.
 size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state,unsigned stateScalars,
                 QuadraticBackend backend=QuadraticBackend::GMP) {
-    size_t each=sizeof(Count)+sizeof(uint32_t)+sizeof(uint8_t);
+    size_t each=sizeof(Count)+sizeof(uint32_t)+sizeof(uint8_t)+2*sizeof(float);
     if(state) {
         if(big && backend!=QuadraticBackend::GMP) {
             switch(backend) {
@@ -562,6 +562,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         ((!big && hasNativeSIMD()) ||
          (big && quadraticBackend==QuadraticBackend::DoubleDouble && hasDoubleDoubleSIMD()));
     f->counts.resize(pixels); f->state.resize(pixels,stateScalars,quadraticBackend);
+    f->colorRe.assign(pixels,0.0f);f->colorIm.assign(pixels,0.0f);
     f->samplePixels.assign(pixels,0xff000000u);
     f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
 
@@ -599,6 +600,39 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         return r.view.rotation==0?dy[static_cast<size_t>(y)]:
             dxImag[static_cast<size_t>(x)]+dyImag[static_cast<size_t>(y)];
     };
+    const auto colorParameterAt=[&](size_t index) {
+        if(r.settings.formula==Formula::Julia)
+            return std::pair{r.settings.juliaRe.toDouble(),r.settings.juliaIm.toDouble()};
+        const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
+        const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
+        if constexpr(!big)
+            return std::pair{doubleRealAt(x,y),doubleImagAt(x,y)};
+        if(r.view.rotation==0)
+            return std::pair{f->xs[static_cast<size_t>(x)].toDouble(),
+                             f->ys[static_cast<size_t>(y)].toDouble()};
+        return std::pair{
+            add(bxReal[static_cast<size_t>(x)],byReal[static_cast<size_t>(y)]).toDouble(),
+            add(bxImag[static_cast<size_t>(x)],byImag[static_cast<size_t>(y)]).toDouble()};
+    };
+    const auto colorForIndex=[&](size_t index) {
+        const auto [cr,ci]=colorParameterAt(index);
+        return pixelColor(f->counts[index],r.settings.iterations,r.settings,
+                          f->colorRe[index],f->colorIm[index],cr,ci);
+    };
+    const auto rememberOrbitColor=[&](size_t index,const auto&x,const auto&y) {
+        auto toDouble=[](const auto&v)->double {
+            using T=std::decay_t<decltype(v)>;
+            if constexpr(std::is_same_v<T,double>) return v;
+            else return v.toDouble();
+        };
+        f->colorRe[index]=static_cast<float>(toDouble(x));
+        f->colorIm[index]=static_cast<float>(toDouble(y));
+    };
+    const bool coloringChanged=gridOld &&
+        (gridOld->request.settings.paletteShift!=r.settings.paletteShift ||
+         gridOld->request.settings.inColoring!=r.settings.inColoring ||
+         gridOld->request.settings.outColoring!=r.settings.outColoring);
+    const bool analyticForOrbit=r.settings.analytic && r.settings.inColoring==InColoring::Black;
 
     std::vector<LocalStats> stats(executor.concurrency());
     // Move display samples from the last valid grid and mathematical state from
