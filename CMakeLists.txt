@@ -119,8 +119,16 @@ endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   set_source_files_properties(src/palette.cpp PROPERTIES
     COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
+  # Scalar and explicit AVX2/NEON implementations intentionally use identical
+  # operation order so resume/reuse is backend-independent. Compiler-level
+  # reassociation breaks that contract on ARM64; the intrinsics themselves
+  # already express the optimized vector operations explicitly.
+  set_source_files_properties(src/simd.cpp PROPERTIES
+    COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
 elseif(MSVC)
   set_source_files_properties(src/palette.cpp PROPERTIES
+    COMPILE_OPTIONS "/fp:precise")
+  set_source_files_properties(src/simd.cpp PROPERTIES
     COMPILE_OPTIONS "/fp:precise")
 endif()
 
