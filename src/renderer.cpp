@@ -600,7 +600,12 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     const bool quadratic=r.settings.formula==Formula::Mandelbrot ||
                          r.settings.formula==Formula::Julia ||
                          r.settings.formula==Formula::BurningShip;
-    f->stats.simd=quadratic && r.settings.simd &&
+    const bool powerFormula=r.settings.formula==Formula::Mandelbrot3 ||
+                            r.settings.formula==Formula::Mandelbrot4 ||
+                            r.settings.formula==Formula::Mandelbrot5 ||
+                            r.settings.formula==Formula::Mandelbrot6 ||
+                            r.settings.formula==Formula::Mandelbrot9;
+    f->stats.simd=(quadratic||(!big&&powerFormula)) && r.settings.simd &&
         ((!big && hasNativeSIMD()) ||
          (big && quadraticBackend==QuadraticBackend::DoubleDouble && hasDoubleDoubleSIMD()));
     f->counts.resize(pixels); f->state.resize(pixels,stateScalars,quadraticBackend);
@@ -1142,6 +1147,57 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             if(result.known(r.settings.iterations)) {
                                 f->samplePixels[index]=colorForIndex(index);
                                 f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                            }
+                        }
+                    }
+                } else if constexpr(F::generic && F::powerFormula) {
+                    std::array<Lane,4> lanes{};
+                    std::array<size_t,4> indexes{};
+                    std::array<uint32_t,4> starts{};
+                    const size_t chunk=list.size()>512?64:4;
+                    while(!calculationStop.requested()) {
+                        const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
+                        if(first>=list.size()) break;
+                        const size_t last=std::min(first+chunk,list.size());
+                        size_t k=first;
+                        while(k<last && !calculationStop.requested()) {
+                            size_t used=0;
+                            while(used<4 && k<last) {
+                                const size_t index=list[k++];
+                                Count before=f->counts[index];
+                                if(before.known(r.settings.iterations)) {
+                                    f->samplePixels[index]=colorForIndex(index);
+                                    f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                                    continue;
+                                }
+                                const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
+                                const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
+                                FormulaOrbit<double,F> orbit{};
+                                const FormulaOrbit<double,F>*saved=nullptr;
+                                if constexpr(Save) {
+                                    if(before.iterations) {orbit=state->load(index);saved=&orbit;}
+                                }
+                                lanes[used]=preparePowerLane<F>(
+                                    doubleRealAt(x,y),doubleImagAt(x,y),before,saved);
+                                indexes[used]=index;starts[used]=saved?before.iterations:0;
+                                if(saved && before.iterations) ++stat.resumed;else ++stat.started;
+                                ++used;
+                            }
+                            if(!used) continue;
+                            iteratePowerFour(lanes,used,r.settings.iterations,F::power,
+                                             calculationStop,Save,r.settings.simd);
+                            for(size_t j=0;j<used;++j) {
+                                const size_t index=indexes[j];auto&lane=lanes[j];
+                                stat.steps+=lane.count.iterations-starts[j];
+                                if(!Save && lane.count.status==Status::Pending &&
+                                   lane.count.iterations<f->counts[index].iterations) continue;
+                                f->counts[index]=lane.count;
+                                rememberOrbitColor(index,lane.x,lane.y);
+                                if constexpr(Save) state->store(index,lane);
+                                if(lane.count.known(r.settings.iterations)) {
+                                    f->samplePixels[index]=colorForIndex(index);
+                                    f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                                }
                             }
                         }
                     }
