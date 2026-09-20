@@ -275,6 +275,10 @@ struct PreviewSample {
     uint32_t iteration=0;
     float re=0,im=0;
 };
+constexpr uint32_t BlackPaletteCode=std::numeric_limits<uint32_t>::max();
+uint32_t pixelPaletteCode(Count,uint32_t,const Settings&,
+                          double,double,double,double) noexcept;
+uint32_t paletteColorFromCode(uint32_t,int) noexcept;
 
 /// Reports whether a sample has an iteration value usable by solid guessing.
 bool previewKnown(uint8_t q) noexcept {
@@ -499,9 +503,9 @@ std::pair<double,double> colorParameter(const FrameBase&frame,const ColorContext
     return {gx*ctx.cs-gy*ctx.sn,gx*ctx.sn+gy*ctx.cs};
 }
 
-/// Reads and colors one usable iteration-space sample from the adaptive grid.
-bool gridColor(const FrameBase&frame,const ColorContext&ctx,const Settings&displaySettings,
-               int x,int y,uint32_t&color) {
+/// Reads one usable palette-independent sample from the adaptive grid.
+bool gridPaletteCode(const FrameBase&frame,const ColorContext&ctx,
+                     const Settings&displaySettings,int x,int y,uint32_t&code) {
     if(x<0 || y<0 || x>=frame.request.width || y>=frame.request.height) return false;
     const size_t i=frame.index(x,y);
     if(static_cast<DisplayQuality>(frame.sampleQuality[i])==DisplayQuality::Missing)
@@ -509,8 +513,16 @@ bool gridColor(const FrameBase&frame,const ColorContext&ctx,const Settings&displ
     const Count count=previewCount(
         frame.sampleIterationCode(i),frame.request.settings.iterations);
     const auto [cr,ci]=colorParameter(frame,ctx,x,y);
-    color=pixelColor(count,frame.request.settings.iterations,displaySettings,
-                     frame.colorRe[i],frame.colorIm[i],cr,ci);
+    code=pixelPaletteCode(count,frame.request.settings.iterations,displaySettings,
+                          frame.colorRe[i],frame.colorIm[i],cr,ci);
+    return true;
+}
+/// Colors one usable iteration-space sample using only the current presentation phase.
+bool gridColor(const FrameBase&frame,const ColorContext&ctx,const Settings&displaySettings,
+               int x,int y,uint32_t&color) {
+    uint32_t code=BlackPaletteCode;
+    if(!gridPaletteCode(frame,ctx,displaySettings,x,y,code)) return false;
+    color=paletteColorFromCode(code,displaySettings.paletteShift);
     return true;
 }
 
