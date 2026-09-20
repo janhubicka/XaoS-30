@@ -1844,8 +1844,18 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
                 const int nx=nearestX[static_cast<size_t>(x)];
                 const int ny=nearestY[static_cast<size_t>(y)];
                 uint32_t paletteCode=BlackPaletteCode;
-                const bool paletteCodeKnown=
+                bool paletteCodeKnown=
                     gridPaletteCode(frame,colors,displaySettings,nx,ny,paletteCode);
+                if(!paletteCodeKnown && !linearX.empty() && !linearY.empty()) {
+                    const auto&lx=linearX[static_cast<size_t>(x)];
+                    const auto&ly=linearY[static_cast<size_t>(y)];
+                    if(lx.a>=0 && ly.a>=0) {
+                        const int px=lx.t<.5?lx.a:lx.b;
+                        const int py=ly.t<.5?ly.a:ly.b;
+                        paletteCodeKnown=
+                            gridPaletteCode(frame,colors,displaySettings,px,py,paletteCode);
+                    }
+                }
                 switch(displaySettings.reconstruction) {
                 case Reconstruction::Nearest:
                     ok=gridColor(frame,colors,displaySettings,nx,ny,color);
