@@ -710,6 +710,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         f->colorIm[index]=static_cast<float>(toDouble(y));
     };
     const bool analyticForOrbit=r.settings.analytic && r.settings.inColoring==InColoring::Black;
+    const bool incolorNeedsInteriorOrbits=gridOld &&
+        r.settings.inColoring!=InColoring::Black &&
+        gridOld->request.settings.inColoring==InColoring::Black &&
+        gridOld->request.settings.analytic;
 
     std::vector<LocalStats> stats(executor.concurrency());
     // Move display samples from the last valid grid and mathematical state from
@@ -1593,7 +1597,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         // apparent full recomputation after zooming stopped.  Exact/unbounded
         // requests, explicit uniform-grid requests, and iteration-limit changes do
         // require mathematical refinement.
-        if(!r.settings.sliceMilliseconds || r.settings.uniform || !sameIteration)
+        if(!r.settings.sliceMilliseconds || r.settings.uniform || !sameIteration ||
+           incolorNeedsInteriorOrbits)
             rasterRefine();
     }
 
