@@ -86,7 +86,11 @@ QImage makeImage(std::shared_ptr<const DisplayFrame> frame) {
 }
 class Canvas final:public QWidget {
     struct Job { Request request; size_t threads; uint64_t serial,epoch; bool interactive; };
-    struct PresentationJob { std::shared_ptr<const FrameBase> frame; uint64_t serial,epoch; };
+    struct PresentationJob {
+        std::shared_ptr<const FrameBase> frame;
+        uint64_t serial,epoch;
+        int paletteShift=0;
+    };
     std::mutex mutex_;
     std::condition_variable_any wake_;
     std::optional<Job> pending_;
@@ -104,8 +108,10 @@ class Canvas final:public QWidget {
     QTimer motion_,idle_,autopilotTimer_,touchMomentum_,paletteTimer_;
     QElapsedTimer motionClock_,autopilotClock_,touchSampleClock_,touchMomentumClock_,touchGestureClock_,paletteClock_;
     Autopilot autopilotEngine_;
+    std::shared_ptr<const FrameBase> latestFrame_;
     std::shared_ptr<const DisplayFrame> latestDisplay_;
     Statistics latestDisplayStats_;
+    std::atomic<int> presentationPaletteShift_{0};
     double autopilotStep_=0,zoomSpeedScale_=1.0;
     double paletteSpeed_=48.0,palettePhase_=0;
     int paletteDirection_=0;
@@ -243,16 +249,45 @@ class Canvas final:public QWidget {
         {
             std::lock_guard stateLock(mutex_);
             if(epoch!=epoch_) return; // semantic settings changed while the grid was computing
+            latestFrame_=frame;
         }
+        const int paletteShift=presentationPaletteShift_.load(std::memory_order_relaxed);
         {
             std::lock_guard lock(presentationMutex_);
             // Geometry-only motion intentionally does not invalidate an older
             // completed grid: drawView() can transform that source image into the
             // current viewport, exactly as classic XaoS keeps showing/refining
             // frames while the zoom target moves. Keep only the newest pending grid.
-            presentationPending_=PresentationJob{std::move(frame),serial,epoch};
+            presentationPending_=PresentationJob{std::move(frame),serial,epoch,paletteShift};
         }
         presentationWake_.notify_one();
+    }
+
+    /// Recolors the newest mathematical grid without submitting any orbit/DP work.
+    void queuePalettePresentation() {
+        std::shared_ptr<const FrameBase> frame;
+        uint64_t serial=0,epoch=0;
+        {
+            std::lock_guard lock(mutex_);
+            frame=latestFrame_;
+            serial=++serial_;
+            epoch=epoch_;
+        }
+        if(!frame) {
+            // During startup there may not be a grid yet; one ordinary request is
+            // enough to seed presentation-only color cycling.
+            submit(true);
+            return;
+        }
+        const int paletteShift=presentationPaletteShift_.load(std::memory_order_relaxed);
+        {
+            std::lock_guard lock(presentationMutex_);
+            if(presentationActive_)
+                presentationActive_->cancelled.store(true,std::memory_order_relaxed);
+            presentationPending_=PresentationJob{std::move(frame),serial,epoch,paletteShift};
+        }
+        presentationWake_.notify_one();
+        update();
     }
 
     /// Reconstructs display frames independently from the compute coordinator.
@@ -274,7 +309,7 @@ class Canvas final:public QWidget {
                 presentationActive_=token;
             }
             try {
-                auto display=presentFrame(*job.frame,executor,*token,previous.get());
+                auto display=presentFrame(*job.frame,executor,*token,previous.get(),job.paletteShift);
                 if(token->cancelled.load(std::memory_order_relaxed)) {
                     std::lock_guard lock(presentationMutex_);
                     if(presentationActive_==token) presentationActive_.reset();
@@ -975,7 +1010,8 @@ public:
             int shift=(settings.paletteShift+delta)%period;
             if(shift<0) shift+=period;
             settings.paletteShift=shift;
-            submit(true);
+            presentationPaletteShift_.store(shift,std::memory_order_relaxed);
+            queuePalettePresentation();
         });
         connect(&autopilotTimer_,&QTimer::timeout,this,[this]{autopilotTick();});
         presenter_=std::thread([this]{presentationLoop();});
@@ -1018,6 +1054,7 @@ public:
                 ++epoch_;
                 autopilotEngine_.reset();
                 autopilotStep_=0;
+                latestFrame_.reset();
                 latestDisplay_.reset();
             }
             epoch=epoch_;
@@ -1099,12 +1136,15 @@ public:
         int shift=(settings.paletteShift+delta)%period;
         if(shift<0) shift+=period;
         settings.paletteShift=shift;
-        submit(false);
+        presentationPaletteShift_.store(shift,std::memory_order_relaxed);
+        queuePalettePresentation();
         if(onColorChanged) onColorChanged();
     }
 
     void resetPaletteShift() {
-        settings.paletteShift=0;submit(false);
+        settings.paletteShift=0;
+        presentationPaletteShift_.store(0,std::memory_order_relaxed);
+        queuePalettePresentation();
         if(onColorChanged) onColorChanged();
     }
 
