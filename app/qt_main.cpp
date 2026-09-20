@@ -805,7 +805,7 @@ protected:
                             const double scale=distance/touchLastDistance_;
                             if(std::isfinite(scale) && scale>0) {
                                 const double rawZoom=std::log(scale);
-                                constexpr double unlockZoom=std::log(1.012);
+                                const double unlockZoom=std::log(1.012);
                                 if(!touchZoomActive_) {
                                     touchZoomCandidate_+=rawZoom;
                                     if(std::abs(touchZoomCandidate_)>=unlockZoom) {
