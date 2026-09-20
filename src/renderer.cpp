@@ -1039,17 +1039,22 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
             }
         }
         if constexpr(big && F::generic) {
-            switch(quadraticBackend) {
-            case QuadraticBackend::DoubleDouble:
-                return makeGenericFastList.template operator()<F,DoubleDouble>();
-            case QuadraticBackend::WideFixed128:
-                return makeGenericFastList.template operator()<F,Fixed<2,24>,2,24>();
-            case QuadraticBackend::WideFixed192:
-                return makeGenericFastList.template operator()<F,Fixed<3,24>,3,24>();
-            case QuadraticBackend::WideFixed256:
-                return makeGenericFastList.template operator()<F,Fixed<4,24>,4,24>();
-            default:
-                break;
+            if constexpr(F::needsDivision) {
+                if(quadraticBackend==QuadraticBackend::DoubleDouble)
+                    return makeGenericFastList.template operator()<F,DoubleDouble>();
+            } else {
+                switch(quadraticBackend) {
+                case QuadraticBackend::DoubleDouble:
+                    return makeGenericFastList.template operator()<F,DoubleDouble>();
+                case QuadraticBackend::WideFixed128:
+                    return makeGenericFastList.template operator()<F,Fixed<2,24>,2,24>();
+                case QuadraticBackend::WideFixed192:
+                    return makeGenericFastList.template operator()<F,Fixed<3,24>,3,24>();
+                case QuadraticBackend::WideFixed256:
+                    return makeGenericFastList.template operator()<F,Fixed<4,24>,4,24>();
+                default:
+                    break;
+                }
             }
         }
         using BigScratch=std::conditional_t<F::generic,detail::FixedFormulaKernel<Big,F>,BigKernel<F>>;
