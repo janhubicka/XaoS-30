@@ -1764,6 +1764,7 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
         static_cast<unsigned long>(frame.request.width));
     const AxisSupport xaxis=buildAxisSupport(frame.xs,colReady,step);
     const AxisSupport yaxis=buildAxisSupport(frame.ys,rowReady,step);
+    const ColorContext colors=makeColorContext(frame);
 
     std::vector<int> nearestX(width,-1),nearestY(height,-1);
     if(frame.displayXSource.size()==width) nearestX=frame.displayXSource;
@@ -1788,6 +1789,9 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
 
     std::vector<int> fallbackX,fallbackY;
     if(previous && displayCompatible(previous->request,frame.request) &&
+       previous->request.settings.paletteShift==frame.request.settings.paletteShift &&
+       previous->request.settings.inColoring==frame.request.settings.inColoring &&
+       previous->request.settings.outColoring==frame.request.settings.outColoring &&
        previous->request.view.rotation==frame.request.view.rotation &&
        previous->request.width>0 && previous->request.height>0 &&
        previous->pixels.size()==static_cast<size_t>(previous->request.width)*
@@ -1816,22 +1820,22 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
                 const int ny=nearestY[static_cast<size_t>(y)];
                 switch(frame.request.settings.reconstruction) {
                 case Reconstruction::Nearest:
-                    ok=gridColor(frame,nx,ny,color);
+                    ok=gridColor(frame,colors,nx,ny,color);
                     break;
                 case Reconstruction::Bilinear:
                     if(!linearX.empty() && !linearY.empty())
-                        ok=bilinearColor(frame,linearX[static_cast<size_t>(x)],
+                        ok=bilinearColor(frame,colors,linearX[static_cast<size_t>(x)],
                                         linearY[static_cast<size_t>(y)],color);
-                    if(!ok) ok=gridColor(frame,nx,ny,color);
+                    if(!ok) ok=gridColor(frame,colors,nx,ny,color);
                     break;
                 case Reconstruction::Bicubic:
                     if(!cubicX.empty() && !cubicY.empty())
-                        ok=bicubicColor(frame,cubicX[static_cast<size_t>(x)],
+                        ok=bicubicColor(frame,colors,cubicX[static_cast<size_t>(x)],
                                        cubicY[static_cast<size_t>(y)],color);
                     if(!ok && !linearX.empty() && !linearY.empty())
                         ok=bilinearColor(frame,linearX[static_cast<size_t>(x)],
                                         linearY[static_cast<size_t>(y)],color);
-                    if(!ok) ok=gridColor(frame,nx,ny,color);
+                    if(!ok) ok=gridColor(frame,colors,nx,ny,color);
                     break;
                 }
                 if(!ok && !fallbackX.empty() && !fallbackY.empty())
