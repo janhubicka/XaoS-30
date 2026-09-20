@@ -80,10 +80,38 @@ struct FrameBase {
     // state. They make XaoS in/out coloring and palette changes independent of
     // expensive orbit recomputation. Float precision is ample for palette indices.
     AlignedVector<float> colorRe,colorIm;
-    // Adaptive-grid samples are deliberately separate from count/orbit state. A
-    // guessed colour must never become resumable mathematical state.
-    AlignedVector<uint32_t> samplePixels;
+    // The adaptive zoomer works in iteration space, never RGB space. Code zero
+    // represents a non-escaped sample at the current limit; an escaped sample at
+    // iteration n is stored as n+1. Missing-ness remains in sampleQuality.
+    //
+    // Use 16 bits whenever every possible escaped code fits (limit <= 65534);
+    // otherwise switch to 32 bits. This keeps ordinary interactive frames compact
+    // while supporting the renderer's full multi-billion iteration range.
+    using SampleIterations=std::variant<AlignedVector<uint16_t>,AlignedVector<uint32_t>>;
+    SampleIterations sampleIterations;
     AlignedVector<uint8_t> sampleQuality;
+    void resizeSampleIterations(size_t n,uint32_t limit) {
+        if(limit<std::numeric_limits<uint16_t>::max())
+            sampleIterations.emplace<AlignedVector<uint16_t>>(n,uint16_t{0});
+        else
+            sampleIterations.emplace<AlignedVector<uint32_t>>(n,uint32_t{0});
+    }
+    uint32_t sampleIterationCode(size_t i) const {
+        return std::visit([&](const auto&samples)->uint32_t {
+            return static_cast<uint32_t>(samples[i]);
+        },sampleIterations);
+    }
+    void setSampleIterationCode(size_t i,uint32_t code) {
+        std::visit([&](auto&samples) {
+            using T=typename std::decay_t<decltype(samples)>::value_type;
+            if(code>std::numeric_limits<T>::max())
+                throw std::overflow_error("iteration sample does not fit preview buffer");
+            samples[i]=static_cast<T>(code);
+        },sampleIterations);
+    }
+    bool sampleIterations32Bit() const noexcept {
+        return std::holds_alternative<AlignedVector<uint32_t>>(sampleIterations);
+    }
     // Timeout resolution reduction is represented by lightweight source maps,
     // not by copying a full framebuffer. Identity entries are completed grid
     // lines; other entries point directly at the completed line used for display.
@@ -316,12 +344,19 @@ template<class Real,bool Save> struct Frame final:FrameBase {
 struct DisplayFrame {
     Request request;
     std::vector<uint32_t> pixels; // top-to-bottom, tightly packed for zero-copy QImage wrapping
+    // Palette coordinate for a representative nearest mathematical sample at each
+    // displayed pixel. UINT32_MAX means black/no palette entry. This lets a
+    // previous display be recolored to a new palette phase when it is temporarily
+    // reprojected as zoom fallback, without storing another RGB-dependent buffer.
+    std::vector<uint32_t> paletteCodes;
     double milliseconds=0;
-    /// Returns one reconstructed display pixel in renderer bottom-to-top coordinates.
-    uint32_t at(int x,int y) const {
+    size_t displayIndex(int x,int y) const {
         const size_t row=static_cast<size_t>(request.height-1-y);
-        return pixels[row*static_cast<size_t>(request.width)+static_cast<size_t>(x)];
+        return row*static_cast<size_t>(request.width)+static_cast<size_t>(x);
     }
+    /// Returns one reconstructed display pixel in renderer bottom-to-top coordinates.
+    uint32_t at(int x,int y) const { return pixels[displayIndex(x,y)]; }
+    uint32_t paletteCodeAt(int x,int y) const { return paletteCodes[displayIndex(x,y)]; }
 };
 
 class Renderer {
@@ -344,8 +379,9 @@ uint32_t pixelColor(Count count,uint32_t limit,const Settings&,
 /// Compatibility helper for the classic black-inside/iteration-outside mapping.
 uint32_t pixelColor(Count count,uint32_t limit) noexcept;
 /// Reconstructs an immutable grid frame into a visible raster using a separate executor.
-std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&,Executor&,const Cancellation&,
-                                                 const DisplayFrame* previous=nullptr);
+std::shared_ptr<const DisplayFrame> presentFrame(
+    const FrameBase&,Executor&,const Cancellation&,const DisplayFrame* previous=nullptr,
+    int paletteShiftOverride=std::numeric_limits<int>::min());
 /// Writes a reconstructed frame to a binary PPM image.
 void writePPM(const DisplayFrame&,const std::string& path);
 /// Reconstructs and writes a grid frame using a temporary presentation executor.
