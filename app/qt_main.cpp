@@ -1010,6 +1010,7 @@ public:
             const double seconds=std::clamp(touchMomentumClock_.restart()/1000.0,.001,.05);
             try {
                 bool changed=false;
+                applyTiltSteering(seconds);
                 const QPointF pan=touchPanVelocity_*seconds;
                 if(std::hypot(pan.x(),pan.y())>.01) {
                     view.pan(pan.x(),pan.y(),std::max(1,width()));
@@ -1233,10 +1234,60 @@ public:
         // mouse drag cannot win the race against Qt's pinch recognizer.
         if(enabled) ungrabGesture(Qt::PinchGesture);
         else grabGesture(Qt::PinchGesture);
+#ifdef Q_OS_ANDROID
+        if(enabled) {
+            tiltSensor_.setDataRate(60);
+            if(tiltSensor_.isFeatureSupported(QSensor::AxesOrientation))
+                tiltSensor_.setAxesOrientationMode(QSensor::AutomaticOrientation);
+            tiltSteeringAvailable_=tiltSensor_.start();
+        } else {
+            tiltSensor_.stop();
+            tiltSteeringAvailable_=false;
+            tiltSteeringFlight_=false;
+        }
+#endif
         update();
     }
     /// Returns whether phone-oriented interaction is enabled.
     bool mobileUi() const noexcept { return mobileUi_; }
+
+    bool tiltSteeringAvailable() const noexcept {
+#ifdef Q_OS_ANDROID
+        return tiltSteeringAvailable_;
+#else
+        return false;
+#endif
+    }
+    bool tiltSteeringEnabled() const noexcept {
+#ifdef Q_OS_ANDROID
+        return tiltSteeringEnabled_;
+#else
+        return false;
+#endif
+    }
+    void setTiltSteering(bool enabled) {
+#ifdef Q_OS_ANDROID
+        tiltSteeringEnabled_=enabled;
+        if(!enabled) tiltSteeringFlight_=false;
+        if(onStatus) onStatus(enabled?"Tilt steering on":"Tilt steering off");
+#else
+        (void)enabled;
+#endif
+    }
+    bool tiltSteeringInverted() const noexcept {
+#ifdef Q_OS_ANDROID
+        return tiltSteeringInverted_;
+#else
+        return false;
+#endif
+    }
+    void setTiltSteeringInverted(bool inverted) {
+#ifdef Q_OS_ANDROID
+        tiltSteeringInverted_=inverted;
+#else
+        (void)inverted;
+#endif
+    }
     /// Returns the number of compute workers, excluding presentation workers.
     size_t workerCount() const noexcept { return threads_; }
     /// Changes the worker count and requests a new render.
@@ -1470,6 +1521,14 @@ class Window final:public QMainWindow {
 
         mobileMoreMenu_=new QMenu(more);
         auto*coordinates=mobileMoreMenu_->addAction("Coordinates & precision");
+        auto*tilt=mobileMoreMenu_->addAction("Tilt steering");
+        tilt->setCheckable(true);
+        tilt->setChecked(canvas->tiltSteeringEnabled());
+        tilt->setEnabled(canvas->tiltSteeringAvailable());
+        auto*invertTilt=mobileMoreMenu_->addAction("Invert tilt steering");
+        invertTilt->setCheckable(true);
+        invertTilt->setChecked(canvas->tiltSteeringInverted());
+        invertTilt->setEnabled(canvas->tiltSteeringAvailable());
         auto*level=mobileMoreMenu_->addAction("Level rotation");
         auto*saveState=mobileMoreMenu_->addAction("Save orbit state");
         saveState->setCheckable(true);saveState->setChecked(canvas->settings.saveState);
@@ -1488,6 +1547,8 @@ class Window final:public QMainWindow {
         });
         connect(reset,&QToolButton::clicked,canvas,[this]{canvas->reset();refreshMobileChrome();});
         connect(coordinates,&QAction::triggered,canvas,&Canvas::coordinates);
+        connect(tilt,&QAction::toggled,canvas,&Canvas::setTiltSteering);
+        connect(invertTilt,&QAction::toggled,canvas,&Canvas::setTiltSteeringInverted);
         connect(level,&QAction::triggered,this,[this]{
             const double delta=-canvas->view.rotation;
             if(delta!=0) {
@@ -1505,6 +1566,8 @@ class Window final:public QMainWindow {
                 "Swipe with one finger to pan; release with speed to coast.\n"
                 "Move, pinch and twist two fingers together — pan, zoom and rotation combine.\n"
                 "Release a moving gesture to keep flying; tap once to stop and refine.\n"
+                "While a pan is flying, tilt the phone a few degrees to steer, stop or reverse it.\n"
+                "Tilt is relative to the phone angle at release and does not change zoom speed.\n"
                 "Double-tap one finger: exact 3× zoom in and center that point.\n"
                 "Tap with two fingers: exact 3× zoom out and center the midpoint.\n\n"
                 "Explore lets XaoS choose the next interesting boundary automatically.");
