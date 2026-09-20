@@ -814,30 +814,36 @@ void rotationTests() {
 
             Request changed=deep;
             changed.view.rotate(.5,.5,.0025,changed.width,changed.height);
-            changed.settings.sliceMilliseconds=2;
-            auto partial=deepRenderer.render(changed,pool,stop);
-            CHECK(partial->stats.steps>0);
-            CHECK(!partial->stats.complete);
+            changed.settings.sliceMilliseconds=1;
 
             Renderer emptyRenderer;
             Cancellation cancelled;cancelled.cancelled.store(true);
             auto empty=emptyRenderer.render(changed,pool,cancelled);
             auto pureFallback=presentFrame(*empty,pool,stop,deepBaseDisplay.get());
-            auto mixed=presentFrame(*partial,pool,stop,deepBaseDisplay.get());
 
-            uint64_t preserved=0;
-            for(int y=0;y<changed.height;++y) for(int x=0;x<changed.width;++x) {
-                const bool exactAxes=
-                    partial->displayXSource[static_cast<size_t>(x)]==x &&
-                    partial->displayYSource[static_cast<size_t>(y)]==y;
-                const bool exactSample=exactAxes &&
-                    partial->qualityAt(x,y)==DisplayQuality::Exact;
-                if(!exactSample) {
-                    CHECK(mixed->at(x,y)==pureFallback->at(x,y));
-                    ++preserved;
+            auto verifyPartial=[&](const std::shared_ptr<const FrameBase>&partial) {
+                CHECK(partial->stats.steps>0);
+                CHECK(!partial->stats.complete);
+                auto mixed=presentFrame(*partial,pool,stop,deepBaseDisplay.get());
+                uint64_t preserved=0;
+                for(int y=0;y<changed.height;++y) for(int x=0;x<changed.width;++x) {
+                    const bool exactAxes=
+                        partial->displayXSource[static_cast<size_t>(x)]==x &&
+                        partial->displayYSource[static_cast<size_t>(y)]==y;
+                    const bool exactSample=exactAxes &&
+                        partial->qualityAt(x,y)==DisplayQuality::Exact;
+                    if(!exactSample) {
+                        CHECK(mixed->at(x,y)==pureFallback->at(x,y));
+                        ++preserved;
+                    }
                 }
-            }
-            CHECK(preserved>static_cast<uint64_t>(changed.width*changed.height/2));
+                CHECK(preserved>static_cast<uint64_t>(changed.width*changed.height/2));
+            };
+
+            auto partial=deepRenderer.render(changed,pool,stop);
+            verifyPartial(partial);
+            auto partialAgain=deepRenderer.render(changed,pool,stop);
+            verifyPartial(partialAgain);
         }
 
         r.view.rotate(.31,.64,.47,r.width,r.height);
