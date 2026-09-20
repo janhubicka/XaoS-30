@@ -379,6 +379,35 @@ void simdTests() {
         iterateFour(a,1,expected,stop,true,false,true);
         CHECK(a[0].count.status==Status::Escaped); CHECK(a[0].count.iterations==expected);
     }
+
+    auto powerCheck=[&]<Formula Value>() {
+        using F=FormulaTag<Value>;
+        static_assert(F::powerFormula);
+        std::uniform_real_distribution<double> point(-1.1,1.1);
+        for(int trial=0;trial<350;++trial) {
+            std::array<Lane,4> scalar{},vector{};
+            std::array<detail::FixedFormulaKernel<double,F>,4> reference{};
+            for(size_t lane=0;lane<4;++lane) {
+                const double re=point(gen),im=point(gen);
+                scalar[lane]=preparePowerLane<F>(re,im,{},nullptr);
+                vector[lane]=scalar[lane];
+            }
+            iteratePowerFour(scalar,4,96,F::power,stop,true,false);
+            iteratePowerFour(vector,4,96,F::power,stop,true,true);
+            for(size_t lane=0;lane<4;++lane) {
+                CHECK(scalar[lane].count==vector[lane].count);
+                CHECK(std::bit_cast<uint64_t>(scalar[lane].x)==
+                      std::bit_cast<uint64_t>(vector[lane].x));
+                CHECK(std::bit_cast<uint64_t>(scalar[lane].y)==
+                      std::bit_cast<uint64_t>(vector[lane].y));
+            }
+        }
+    };
+    powerCheck.template operator()<Formula::Mandelbrot3>();
+    powerCheck.template operator()<Formula::Mandelbrot4>();
+    powerCheck.template operator()<Formula::Mandelbrot5>();
+    powerCheck.template operator()<Formula::Mandelbrot6>();
+    powerCheck.template operator()<Formula::Mandelbrot9>();
 }
 /// Runs regression checks for resume.
 void resumeTests() {
