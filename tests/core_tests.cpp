@@ -213,38 +213,21 @@ void numericTests() {
     {
         View phone=View::parse("-0.743643887037151","0.13182590420533","0.035",39);
         phone.rotate(.5,.5,.31,39,64);
-        auto axis=[](const View&v,int count,bool horizontal) {
+        auto axis=[](const View&v,int count,int pixelWidth,bool horizontal) {
             const auto center=v.axisCenter();
-            const Big step=divide(v.span,static_cast<unsigned long>(horizontal?count:39));
+            const Big step=divide(v.span,static_cast<unsigned long>(pixelWidth));
             const Big c=horizontal?center.first:center.second;
-            const Big extent=scale(step,static_cast<double>(count));
-            const Big low=sub(c,scale(extent,.5));
+            const Big low=sub(c,scale(step,count*.5));
             std::vector<Big> out;out.reserve(static_cast<size_t>(count));
             for(int i=0;i<count;++i)
                 out.push_back(add(low,scale(step,i+.5)));
             return out;
         };
-        const auto oldX=axis(phone,39,true);
-        // Vertical renderer axes use the same horizontal-pixel step.
-        const auto oldCenter=phone.axisCenter();
-        const Big oldStep=divide(phone.span,39);
-        auto makeY=[&](const View&v,int count) {
-            const auto center=v.axisCenter();
-            const Big step=divide(v.span,static_cast<unsigned long>(v==phone?39:64));
-            (void)step;
-            const Big pixelStep=divide(v.span,
-                static_cast<unsigned long>(v==phone?39:64));
-            const Big low=sub(center.second,scale(pixelStep,count*.5));
-            std::vector<Big> out;out.reserve(static_cast<size_t>(count));
-            for(int i=0;i<count;++i)
-                out.push_back(add(low,scale(pixelStep,i+.5)));
-            return out;
-        };
-        (void)oldCenter;(void)oldStep;
-        const auto oldY=makeY(phone,64);
+        const auto oldX=axis(phone,39,39,true);
+        const auto oldY=axis(phone,64,39,false);
         phone.resizePreservingPixelGrid(39,64,64,39);
-        const auto newX=axis(phone,64,true);
-        const auto newY=makeY(phone,39);
+        const auto newX=axis(phone,64,64,true);
+        const auto newY=axis(phone,39,64,false);
         auto common=[](const std::vector<Big>&a,const std::vector<Big>&b) {
             size_t i=0,j=0,n=0;
             while(i<a.size() && j<b.size()) {
