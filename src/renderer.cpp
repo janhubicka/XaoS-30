@@ -720,7 +720,11 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         const size_t ps=static_cast<size_t>(resolvedY)*static_cast<size_t>(gridOld->stride)+
                                         static_cast<size_t>(resolvedX);
                         if(gridOld->sampleQuality[ps]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
-                            f->samplePixels[d]=gridOld->samplePixels[ps];
+                            f->setSampleIterationCode(d,gridOld->sampleIterationCode(ps));
+                            if(gridOld->colorRe.size()>ps && gridOld->colorIm.size()>ps) {
+                                f->colorRe[d]=gridOld->colorRe[ps];
+                                f->colorIm[d]=gridOld->colorIm[ps];
+                            }
                             const auto oldQuality=static_cast<DisplayQuality>(gridOld->sampleQuality[ps]);
                             const bool approximate=resolvedX!=psx || resolvedY!=psy ||
                                                    oldQuality==DisplayQuality::Fill;
@@ -761,14 +765,16 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     }
                     f->counts[d]=reusedCount;
                     if(f->counts[d].known(r.settings.iterations)) {
-                        f->samplePixels[d]=colorForIndex(d);
-                        f->sampleQuality[d]=static_cast<uint8_t>(DisplayQuality::Exact);
+                        setExactSample(d);
                         ++stat.reused;
-                    } else if(!coloringChanged &&
-                              countOld->request.settings.iterations==r.settings.iterations &&
+                    } else if(countOld->request.settings.iterations==r.settings.iterations &&
                               f->sampleQuality[d]==static_cast<uint8_t>(DisplayQuality::Missing) &&
                               countOld->sampleQuality[ss]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
-                        f->samplePixels[d]=countOld->samplePixels[ss];
+                        f->setSampleIterationCode(d,countOld->sampleIterationCode(ss));
+                        if(countOld->colorRe.size()>ss && countOld->colorIm.size()>ss) {
+                            f->colorRe[d]=countOld->colorRe[ss];
+                            f->colorIm[d]=countOld->colorIm[ss];
+                        }
                         f->sampleQuality[d]=countOld->sampleQuality[ss];
                     }
                 }
