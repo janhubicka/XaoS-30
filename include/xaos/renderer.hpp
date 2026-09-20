@@ -259,9 +259,15 @@ template<> struct Storage<true,Big> {
         };
         switch(backend) {
         case QuadraticBackend::DoubleDouble:dd();break;
-        case QuadraticBackend::Fixed128:fixed.template operator()<2,4>();break;
-        case QuadraticBackend::Fixed192:fixed.template operator()<3,4>();break;
-        case QuadraticBackend::Fixed256:fixed.template operator()<4,4>();break;
+        case QuadraticBackend::Fixed128:
+            if(scalars!=2) throw std::logic_error("quadratic fixed state width");
+            emplaceAndResize<FixedStateStorage<2,4,2>>(n);break;
+        case QuadraticBackend::Fixed192:
+            if(scalars!=2) throw std::logic_error("quadratic fixed state width");
+            emplaceAndResize<FixedStateStorage<3,4,2>>(n);break;
+        case QuadraticBackend::Fixed256:
+            if(scalars!=2) throw std::logic_error("quadratic fixed state width");
+            emplaceAndResize<FixedStateStorage<4,4,2>>(n);break;
         case QuadraticBackend::WideFixed128:fixed.template operator()<2,24>();break;
         case QuadraticBackend::WideFixed192:fixed.template operator()<3,24>();break;
         case QuadraticBackend::WideFixed256:fixed.template operator()<4,24>();break;
