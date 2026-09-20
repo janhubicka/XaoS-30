@@ -800,8 +800,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     auto makeDoubleDoubleList=[&]<class F>() -> CalculateList {
         static_assert(F::quadratic);
         auto coordinates=makeFastCoordinates.template operator()<DoubleDouble>();
-        DoubleDoubleStateStorage* state=nullptr;
-        if constexpr(Save && big) state=&f->state.getDoubleDouble();
+        DoubleDoubleStateStorage<F::stateScalars>* state=nullptr;
+        if constexpr(Save && big) state=&f->state.template getDoubleDouble<F>();
         const DoubleDouble jr=[](const Settings&s) {
             if constexpr(F::julia) return DoubleDouble::fromBig(s.juliaRe);
             else return DoubleDouble{};
@@ -895,8 +895,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         static_assert(F::quadratic);
         using Fast=Fixed<N>;
         auto coordinates=makeFastCoordinates.template operator()<Fast>();
-        FixedStateStorage<N>* state=nullptr;
-        if constexpr(Save && big) state=&f->state.template getFixed<N>();
+        FixedStateStorage<N,4,F::stateScalars>* state=nullptr;
+        if constexpr(Save && big) state=&f->state.template getFixed<N,4,F>();
         const Fast jr=[](const Settings&s) {
             if constexpr(F::julia) return Fast::fromBig(s.juliaRe);
             else return Fast{};
@@ -958,6 +958,71 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         };
     };
 
+    auto makeGenericFastList=[&]<class F,class Fast,size_t N=0,unsigned I=0>() -> CalculateList {
+        static_assert(F::generic);
+        auto coordinates=makeFastCoordinates.template operator()<Fast>();
+        auto*state=[&] {
+            if constexpr(!Save) return static_cast<void*>(nullptr);
+            else if constexpr(std::is_same_v<Fast,DoubleDouble>)
+                return &f->state.template getDoubleDouble<F>();
+            else
+                return &f->state.template getFixed<N,I,F>();
+        }();
+
+        return [&,coordinates,state](const std::vector<size_t>&list,
+                                     const Cancellation&calculationStop) {
+            if(list.empty()) return;
+            std::atomic<size_t> next{0};
+            executor.run([&](size_t worker) {
+                auto&stat=stats.at(worker);
+                detail::FixedFormulaKernel<Fast,F> scratch;
+                const size_t chunk=list.size()>512?64:8;
+                while(!calculationStop.requested()) {
+                    const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
+                    if(first>=list.size()) break;
+                    const size_t last=std::min(first+chunk,list.size());
+                    for(size_t k=first;k<last && !calculationStop.requested();++k) {
+                        const size_t index=list[k];
+                        Count before=f->counts[index];
+                        if(before.known(r.settings.iterations)) {
+                            f->samplePixels[index]=colorForIndex(index);
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                            continue;
+                        }
+                        const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
+                        const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
+                        const auto&xr=(*coordinates)[0];const auto&xi=(*coordinates)[1];
+                        const auto&yr=(*coordinates)[2];const auto&yi=(*coordinates)[3];
+                        const Fast real=r.view.rotation==0?xr[static_cast<size_t>(x)]:
+                            xr[static_cast<size_t>(x)]+yr[static_cast<size_t>(y)];
+                        const Fast imag=r.view.rotation==0?yi[static_cast<size_t>(y)]:
+                            xi[static_cast<size_t>(x)]+yi[static_cast<size_t>(y)];
+
+                        FormulaOrbit<Fast,F> orbit{};
+                        const FormulaOrbit<Fast,F>*saved=nullptr;
+                        if constexpr(Save) {
+                            if(before.iterations) {orbit=state->load(index);saved=&orbit;}
+                        }
+                        const uint32_t startIterations=saved?before.iterations:0;
+                        Count result=scratch.run(real,imag,before,saved,r.settings.iterations,
+                                                 calculationStop,Save);
+                        stat.steps+=result.iterations-startIterations;
+                        if(saved && startIterations) ++stat.resumed;else ++stat.started;
+                        if(!Save && result.status==Status::Pending &&
+                           result.iterations<before.iterations) continue;
+                        f->counts[index]=result;
+                        rememberOrbitColor(index,scratch.x,scratch.y);
+                        if constexpr(Save) state->store(index,scratch);
+                        if(result.known(r.settings.iterations)) {
+                            f->samplePixels[index]=colorForIndex(index);
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                        }
+                    }
+                }
+            });
+        };
+    };
+
     auto makeCalculateList=[&]<class F>() -> CalculateList {
         if constexpr(big && F::quadratic) {
             switch(quadraticBackend) {
@@ -969,7 +1034,21 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 return makeFixedList.template operator()<F,3>();
             case QuadraticBackend::Fixed256:
                 return makeFixedList.template operator()<F,4>();
-            case QuadraticBackend::GMP:
+            default:
+                break;
+            }
+        }
+        if constexpr(big && F::generic) {
+            switch(quadraticBackend) {
+            case QuadraticBackend::DoubleDouble:
+                return makeGenericFastList.template operator()<F,DoubleDouble>();
+            case QuadraticBackend::WideFixed128:
+                return makeGenericFastList.template operator()<F,Fixed<2,24>,2,24>();
+            case QuadraticBackend::WideFixed192:
+                return makeGenericFastList.template operator()<F,Fixed<3,24>,3,24>();
+            case QuadraticBackend::WideFixed256:
+                return makeGenericFastList.template operator()<F,Fixed<4,24>,4,24>();
+            default:
                 break;
             }
         }
