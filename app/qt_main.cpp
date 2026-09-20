@@ -547,6 +547,18 @@ class Canvas final:public QWidget {
         p.restore();
     }
 protected:
+    /// Re-render adaptively after a phone orientation/window-size change while
+    /// immediately continuing to draw the transformed previous image.
+    void resizeEvent(QResizeEvent*event) override {
+        const QSize old=event->oldSize();
+        QWidget::resizeEvent(event);
+        if(old.width()>0 && old.height()>0 && width()>0 && height()>0) {
+            pointer_.setX(pointer_.x()*static_cast<double>(width())/old.width());
+            pointer_.setY(pointer_.y()*static_cast<double>(height())/old.height());
+        }
+        if(publishedFrames>0) submit(true);
+    }
+
     /// Handles direct mobile touch plus native trackpad and generic pinch gestures.
     bool event(QEvent*event) override {
         if(mobileUi_ && (event->type()==QEvent::TouchBegin ||
