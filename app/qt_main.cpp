@@ -1865,6 +1865,9 @@ int main(int argc,char**argv) {
         });
         struct SmokeState {
             int zoomTicks=0,publishedAtStart=0,finishChecks=0;
+            int paletteChecks=0,palettePublishedAtStart=0;
+            uint64_t paletteSubmittedAtStart=0;
+            bool paletteProbeStarted=false;
         };
         auto state=std::make_shared<SmokeState>();
         auto*continuous=new QTimer(&window);
@@ -1876,30 +1879,7 @@ int main(int argc,char**argv) {
             if(++state->zoomTicks>=80)
                 continuous->stop();
         });
-        QTimer::singleShot(150,&window,[&window,state,continuous] {
-            state->publishedAtStart=window.canvas->publishedFrames;
-            window.canvas->view.zoom(.37,.61,.997,
-                std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));
-            window.canvas->submit(true);
-            state->zoomTicks=1;
-            continuous->start();
-        });
-        QTimer::singleShot(800,&window,[&window]{
-            window.canvas->view.rotate(.5,.5,.18,
-                std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));
-            window.canvas->submit(true);
-        });
-        QTimer::singleShot(1000,&window,[&window]{window.setIterations(128);});
-        QTimer::singleShot(1400,&window,[&window]{window.canvas->settings.minimumPrecision=128;window.canvas->submit(false,true);});
-        QTimer::singleShot(1900,&window,[&window]{window.canvas->settings.saveState=false;window.canvas->submit();});
-        QTimer::singleShot(2400,&window,[&window]{window.canvas->setAutopilot(true);});
-        QTimer::singleShot(2700,&window,[&window]{window.canvas->setPaletteCycling(1);});
-        QTimer::singleShot(3200,&window,[&window]{window.canvas->setPaletteCycling(0);});
-        QTimer::singleShot(3300,&window,[&window]{window.canvas->setAutopilot(false);});
-        // The script above deliberately exercises GMP precision and bicubic
-        // presentation. ASan makes that much slower than the UI itself. Finish by
-        // asking for one cheap native frame, so the final assertion tests GUI/
-        // renderer liveness rather than arbitrary-precision throughput.
+
         auto*finish=new QTimer(&window);
         finish->setInterval(100);
         QObject::connect(finish,&QTimer::timeout,&window,[&window,&app,state,finish] {
@@ -1911,15 +1891,85 @@ int main(int argc,char**argv) {
                 app.exit(ok?0:2);
             }
         });
-        QTimer::singleShot(4500,&window,[&window,state,finish]{
-            window.canvas->settings.minimumPrecision=0;
-            window.canvas->settings.iterations=64;
-            window.canvas->settings.saveState=true;
-            window.canvas->settings.reconstruction=Reconstruction::Nearest;
-            window.canvas->submit(false,true);
-            state->finishChecks=0;
-            finish->start();
-        });
+
+        // Start the existing motion/sanitizer exercise only after we have proven
+        // palette cycling can publish on a completely stationary initial frame.
+        auto beginMotion=std::make_shared<std::function<void()>>();
+        *beginMotion=[&window,state,continuous,finish] {
+            state->publishedAtStart=window.canvas->publishedFrames;
+            window.canvas->view.zoom(.37,.61,.997,
+                std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));
+            window.canvas->submit(true);
+            state->zoomTicks=1;
+            continuous->start();
+
+            QTimer::singleShot(650,&window,[&window]{
+                window.canvas->view.rotate(.5,.5,.18,
+                    std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));
+                window.canvas->submit(true);
+            });
+            QTimer::singleShot(850,&window,[&window]{window.setIterations(128);});
+            QTimer::singleShot(1250,&window,[&window]{
+                window.canvas->settings.minimumPrecision=128;
+                window.canvas->submit(false,true);
+            });
+            QTimer::singleShot(1750,&window,[&window]{
+                window.canvas->settings.saveState=false;window.canvas->submit();
+            });
+            QTimer::singleShot(2250,&window,[&window]{window.canvas->setAutopilot(true);});
+            QTimer::singleShot(2550,&window,[&window]{window.canvas->setPaletteCycling(1);});
+            QTimer::singleShot(3050,&window,[&window]{window.canvas->setPaletteCycling(0);});
+            QTimer::singleShot(3150,&window,[&window]{window.canvas->setAutopilot(false);});
+            // The script above deliberately exercises GMP precision and bicubic
+            // presentation. ASan makes that much slower than the UI itself. Finish
+            // with one cheap native frame so the final assertion measures liveness.
+            QTimer::singleShot(4300,&window,[&window,state,finish]{
+                window.canvas->settings.minimumPrecision=0;
+                window.canvas->settings.iterations=64;
+                window.canvas->settings.saveState=true;
+                window.canvas->settings.reconstruction=Reconstruction::Nearest;
+                window.canvas->submit(false,true);
+                state->finishChecks=0;
+                finish->start();
+            });
+        };
+
+        auto*paletteProbe=new QTimer(&window);
+        paletteProbe->setInterval(50);
+        QObject::connect(paletteProbe,&QTimer::timeout,&window,
+            [&window,&app,state,paletteProbe,beginMotion] {
+                if(!state->paletteProbeStarted) {
+                    // Wait for a completed stationary frame so palette cycling
+                    // cannot accidentally trigger compute through the no-frame path.
+                    if(!window.canvas->completedFrames) {
+                        if(++state->paletteChecks>=120) {
+                            paletteProbe->stop();app.exit(5);
+                        }
+                        return;
+                    }
+                    state->paletteProbeStarted=true;
+                    state->paletteChecks=0;
+                    state->palettePublishedAtStart=window.canvas->publishedFrames;
+                    state->paletteSubmittedAtStart=window.canvas->submittedFrames();
+                    window.canvas->setPaletteCycling(1);
+                    return;
+                }
+                if(window.canvas->publishedFrames>state->palettePublishedAtStart) {
+                    const bool presentationOnly=
+                        window.canvas->submittedFrames()==state->paletteSubmittedAtStart;
+                    // Stopping cycling submits one refinement request, so check
+                    // the presentation-only invariant before stopping it.
+                    window.canvas->setPaletteCycling(0);
+                    paletteProbe->stop();
+                    if(!presentationOnly) {app.exit(4);return;}
+                    (*beginMotion)();
+                    return;
+                }
+                if(++state->paletteChecks>=120) {
+                    paletteProbe->stop();window.canvas->setPaletteCycling(0);app.exit(6);
+                }
+            });
+        paletteProbe->start();
     }
     return app.exec(); // Window destruction joins all render workers before QApplication dies.
 }
