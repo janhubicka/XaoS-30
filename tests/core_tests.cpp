@@ -207,6 +207,56 @@ void numericTests() {
     CHECK((FormulaTag<Formula::Mandelbrot>::stateScalars==2));
     CHECK((FormulaTag<Formula::Newton>::stateScalars==3));
     CHECK((FormulaTag<Formula::Phoenix>::stateScalars==4));
+
+    // Preserve exact pixel-center phase across an odd/even screen rotation,
+    // including when the mathematical view itself is rotated.
+    {
+        View phone=View::parse("-0.743643887037151","0.13182590420533","0.035",39);
+        phone.rotate(.5,.5,.31,39,64);
+        auto axis=[](const View&v,int count,bool horizontal) {
+            const auto center=v.axisCenter();
+            const Big step=divide(v.span,static_cast<unsigned long>(horizontal?count:39));
+            const Big c=horizontal?center.first:center.second;
+            const Big extent=scale(step,static_cast<double>(count));
+            const Big low=sub(c,scale(extent,.5));
+            std::vector<Big> out;out.reserve(static_cast<size_t>(count));
+            for(int i=0;i<count;++i)
+                out.push_back(add(low,scale(step,i+.5)));
+            return out;
+        };
+        const auto oldX=axis(phone,39,true);
+        // Vertical renderer axes use the same horizontal-pixel step.
+        const auto oldCenter=phone.axisCenter();
+        const Big oldStep=divide(phone.span,39);
+        auto makeY=[&](const View&v,int count) {
+            const auto center=v.axisCenter();
+            const Big step=divide(v.span,static_cast<unsigned long>(v==phone?39:64));
+            (void)step;
+            const Big pixelStep=divide(v.span,
+                static_cast<unsigned long>(v==phone?39:64));
+            const Big low=sub(center.second,scale(pixelStep,count*.5));
+            std::vector<Big> out;out.reserve(static_cast<size_t>(count));
+            for(int i=0;i<count;++i)
+                out.push_back(add(low,scale(pixelStep,i+.5)));
+            return out;
+        };
+        (void)oldCenter;(void)oldStep;
+        const auto oldY=makeY(phone,64);
+        phone.resizePreservingPixelGrid(39,64,64,39);
+        const auto newX=axis(phone,64,true);
+        const auto newY=makeY(phone,39);
+        auto common=[](const std::vector<Big>&a,const std::vector<Big>&b) {
+            size_t i=0,j=0,n=0;
+            while(i<a.size() && j<b.size()) {
+                if(a[i]==b[j]) {++n;++i;++j;}
+                else if(a[i]<b[j]) ++i;
+                else ++j;
+            }
+            return n;
+        };
+        CHECK(common(oldX,newX)==39);
+        CHECK(common(oldY,newY)==39);
+    }
 }
 /// Runs every registered fixed formula through native and arbitrary-precision renderers.
 void formulaTests() {
@@ -633,29 +683,42 @@ void zoomTests() {
         r.settings.iterations=250;
         a=renderer.render(r,pool,stop); verifyCoordinates<Mandelbrot>(*a);
 
-        // Phone portrait/landscape rotation preserves complex units per pixel by
-        // scaling horizontal span with width. With matching parity, the overlap
-        // lies on the exact same sample lattice and should retain a large block
-        // of already-computed mathematical state.
+        // Phone portrait/landscape rotation preserves the physical sample
+        // lattice, not just span/width. Real phone dimensions often change
+        // parity (odd portrait width -> even landscape width); without a
+        // half-pixel center correction that makes *every* old line miss.
         if(precision==0 && state) {
             Request portrait=r;
-            portrait.width=40;portrait.height=64;
+            portrait.width=39;portrait.height=64;
             portrait.view=View::parse("-0.5","0","3.5",portrait.width);
             portrait.settings.iterations=180;
             portrait.settings.uniform=false;
             Renderer orientation;
             auto before=orientation.render(portrait,pool,stop);
             CHECK(before->stats.complete);
+
             Request landscape=portrait;
-            landscape.width=64;landscape.height=40;
-            landscape.view.span=scale(
-                landscape.view.span,
-                static_cast<double>(landscape.width)/portrait.width);
+            landscape.width=64;landscape.height=39;
+            landscape.view.resizePreservingPixelGrid(
+                portrait.width,portrait.height,landscape.width,landscape.height);
             auto after=orientation.render(landscape,pool,stop);
             CHECK(after->stats.complete);
-            CHECK(after->stats.reused>=
-                  static_cast<uint64_t>(landscape.width*landscape.height/3));
+            const uint64_t overlap=
+                static_cast<uint64_t>(std::min(portrait.width,landscape.width))*
+                static_cast<uint64_t>(std::min(portrait.height,landscape.height));
+            CHECK(after->stats.reused>=overlap*9/10);
             verifyCoordinates<Mandelbrot>(*after);
+
+            // Rotating back must again reuse almost the whole overlap rather than
+            // accumulating a half-pixel phase drift on every orientation cycle.
+            Request portraitAgain=landscape;
+            portraitAgain.width=portrait.width;portraitAgain.height=portrait.height;
+            portraitAgain.view.resizePreservingPixelGrid(
+                landscape.width,landscape.height,portraitAgain.width,portraitAgain.height);
+            auto back=orientation.render(portraitAgain,pool,stop);
+            CHECK(back->stats.complete);
+            CHECK(back->stats.reused>=overlap*9/10);
+            verifyCoordinates<Mandelbrot>(*back);
         }
 
         r.settings.uniform=true; a=renderer.render(r,pool,stop);
