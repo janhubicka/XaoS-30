@@ -62,10 +62,16 @@ endif()
 
 if(XAOS_BUILD_GUI)
   find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets)
+  if(ANDROID)
+    find_package(Qt6 6.2 REQUIRED COMPONENTS Sensors)
+  endif()
   # qt_add_executable is required for Qt's Android deployment metadata/APK target,
   # and is equally valid for the existing desktop platforms.
   qt_add_executable(xaos-modern MANUAL_FINALIZATION app/qt_main.cpp app/qt_executor.hpp)
   target_link_libraries(xaos-modern PRIVATE xaos_core Qt6::Widgets)
+  if(ANDROID)
+    target_link_libraries(xaos-modern PRIVATE Qt6::Sensors)
+  endif()
   set_target_properties(xaos-modern PROPERTIES
     WIN32_EXECUTABLE TRUE
     MACOSX_BUNDLE TRUE)
