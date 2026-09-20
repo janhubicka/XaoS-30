@@ -372,8 +372,9 @@ uint32_t pixelColor(Count count,uint32_t limit,const Settings&,
 /// Compatibility helper for the classic black-inside/iteration-outside mapping.
 uint32_t pixelColor(Count count,uint32_t limit) noexcept;
 /// Reconstructs an immutable grid frame into a visible raster using a separate executor.
-std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&,Executor&,const Cancellation&,
-                                                 const DisplayFrame* previous=nullptr);
+std::shared_ptr<const DisplayFrame> presentFrame(
+    const FrameBase&,Executor&,const Cancellation&,const DisplayFrame* previous=nullptr,
+    int paletteShiftOverride=std::numeric_limits<int>::min());
 /// Writes a reconstructed frame to a binary PPM image.
 void writePPM(const DisplayFrame&,const std::string& path);
 /// Reconstructs and writes a grid frame using a temporary presentation executor.
