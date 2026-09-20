@@ -5,6 +5,7 @@
 #include "qt_executor.hpp"
 #include <QApplication>
 #include <QAction>
+#include <QActionGroup>
 #include <QMenu>
 #include <QKeySequence>
 #include <QCheckBox>
@@ -100,12 +101,14 @@ class Canvas final:public QWidget {
     uint64_t serial_=0,shown_=0,epoch_=1;
     QImage image_,fallback_;
     View imageView_,fallbackView_;
-    QTimer motion_,idle_,autopilotTimer_,touchMomentum_;
-    QElapsedTimer motionClock_,autopilotClock_,touchSampleClock_,touchMomentumClock_,touchGestureClock_;
+    QTimer motion_,idle_,autopilotTimer_,touchMomentum_,paletteTimer_;
+    QElapsedTimer motionClock_,autopilotClock_,touchSampleClock_,touchMomentumClock_,touchGestureClock_,paletteClock_;
     Autopilot autopilotEngine_;
     std::shared_ptr<const DisplayFrame> latestDisplay_;
     Statistics latestDisplayStats_;
     double autopilotStep_=0,zoomSpeedScale_=1.0;
+    double paletteSpeed_=48.0,palettePhase_=0;
+    int paletteDirection_=0;
     bool autopilotEnabled_=false;
     QPointF pointer_{.5,.5},lastDrag_;
     int direction_=0;
@@ -851,6 +854,7 @@ public:
     int publishedFrames=0;
     std::function<void(QString)> onStatus;
     std::function<void(bool)> onAutopilotChanged;
+    std::function<void()> onColorChanged;
     /// Constructs a Canvas instance.
     explicit Canvas(QWidget*parent=nullptr):QWidget(parent) {
         setMouseTracking(true);setFocusPolicy(Qt::StrongFocus);
@@ -858,6 +862,7 @@ public:
         grabGesture(Qt::PinchGesture);
         motion_.setInterval(16);idle_.setSingleShot(true);idle_.setInterval(180);
         touchMomentum_.setInterval(16);
+        paletteTimer_.setInterval(40); // classic XaoS color cycling cadence
         autopilotTimer_.setInterval(40); // original XaoS autopilot timer: 25 Hz
         connect(&touchMomentum_,&QTimer::timeout,this,[this] {
             const double seconds=std::clamp(touchMomentumClock_.restart()/1000.0,.001,.05);
@@ -904,13 +909,28 @@ public:
             }catch(const std::exception&e){motion_.stop();if(onStatus)onStatus(e.what());}
         });
         connect(&idle_,&QTimer::timeout,this,[this]{submit(false);});
+        connect(&paletteTimer_,&QTimer::timeout,this,[this] {
+            if(!paletteDirection_) return;
+            const double seconds=std::clamp(paletteClock_.restart()/1000.0,.001,.2);
+            palettePhase_+=static_cast<double>(paletteDirection_)*paletteSpeed_*seconds;
+            int delta=palettePhase_>0?static_cast<int>(std::floor(palettePhase_)):
+                                      static_cast<int>(std::ceil(palettePhase_));
+            if(!delta) return;
+            palettePhase_-=delta;
+            const int period=static_cast<int>(std::max<size_t>(1,classicDefaultPalette().size()-1));
+            int shift=(settings.paletteShift+delta)%period;
+            if(shift<0) shift+=period;
+            settings.paletteShift=shift;
+            submit(true);
+            if(onColorChanged) onColorChanged();
+        });
         connect(&autopilotTimer_,&QTimer::timeout,this,[this]{autopilotTick();});
         presenter_=std::thread([this]{presentationLoop();});
         coordinator_=std::thread([this]{coordinator();});
     }
     /// Releases resources owned by the Canvas instance.
     ~Canvas() override {
-        motion_.stop();idle_.stop();autopilotTimer_.stop();touchMomentum_.stop();
+        motion_.stop();idle_.stop();autopilotTimer_.stop();touchMomentum_.stop();paletteTimer_.stop();
         shutdown_.store(true,std::memory_order_relaxed);
         {
             std::lock_guard lock(mutex_);
@@ -993,6 +1013,60 @@ public:
     }
     /// Reports whether automatic fractal exploration is enabled.
     bool autopilotEnabled() const noexcept { return autopilotEnabled_; }
+
+    /// Starts/stops XaoS-style palette cycling. Direction is -1, 0, or +1.
+    void setPaletteCycling(int direction) {
+        direction=std::clamp(direction,-1,1);
+        if(paletteDirection_==direction) return;
+        paletteDirection_=direction;
+        palettePhase_=0;
+        if(direction) {
+            paletteClock_.restart();
+            paletteTimer_.start();
+        } else {
+            paletteTimer_.stop();
+            submit(false);
+        }
+        if(onColorChanged) onColorChanged();
+        if(onStatus) onStatus(direction>0?"Palette cycling forward":
+                              direction<0?"Palette cycling backward":"Palette cycling stopped");
+    }
+    int paletteCyclingDirection() const noexcept { return paletteDirection_; }
+
+    /// Changes XaoS color-cycling speed without touching mathematical state.
+    void adjustPaletteSpeed(bool faster) {
+        const double factor=1.25;
+        paletteSpeed_=std::clamp(faster?paletteSpeed_*factor:paletteSpeed_/factor,1.0,4096.0);
+        if(onStatus) onStatus(QString("Palette cycling: %1 entries/s").arg(paletteSpeed_,0,'f',1));
+    }
+
+    /// Shifts the palette without recalculating any orbit.
+    void shiftPalette(int delta) {
+        const int period=static_cast<int>(std::max<size_t>(1,classicDefaultPalette().size()-1));
+        int shift=(settings.paletteShift+delta)%period;
+        if(shift<0) shift+=period;
+        settings.paletteShift=shift;
+        submit(false);
+        if(onColorChanged) onColorChanged();
+    }
+
+    void resetPaletteShift() {
+        settings.paletteShift=0;submit(false);
+        if(onColorChanged) onColorChanged();
+    }
+
+    void setInColoring(InColoring mode) {
+        if(settings.inColoring==mode) return;
+        settings.inColoring=mode;
+        submit(false);
+        if(onColorChanged) onColorChanged();
+    }
+    void setOutColoring(OutColoring mode) {
+        if(settings.outColoring==mode) return;
+        settings.outColoring=mode;
+        submit(false);
+        if(onColorChanged) onColorChanged();
+    }
 
     /// Adjusts XaoS zoom acceleration/max-step by the historical 1.05 factor.
     void adjustZoomSpeed(bool faster) {
