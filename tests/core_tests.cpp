@@ -771,6 +771,28 @@ void coloringTests() {
         for(int x=0;x<insideReq.width;++x)
             if(coloredDisplay->at(x,y)!=0xff000000u) {insideChanged=true;break;}
     CHECK(insideChanged);
+
+    // Black Mandelbrot may use the analytic interior shortcut. Switching to a
+    // non-black incoloring must calculate those points once to obtain final z,
+    // while subsequent palette/incolor changes can reuse that orbit field.
+    Request analytic;analytic.width=24;analytic.height=16;analytic.settings.iterations=48;
+    analytic.settings.uniform=true;analytic.settings.solidGuessRange=0;
+    analytic.settings.analytic=true;
+    analytic.view=View::parse("0","0","0.05",analytic.width);
+    Renderer analyticRenderer;
+    auto shortcut=analyticRenderer.render(analytic,pool,stop);
+    bool sawInterior=false;
+    for(int y=0;y<analytic.height;++y) for(int x=0;x<analytic.width;++x)
+        sawInterior|=shortcut->at(x,y).status==Status::Interior;
+    CHECK(sawInterior);
+    analytic.settings.inColoring=InColoring::ZMag;
+    analytic.settings.sliceMilliseconds=250;
+    auto materialized=analyticRenderer.render(analytic,pool,stop);
+    CHECK(materialized->stats.steps>0);
+    analytic.settings.paletteShift=31;
+    auto recolored=analyticRenderer.render(analytic,pool,stop);
+    CHECK(recolored->stats.steps==0);
+    CHECK(recolored->sampleIterations==materialized->sampleIterations);
 }
 
 /// Verifies compact iteration-space preview storage selection.
