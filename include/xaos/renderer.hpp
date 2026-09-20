@@ -344,12 +344,19 @@ template<class Real,bool Save> struct Frame final:FrameBase {
 struct DisplayFrame {
     Request request;
     std::vector<uint32_t> pixels; // top-to-bottom, tightly packed for zero-copy QImage wrapping
+    // Palette coordinate for a representative nearest mathematical sample at each
+    // displayed pixel. UINT32_MAX means black/no palette entry. This lets a
+    // previous display be recolored to a new palette phase when it is temporarily
+    // reprojected as zoom fallback, without storing another RGB-dependent buffer.
+    std::vector<uint32_t> paletteCodes;
     double milliseconds=0;
-    /// Returns one reconstructed display pixel in renderer bottom-to-top coordinates.
-    uint32_t at(int x,int y) const {
+    size_t displayIndex(int x,int y) const {
         const size_t row=static_cast<size_t>(request.height-1-y);
-        return pixels[row*static_cast<size_t>(request.width)+static_cast<size_t>(x)];
+        return row*static_cast<size_t>(request.width)+static_cast<size_t>(x);
     }
+    /// Returns one reconstructed display pixel in renderer bottom-to-top coordinates.
+    uint32_t at(int x,int y) const { return pixels[displayIndex(x,y)]; }
+    uint32_t paletteCodeAt(int x,int y) const { return paletteCodes[displayIndex(x,y)]; }
 };
 
 class Renderer {
