@@ -132,11 +132,12 @@ class Canvas final:public QWidget {
     TouchMode touchMode_=TouchMode::None;
     QPointF touchLastCenter_,touchStart_,lastTapPosition_,touchLastTwoCenter_;
     QPointF touchPanVelocity_,touchMomentumAnchor_;
-    double touchLastDistance_=0,touchLastAngle_=0,touchRotationCandidate_=0;
+    double touchLastDistance_=0,touchLastAngle_=0,touchRotationCandidate_=0,touchZoomCandidate_=0;
     double touchZoomVelocity_=0,touchRotationVelocity_=0,touchGestureMaxTravel_=0;
     int touchGestureMaxPoints_=0,touchPointId0_=-1,touchPointId1_=-1;
     bool touchChanged_=false,touchTapCandidate_=false,touchPanStarted_=false;
-    bool touchAfterPinchSingle_=false,touchStoppedMotion_=false,touchRotationActive_=false;
+    bool touchAfterPinchSingle_=false,touchStoppedMotion_=false;
+    bool touchRotationActive_=false,touchZoomActive_=false;
 #ifdef Q_OS_ANDROID
     QTiltSensor tiltSensor_;
     QPointF tiltSteeringFiltered_;
@@ -667,7 +668,9 @@ protected:
                 touchPanVelocity_=QPointF{};
                 touchZoomVelocity_=0;
                 touchRotationVelocity_=0;
+                touchZoomCandidate_=0;
                 touchRotationCandidate_=0;
+                touchZoomActive_=false;
                 touchRotationActive_=false;
                 touchPointId0_=touchPointId1_=-1;
                 if(!active.empty()) {
@@ -754,7 +757,9 @@ protected:
                 touchStoppedMotion_=false;
                 touchGestureMaxPoints_=0;
                 touchGestureMaxTravel_=0;
+                touchZoomCandidate_=0;
                 touchRotationCandidate_=0;
+                touchZoomActive_=false;
                 touchRotationActive_=false;
                 touchPointId0_=touchPointId1_=-1;
                 dragging_=false;
@@ -783,7 +788,9 @@ protected:
                         touchLastCenter_=center;
                         touchLastDistance_=distance;
                         touchLastAngle_=angle;
+                        touchZoomCandidate_=0;
                         touchRotationCandidate_=0;
+                        touchZoomActive_=false;
                         touchRotationActive_=false;
                         touchPanVelocity_=QPointF{};
                         touchZoomVelocity_=0;
@@ -796,11 +803,26 @@ protected:
                         double zoomLog=0,rotation=0,gestureScale=1.0;
                         if(distance>4.0 && touchLastDistance_>4.0) {
                             const double scale=distance/touchLastDistance_;
-                            if(std::isfinite(scale) && scale>0 && std::abs(scale-1.0)>1e-4) {
-                                gestureScale=scale;
-                                zoomLog=std::log(scale);
-                                changed=true;
+                            if(std::isfinite(scale) && scale>0) {
+                                const double rawZoom=std::log(scale);
+                                constexpr double unlockZoom=std::log(1.012);
+                                if(!touchZoomActive_) {
+                                    touchZoomCandidate_+=rawZoom;
+                                    if(std::abs(touchZoomCandidate_)>=unlockZoom) {
+                                        // Consume the dead zone rather than making
+                                        // the image jump when pinch mode unlocks.
+                                        touchZoomActive_=true;
+                                        touchZoomCandidate_=0;
+                                        touchZoomVelocity_=0;
+                                    }
+                                } else if(std::abs(rawZoom)>1e-5) {
+                                    gestureScale=scale;
+                                    zoomLog=rawZoom;
+                                    changed=true;
+                                }
                             }
+                        } else {
+                            touchZoomCandidate_=0;
                         }
                         const double rawRotation=
                             std::remainder(angle-touchLastAngle_,2.0*std::numbers::pi);
@@ -809,7 +831,7 @@ protected:
                         // XaoS's reusable row/column coordinate system. Keep rotation
                         // locked until the user has made a deliberate twist.
                         const double minSeparation=std::clamp(width()*.09,32.0,56.0);
-                        constexpr double unlockRotation=6.0*std::numbers::pi/180.0;
+                        constexpr double unlockRotation=8.0*std::numbers::pi/180.0;
                         constexpr double maxSampleRotation=35.0*std::numbers::pi/180.0;
                         const bool stableAngle=distance>=minSeparation &&
                             touchLastDistance_>=minSeparation &&
