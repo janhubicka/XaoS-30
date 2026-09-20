@@ -1275,15 +1275,20 @@ class Window final:public QMainWindow {
     void layoutMobileChrome() {
         if(!mobile_ || !mobileDock_ || !mobileBadge_) return;
         const int w=canvas->width(),h=canvas->height();
+        const QPoint origin=canvas->mapTo(this,QPoint(0,0));
         const int margin=std::clamp(w/28,12,22);
         const int dockHeight=std::clamp(h/10,68,88);
-        mobileDock_->setGeometry(margin,h-dockHeight-margin,std::max(120,w-2*margin),dockHeight);
+        mobileDock_->setGeometry(origin.x()+margin,origin.y()+h-dockHeight-margin,
+                                 std::max(120,w-2*margin),dockHeight);
         mobileBadge_->adjustSize();
-        mobileBadge_->move(margin,margin);
+        mobileBadge_->move(origin.x()+margin,origin.y()+margin);
         mobileDock_->raise();mobileBadge_->raise();
     }
     QToolButton* mobileButton(const QString&text,QWidget*parent) {
         auto*b=new QToolButton(parent);
+        // Keep buttons on Qt's normal touch-to-mouse path. Canvas handles raw
+        // QTouchEvent only for the fractal surface.
+        b->setAttribute(Qt::WA_AcceptTouchEvents,false);
         b->setText(text);
         b->setToolButtonStyle(Qt::ToolButtonTextOnly);
         b->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Expanding);
@@ -1296,14 +1301,17 @@ class Window final:public QMainWindow {
         menuBar()->hide();statusBar()->hide();
         for(auto*bar:findChildren<QToolBar*>()) bar->hide();
 
-        mobileBadge_=new QLabel(canvas);
+        // Mobile chrome must be a sibling of the touch canvas, not its child.
+        // Otherwise Qt walks an unhandled button touch up to Canvas (the first
+        // WA_AcceptTouchEvents ancestor), and Canvas consumes it as a pan/tap.
+        mobileBadge_=new QLabel(this);
         mobileBadge_->setAttribute(Qt::WA_StyledBackground,true);
         mobileBadge_->setStyleSheet(
             "QLabel{color:white;background:rgba(8,10,16,190);"
             "border:1px solid rgba(255,255,255,36);border-radius:16px;"
             "padding:7px 12px;font-size:14px;font-weight:650;}");
 
-        mobileDock_=new QFrame(canvas);
+        mobileDock_=new QFrame(this);
         mobileDock_->setAttribute(Qt::WA_StyledBackground,true);
         mobileDock_->setStyleSheet(
             "QFrame{background:rgba(8,10,16,214);border:1px solid rgba(255,255,255,38);"
