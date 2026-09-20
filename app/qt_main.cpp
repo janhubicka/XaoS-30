@@ -209,7 +209,7 @@ class Canvas final:public QWidget {
 
         // A few degrees should be enough to stop/reverse an ordinary throw.
         // Preserve the last zoom velocity exactly, as Frax Motion does.
-        constexpr double panAcceleration=45.0; // pixels/s^2 per degree
+        constexpr double panAcceleration=300.0; // logical pixels/s^2 per degree
         touchPanVelocity_+=QPointF(-tx,ty)*(panAcceleration*seconds);
         const double speed=std::hypot(touchPanVelocity_.x(),touchPanVelocity_.y());
         if(speed>5000.0) touchPanVelocity_*=5000.0/speed;
