@@ -1770,7 +1770,9 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
     const Settings&displaySettings=out->request.settings;
     const size_t width=static_cast<size_t>(frame.request.width);
     const size_t height=static_cast<size_t>(frame.request.height);
-    out->pixels.assign(multiplyChecked(width,height),0xff000000u);
+    const size_t displayPixels=multiplyChecked(width,height);
+    out->pixels.assign(displayPixels,0xff000000u);
+    out->paletteCodes.assign(displayPixels,BlackPaletteCode);
 
     std::vector<uint8_t> colReady(width),rowReady(height);
     for(int x=0;x<frame.request.width;++x)
@@ -1812,13 +1814,13 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
 
     std::vector<int> fallbackX,fallbackY;
     if(previous && displayCompatible(previous->request,frame.request) &&
-       previous->request.settings.paletteShift==displaySettings.paletteShift &&
        previous->request.settings.inColoring==displaySettings.inColoring &&
        previous->request.settings.outColoring==displaySettings.outColoring &&
        previous->request.view.rotation==frame.request.view.rotation &&
        previous->request.width>0 && previous->request.height>0 &&
        previous->pixels.size()==static_cast<size_t>(previous->request.width)*
-                                static_cast<size_t>(previous->request.height)) {
+                                static_cast<size_t>(previous->request.height) &&
+       previous->paletteCodes.size()==previous->pixels.size()) {
         const Big oldStep=divide(previous->request.view.span.atPrecision(
             std::max(frame.stats.bits,previous->request.view.span.precision())),
             static_cast<unsigned long>(previous->request.width));
@@ -1841,7 +1843,10 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
                 bool ok=false;
                 const int nx=nearestX[static_cast<size_t>(x)];
                 const int ny=nearestY[static_cast<size_t>(y)];
-                switch(frame.request.settings.reconstruction) {
+                uint32_t paletteCode=BlackPaletteCode;
+                const bool paletteCodeKnown=
+                    gridPaletteCode(frame,colors,displaySettings,nx,ny,paletteCode);
+                switch(displaySettings.reconstruction) {
                 case Reconstruction::Nearest:
                     ok=gridColor(frame,colors,displaySettings,nx,ny,color);
                     break;
@@ -1861,11 +1866,17 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
                     if(!ok) ok=gridColor(frame,colors,displaySettings,nx,ny,color);
                     break;
                 }
-                if(!ok && !fallbackX.empty() && !fallbackY.empty())
-                    color=previous->at(fallbackX[static_cast<size_t>(x)],
-                                       fallbackY[static_cast<size_t>(y)]),ok=true;
-                out->pixels[outputRow+static_cast<size_t>(x)]=
-                    ok?color:0xff000000u;
+                if(!ok && !fallbackX.empty() && !fallbackY.empty()) {
+                    const int fx=fallbackX[static_cast<size_t>(x)];
+                    const int fy=fallbackY[static_cast<size_t>(y)];
+                    paletteCode=previous->paletteCodeAt(fx,fy);
+                    color=paletteColorFromCode(paletteCode,displaySettings.paletteShift);
+                    ok=true;
+                }
+                const size_t outputIndex=outputRow+static_cast<size_t>(x);
+                out->pixels[outputIndex]=ok?color:0xff000000u;
+                out->paletteCodes[outputIndex]=
+                    (ok && (paletteCodeKnown || !fallbackX.empty()))?paletteCode:BlackPaletteCode;
             }
         }
     });
