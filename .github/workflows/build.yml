@@ -32,6 +32,7 @@ jobs:
       - name: Configure
         run: >-
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DBUILD_TESTING=ON
           -DXAOS_SANITIZE=${{ matrix.sanitizer == 'address' && 'ON' || 'OFF' }}
       - name: Build
         run: cmake --build build
@@ -59,7 +60,7 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build libgmp-dev
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DXAOS_BUILD_GUI=OFF -DXAOS_TSAN=ON
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=ON -DXAOS_BUILD_GUI=OFF -DXAOS_TSAN=ON
       - name: Build
         run: cmake --build build
       - name: Core tests
@@ -87,6 +88,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
             -DCMAKE_CXX_FLAGS="-fexperimental-library" \
             -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" \
             -DGMP_INCLUDE_DIR="$(brew --prefix gmp)/include" \
@@ -154,7 +156,7 @@ jobs:
             mingw-w64-ucrt-x86_64-gmp
       - name: Configure
         shell: msys2 {0}
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
       - name: Build
         shell: msys2 {0}
         run: cmake --build build
