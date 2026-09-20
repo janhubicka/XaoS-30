@@ -500,7 +500,8 @@ std::pair<double,double> colorParameter(const FrameBase&frame,const ColorContext
 }
 
 /// Reads and colors one usable iteration-space sample from the adaptive grid.
-bool gridColor(const FrameBase&frame,const ColorContext&ctx,int x,int y,uint32_t&color) {
+bool gridColor(const FrameBase&frame,const ColorContext&ctx,const Settings&displaySettings,
+               int x,int y,uint32_t&color) {
     if(x<0 || y<0 || x>=frame.request.width || y>=frame.request.height) return false;
     const size_t i=frame.index(x,y);
     if(static_cast<DisplayQuality>(frame.sampleQuality[i])==DisplayQuality::Missing)
@@ -508,19 +509,19 @@ bool gridColor(const FrameBase&frame,const ColorContext&ctx,int x,int y,uint32_t
     const Count count=previewCount(
         frame.sampleIterationCode(i),frame.request.settings.iterations);
     const auto [cr,ci]=colorParameter(frame,ctx,x,y);
-    color=pixelColor(count,frame.request.settings.iterations,frame.request.settings,
+    color=pixelColor(count,frame.request.settings.iterations,displaySettings,
                      frame.colorRe[i],frame.colorIm[i],cr,ci);
     return true;
 }
 
 /// Reconstructs a target pixel from four nonuniform grid neighbours. RGB exists
 /// only here in presentation; the reusable source field remains iteration-space.
-bool bilinearColor(const FrameBase&frame,const ColorContext&ctx,
+bool bilinearColor(const FrameBase&frame,const ColorContext&ctx,const Settings&displaySettings,
                    const LinearPoint&x,const LinearPoint&y,uint32_t&color) {
     if(x.a<0 || y.a<0) return false;
     uint32_t c00=0,c10=0,c01=0,c11=0;
-    if(!gridColor(frame,ctx,x.a,y.a,c00) || !gridColor(frame,ctx,x.b,y.a,c10) ||
-       !gridColor(frame,ctx,x.a,y.b,c01) || !gridColor(frame,ctx,x.b,y.b,c11))
+    if(!gridColor(frame,ctx,displaySettings,x.a,y.a,c00) || !gridColor(frame,ctx,displaySettings,x.b,y.a,c10) ||
+       !gridColor(frame,ctx,displaySettings,x.a,y.b,c01) || !gridColor(frame,ctx,displaySettings,x.b,y.b,c11))
         return false;
     const RGB r0=mix(unpack(c00),unpack(c10),x.t);
     const RGB r1=mix(unpack(c01),unpack(c11),x.t);
@@ -529,14 +530,14 @@ bool bilinearColor(const FrameBase&frame,const ColorContext&ctx,
 }
 
 /// Reconstructs a target pixel from a clamped 4x4 nonuniform cubic stencil.
-bool bicubicColor(const FrameBase&frame,const ColorContext&ctx,
+bool bicubicColor(const FrameBase&frame,const ColorContext&ctx,const Settings&displaySettings,
                   const CubicPoint&x,const CubicPoint&y,uint32_t&color) {
     if(!x.valid || !y.valid) return false;
     RGB sum{};
     double minr=255,ming=255,minb=255,maxr=0,maxg=0,maxb=0;
     for(size_t j=0;j<4;++j) for(size_t i=0;i<4;++i) {
         uint32_t c=0;
-        if(!gridColor(frame,ctx,x.index[i],y.index[j],c)) return false;
+        if(!gridColor(frame,ctx,displaySettings,x.index[i],y.index[j],c)) return false;
         const RGB rgb=unpack(c);
         const double w=x.weight[i]*y.weight[j];
         sum.r+=w*rgb.r; sum.g+=w*rgb.g; sum.b+=w*rgb.b;
@@ -1745,12 +1746,16 @@ std::shared_ptr<const FrameBase> Renderer::render(const Request&r,Executor&e,con
 /// Reconstructs an immutable grid frame into a visible raster using a separate executor.
 std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&executor,
                                                  const Cancellation&stop,
-                                                 const DisplayFrame*previous) {
+                                                 const DisplayFrame*previous,
+                                                 int paletteShiftOverride) {
     if(frame.request.width<1 || frame.request.height<1 || !executor.concurrency())
         throw std::invalid_argument("invalid presentation frame or executor");
     const auto begin=std::chrono::steady_clock::now();
     auto out=std::make_shared<DisplayFrame>();
     out->request=frame.request;
+    if(paletteShiftOverride!=std::numeric_limits<int>::min())
+        out->request.settings.paletteShift=paletteShiftOverride;
+    const Settings&displaySettings=out->request.settings;
     const size_t width=static_cast<size_t>(frame.request.width);
     const size_t height=static_cast<size_t>(frame.request.height);
     out->pixels.assign(multiplyChecked(width,height),0xff000000u);
@@ -1795,9 +1800,9 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
 
     std::vector<int> fallbackX,fallbackY;
     if(previous && displayCompatible(previous->request,frame.request) &&
-       previous->request.settings.paletteShift==frame.request.settings.paletteShift &&
-       previous->request.settings.inColoring==frame.request.settings.inColoring &&
-       previous->request.settings.outColoring==frame.request.settings.outColoring &&
+       previous->request.settings.paletteShift==displaySettings.paletteShift &&
+       previous->request.settings.inColoring==displaySettings.inColoring &&
+       previous->request.settings.outColoring==displaySettings.outColoring &&
        previous->request.view.rotation==frame.request.view.rotation &&
        previous->request.width>0 && previous->request.height>0 &&
        previous->pixels.size()==static_cast<size_t>(previous->request.width)*
@@ -1826,22 +1831,22 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
                 const int ny=nearestY[static_cast<size_t>(y)];
                 switch(frame.request.settings.reconstruction) {
                 case Reconstruction::Nearest:
-                    ok=gridColor(frame,colors,nx,ny,color);
+                    ok=gridColor(frame,colors,displaySettings,nx,ny,color);
                     break;
                 case Reconstruction::Bilinear:
                     if(!linearX.empty() && !linearY.empty())
-                        ok=bilinearColor(frame,colors,linearX[static_cast<size_t>(x)],
+                        ok=bilinearColor(frame,colors,displaySettings,linearX[static_cast<size_t>(x)],
                                         linearY[static_cast<size_t>(y)],color);
-                    if(!ok) ok=gridColor(frame,colors,nx,ny,color);
+                    if(!ok) ok=gridColor(frame,colors,displaySettings,nx,ny,color);
                     break;
                 case Reconstruction::Bicubic:
                     if(!cubicX.empty() && !cubicY.empty())
-                        ok=bicubicColor(frame,colors,cubicX[static_cast<size_t>(x)],
+                        ok=bicubicColor(frame,colors,displaySettings,cubicX[static_cast<size_t>(x)],
                                        cubicY[static_cast<size_t>(y)],color);
                     if(!ok && !linearX.empty() && !linearY.empty())
-                        ok=bilinearColor(frame,colors,linearX[static_cast<size_t>(x)],
+                        ok=bilinearColor(frame,colors,displaySettings,linearX[static_cast<size_t>(x)],
                                         linearY[static_cast<size_t>(y)],color);
-                    if(!ok) ok=gridColor(frame,colors,nx,ny,color);
+                    if(!ok) ok=gridColor(frame,colors,displaySettings,nx,ny,color);
                     break;
                 }
                 if(!ok && !fallbackX.empty() && !fallbackY.empty())
