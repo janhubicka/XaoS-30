@@ -228,17 +228,22 @@ void numericTests() {
         phone.resizePreservingPixelGrid(39,64,64,39);
         const auto newX=axis(phone,64,64,true);
         const auto newY=axis(phone,39,64,false);
-        auto common=[](const std::vector<Big>&a,const std::vector<Big>&b) {
-            size_t i=0,j=0,n=0;
-            while(i<a.size() && j<b.size()) {
-                if(a[i]==b[j]) {++n;++i;++j;}
-                else if(a[i]<b[j]) ++i;
-                else ++j;
+        const Big pixelStep=divide(phone.span,64);
+        auto covered=[&](const std::vector<Big>&needles,const std::vector<Big>&haystack) {
+            size_t n=0;
+            for(const auto&needle:needles) {
+                double best=std::numeric_limits<double>::infinity();
+                for(const auto&candidate:haystack)
+                    best=std::min(best,axisPixelDistance(needle,candidate,pixelStep));
+                n+=best<1.e-20;
             }
             return n;
         };
-        CHECK(common(oldX,newX)==39);
-        CHECK(common(oldY,newY)==39);
+        // The complex<->rotated-axis conversion is finite precision, so require
+        // sub-pixel mathematical coincidence here. The renderer test below
+        // separately requires exact backend-level state reuse.
+        CHECK(covered(oldX,newX)==39);
+        CHECK(covered(newY,oldY)==39);
     }
 }
 /// Runs every registered fixed formula through native and arbitrary-precision renderers.
