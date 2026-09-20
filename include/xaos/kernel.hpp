@@ -37,6 +37,10 @@ template<Formula Value> struct FormulaTag {
     static constexpr bool julia=Value==Formula::Julia;
     static constexpr bool ship=Value==Formula::BurningShip;
     static constexpr bool interior=Value==Formula::Mandelbrot;
+    static constexpr bool needsDivision=
+        Value==Formula::Newton || Value==Formula::Newton4 ||
+        Value==Formula::Magnet || Value==Formula::Magnet2 ||
+        Value==Formula::Catseye;
     // Resumable state is formula-specific. Most formulas only need z=(x,y);
     // Newton additionally needs its convergence delta, while recurrence formulas
     // need a second complex value.
