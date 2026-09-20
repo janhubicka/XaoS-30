@@ -1620,7 +1620,7 @@ int main(int argc,char**argv) {
     if(mobile && !smoke) window.showFullScreen(); else window.show();
     if(smoke) {
         struct SmokeState {
-            int zoomTicks=0,publishedAtStart=0;
+            int zoomTicks=0,publishedAtStart=0,finishChecks=0;
             bool publishedDuringMotion=false;
         };
         auto state=std::make_shared<SmokeState>();
@@ -1658,10 +1658,20 @@ int main(int argc,char**argv) {
         QTimer::singleShot(2700,&window,[&window]{window.canvas->setPaletteCycling(1);});
         QTimer::singleShot(3200,&window,[&window]{window.canvas->setPaletteCycling(0);});
         QTimer::singleShot(3300,&window,[&window]{window.canvas->setAutopilot(false);});
-        QTimer::singleShot(4500,&window,[&window,&app,state]{
+        // Sanitized builds can be several times slower in presentation, especially
+        // now that palette-independent iteration samples are colored on presentation.
+        // Exercise the complete scripted scenario first, then give the same assertions
+        // a bounded grace period rather than turning machine speed into a test result.
+        auto*finish=new QTimer(&window);
+        finish->setInterval(100);
+        QObject::connect(finish,&QTimer::timeout,&window,[&window,&app,state,finish] {
             const bool ok=window.canvas->completedFrames && state->publishedDuringMotion;
-            app.exit(ok?0:2);
+            if(ok || ++state->finishChecks>=75) {
+                finish->stop();
+                app.exit(ok?0:2);
+            }
         });
+        QTimer::singleShot(4500,&window,[finish]{finish->start();});
     }
     return app.exec(); // Window destruction joins all render workers before QApplication dies.
 }
