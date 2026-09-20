@@ -357,8 +357,12 @@ class Canvas final:public QWidget {
         const int paletteShift=presentationPaletteShift_.load(std::memory_order_relaxed);
         {
             std::lock_guard lock(presentationMutex_);
-            if(presentationActive_)
-                presentationActive_->cancelled.store(true,std::memory_order_relaxed);
+            // Do not cancel an in-flight recolor on every 40 ms palette tick.
+            // On a large first frame presentation can take longer than one timer
+            // period; repeatedly cancelling it starves publication completely.
+            // Keep the active job and coalesce the pending slot to the newest
+            // palette phase. When the presenter catches up it immediately takes
+            // the latest shift.
             presentationPending_=PresentationJob{std::move(frame),serial,epoch,paletteShift};
         }
         presentationWake_.notify_one();
