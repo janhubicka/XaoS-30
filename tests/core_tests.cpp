@@ -19,16 +19,20 @@ int checks=0;
 #define CHECK(x) do { ++checks; if(!(x)) throw std::runtime_error(std::string(__FILE__)+":"+std::to_string(__LINE__)+": " #x); } while(false)
 /// Verifies that a callable rejects invalid input by throwing an exception.
 template<class Fn> void rejects(Fn fn) { bool yes=false; try{fn();}catch(const std::exception&){yes=true;} CHECK(yes); }
-/// Checks that two frames represent the same mathematical iteration results.
-void sameCounts(const FrameBase&a,const FrameBase&b) {
+/// Checks per-pixel mathematical results without requiring identical axis quantization.
+void samePixelCounts(const FrameBase&a,const FrameBase&b) {
     CHECK(a.request.width==b.request.width); CHECK(a.request.height==b.request.height);
-    CHECK(a.xs==b.xs); CHECK(a.ys==b.ys);
     for(int y=0;y<a.request.height;++y) for(int x=0;x<a.request.width;++x) {
         auto ac=a.at(x,y),bc=b.at(x,y);
         // A cached escape beyond a lowered limit deliberately retains more information.
         CHECK(pixelColor(ac,a.request.settings.iterations)==pixelColor(bc,b.request.settings.iterations));
         if(ac.iterations<=a.request.settings.iterations && bc.iterations<=b.request.settings.iterations) CHECK(ac==bc);
     }
+}
+/// Checks results and exact axes for same-backend reuse/resume comparisons.
+void sameCounts(const FrameBase&a,const FrameBase&b) {
+    CHECK(a.xs==b.xs); CHECK(a.ys==b.ys);
+    samePixelCounts(a,b);
 }
 /// Runs regression checks for axis.
 void axisTests() {
@@ -237,13 +241,13 @@ void formulaTests() {
         Request gmp96=r;gmp96.settings.fastPrecision=false;
         Renderer forced96;auto reference96=forced96.render(gmp96,one,stop);
         CHECK(reference96->stats.backend=="GMP");
-        sameCounts(*quick,*reference96);
+        samePixelCounts(*quick,*reference96);
 
         r.settings.iterations=52;
         auto quickResumed=fast96.render(r,many,stop);
         gmp96.settings.iterations=52;
         Renderer forced96Fresh;auto reference96More=forced96Fresh.render(gmp96,one,stop);
-        sameCounts(*quickResumed,*reference96More);
+        samePixelCounts(*quickResumed,*reference96More);
 
         // Higher precision exercises the 3-limb wide-fixed tier where applicable;
         // division-heavy formulas intentionally fall back to GMP above DD.
@@ -253,14 +257,14 @@ void formulaTests() {
         CHECK(big->stats.complete);
         Request gmp128=r;gmp128.settings.fastPrecision=false;
         Renderer forced128;auto reference128=forced128.render(gmp128,one,stop);
-        sameCounts(*big,*reference128);
+        samePixelCounts(*big,*reference128);
 
         // Raising the limit must preserve the exact 2/3/4-scalar fast checkpoint.
         r.settings.iterations=52;
         auto resumed=precise.render(r,one,stop);
         gmp128.settings.iterations=52;
         Renderer fresh;auto baseline=fresh.render(gmp128,one,stop);
-        sameCounts(*resumed,*baseline);
+        samePixelCounts(*resumed,*baseline);
     }
 
     CHECK(formulaFromName("julia")==Formula::Julia);
@@ -484,7 +488,7 @@ void fastPrecisionTests() {
 
             Renderer fresh;
             auto baseline=fresh.render(r,one,stop);
-            sameCounts(*resumed,*baseline);
+            samePixelCounts(*resumed,*baseline);
 
             Request gmpRequest=r;
             gmpRequest.settings.fastPrecision=false;
