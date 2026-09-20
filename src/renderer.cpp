@@ -1875,26 +1875,27 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
 }
 
 namespace {
-int64_t paletteFixed(double value) noexcept {
+uint32_t paletteCodeFromFixed(double value) noexcept {
     if(!std::isfinite(value)) return 0;
-    const double period=static_cast<double>(
-        std::max<size_t>(1,classicDefaultPalette().size()-1))*256.0;
-    value=std::fmod(value,period);
-    if(value>static_cast<double>(std::numeric_limits<int64_t>::max()) ||
-       value<static_cast<double>(std::numeric_limits<int64_t>::min()))
-        return 0;
-    return static_cast<int64_t>(value);
+    const uint64_t period=std::max<size_t>(1,classicDefaultPalette().size()-1)*uint64_t{256};
+    double reduced=std::fmod(value,static_cast<double>(period));
+    if(reduced<0) reduced+=static_cast<double>(period);
+    return static_cast<uint32_t>(reduced);
 }
 double safeRatio(double a,double b) noexcept {
     if(std::abs(b)<1.e-30) return std::copysign(1.e30,a);
     return a/b;
 }
+
+uint32_t paletteColorFromCode(uint32_t code,int shift) noexcept {
+    if(code==BlackPaletteCode) return 0xff000000u;
+    return classicPaletteColorFixed(static_cast<int64_t>(code),shift);
 }
 
-/// Maps XaoS-style inside/outside coloring modes through the classic palette.
-uint32_t pixelColor(Count c,uint32_t limit,const Settings&s,
-                    double zre,double zim,double cre,double cim) noexcept {
-    if(c.iterations>limit) return 0xff000000u;
+/// Computes the palette coordinate independently of palette phase.
+uint32_t pixelPaletteCode(Count c,uint32_t limit,const Settings&s,
+                          double zre,double zim,double cre,double cim) noexcept {
+    if(c.iterations>limit) return BlackPaletteCode;
     const double mag=zre*zre+zim*zim;
 
     if(c.status==Status::Escaped) {
@@ -1941,18 +1942,18 @@ uint32_t pixelColor(Count c,uint32_t limit,const Settings&s,
             }
             break;
         }
-        return classicPaletteColorFixed(paletteFixed(fixed),s.paletteShift);
+        return paletteCodeFromFixed(fixed);
     }
 
     // Pending at the current cap and explicit Interior both represent the inside
     // color for this frame. A genuinely unresolved partial orbit remains black.
-    if(c.status==Status::Pending && c.iterations<limit) return 0xff000000u;
-    if(s.inColoring==InColoring::Black) return 0xff000000u;
+    if(c.status==Status::Pending && c.iterations<limit) return BlackPaletteCode;
+    if(s.inColoring==InColoring::Black) return BlackPaletteCode;
 
     double fixed=static_cast<double>(c.iterations);
     switch(s.inColoring) {
     case InColoring::Black:
-        return 0xff000000u;
+        return BlackPaletteCode;
     case InColoring::ZMag:
         fixed=mag*static_cast<double>(limit>>1)*256.0+256.0;
         break;
@@ -1989,7 +1990,15 @@ uint32_t pixelColor(Count c,uint32_t limit,const Settings&s,
             fixed=(std::atan2(zim,zre)/(2.0*std::numbers::pi)+.75)*20000.0;
         break;
     }
-    return classicPaletteColorFixed(paletteFixed(fixed),s.paletteShift);
+    return paletteCodeFromFixed(fixed);
+}
+} // namespace
+
+/// Maps XaoS-style inside/outside coloring modes through the classic palette.
+uint32_t pixelColor(Count c,uint32_t limit,const Settings&s,
+                    double zre,double zim,double cre,double cim) noexcept {
+    return paletteColorFromCode(
+        pixelPaletteCode(c,limit,s,zre,zim,cre,cim),s.paletteShift);
 }
 
 /// Compatibility mapping used by tests and callers that want the historical default.
