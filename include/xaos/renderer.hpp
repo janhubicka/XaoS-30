@@ -80,10 +80,38 @@ struct FrameBase {
     // state. They make XaoS in/out coloring and palette changes independent of
     // expensive orbit recomputation. Float precision is ample for palette indices.
     AlignedVector<float> colorRe,colorIm;
-    // Adaptive-grid samples are deliberately separate from count/orbit state. A
-    // guessed colour must never become resumable mathematical state.
-    AlignedVector<uint32_t> samplePixels;
+    // The adaptive zoomer works in iteration space, never RGB space. Code zero
+    // represents a non-escaped sample at the current limit; an escaped sample at
+    // iteration n is stored as n+1. Missing-ness remains in sampleQuality.
+    //
+    // Use 16 bits whenever every possible escaped code fits (limit <= 65534);
+    // otherwise switch to 32 bits. This keeps ordinary interactive frames compact
+    // while supporting the renderer's full multi-billion iteration range.
+    using SampleIterations=std::variant<AlignedVector<uint16_t>,AlignedVector<uint32_t>>;
+    SampleIterations sampleIterations;
     AlignedVector<uint8_t> sampleQuality;
+    void resizeSampleIterations(size_t n,uint32_t limit) {
+        if(limit<std::numeric_limits<uint16_t>::max())
+            sampleIterations.emplace<AlignedVector<uint16_t>>(n,uint16_t{0});
+        else
+            sampleIterations.emplace<AlignedVector<uint32_t>>(n,uint32_t{0});
+    }
+    uint32_t sampleIterationCode(size_t i) const {
+        return std::visit([&](const auto&samples)->uint32_t {
+            return static_cast<uint32_t>(samples[i]);
+        },sampleIterations);
+    }
+    void setSampleIterationCode(size_t i,uint32_t code) {
+        std::visit([&](auto&samples) {
+            using T=typename std::decay_t<decltype(samples)>::value_type;
+            if(code>std::numeric_limits<T>::max())
+                throw std::overflow_error("iteration sample does not fit preview buffer");
+            samples[i]=static_cast<T>(code);
+        },sampleIterations);
+    }
+    bool sampleIterations32Bit() const noexcept {
+        return std::holds_alternative<AlignedVector<uint32_t>>(sampleIterations);
+    }
     // Timeout resolution reduction is represented by lightweight source maps,
     // not by copying a full framebuffer. Identity entries are completed grid
     // lines; other entries point directly at the completed line used for display.
