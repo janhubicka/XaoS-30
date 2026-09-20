@@ -741,6 +741,12 @@ void coloringTests() {
         for(int x=0;x<r.width;++x)
             if(baseDisplay->at(x,y)!=shiftedDisplay->at(x,y)) {paletteChanged=true;break;}
     CHECK(paletteChanged);
+    CHECK(base->sampleIterations==shifted->sampleIterations);
+
+    // Palette phase is presentation-only and must not affect the adaptive field.
+    for(size_t i=0;i<base->sampleQuality.size();++i)
+        if(base->sampleQuality[i]!=static_cast<uint8_t>(DisplayQuality::Missing))
+            CHECK(base->sampleIterationCode(i)==shifted->sampleIterationCode(i));
 
     r.settings.outColoring=OutColoring::ColorDecomposition;
     auto decomposed=renderer.render(r,pool,stop);
@@ -765,6 +771,24 @@ void coloringTests() {
         for(int x=0;x<insideReq.width;++x)
             if(coloredDisplay->at(x,y)!=0xff000000u) {insideChanged=true;break;}
     CHECK(insideChanged);
+}
+
+/// Verifies compact iteration-space preview storage selection.
+void previewStorageTests() {
+    ThreadExecutor pool(1);Cancellation stop;
+    auto render=[&](uint32_t limit) {
+        Request r;r.width=3;r.height=2;r.settings.iterations=limit;
+        r.settings.uniform=true;r.settings.solidGuessRange=0;
+        r.view=View::parse("2","0","0.1",r.width);
+        Renderer renderer;
+        return renderer.render(r,pool,stop);
+    };
+    auto small=render(65534);
+    CHECK(!small->sampleIterations32Bit());
+    auto large=render(65535);
+    CHECK(large->sampleIterations32Bit());
+    CHECK(std::holds_alternative<AlignedVector<uint16_t>>(small->sampleIterations));
+    CHECK(std::holds_alternative<AlignedVector<uint32_t>>(large->sampleIterations));
 }
 
 /// Runs regression checks for preview.
@@ -829,8 +853,18 @@ void resolutionFeedbackTests() {
     for(int y=0;y<r.height;++y) for(int x=0;x<r.width;++x) {
         const int sx=coarse->displayXSource[static_cast<size_t>(x)];
         const int sy=coarse->displayYSource[static_cast<size_t>(y)];
-        if(sx>=0 && sy>=0)
-            CHECK(coarseDisplay->at(x,y)==coarse->samplePixels[coarse->index(sx,sy)]);
+        if(sx>=0 && sy>=0) {
+            const size_t index=coarse->index(sx,sy);
+            const uint32_t code=coarse->sampleIterationCode(index);
+            const Count preview=code?Count{code-1,Status::Escaped}:
+                                     Count{r.settings.iterations,Status::Pending};
+            const uint32_t expected=pixelColor(
+                preview,r.settings.iterations,r.settings,
+                coarse->colorRe[index],coarse->colorIm[index],
+                coarse->xs[static_cast<size_t>(sx)].toDouble(),
+                coarse->ys[static_cast<size_t>(sy)].toDouble());
+            CHECK(coarseDisplay->at(x,y)==expected);
+        }
     }
     auto unique=[](const std::vector<Big>&axis) {
         size_t n=axis.empty()?0:1;
@@ -887,8 +921,8 @@ void reconstructionTests() {
     CHECK(nearest->stats.filled>0);
     sameCounts(*nearest,*bilinear);
     sameCounts(*nearest,*bicubic);
-    CHECK(nearest->samplePixels==bilinear->samplePixels);
-    CHECK(nearest->samplePixels==bicubic->samplePixels);
+    CHECK(nearest->sampleIterations==bilinear->sampleIterations);
+    CHECK(nearest->sampleIterations==bicubic->sampleIterations);
     CHECK(nearest->sampleQuality==bilinear->sampleQuality);
     CHECK(nearest->sampleQuality==bicubic->sampleQuality);
     auto nearestDisplay=presentFrame(*nearest,pool,go);
@@ -1084,7 +1118,7 @@ void failureTests() {
 int main() {
     try {
         for(auto [name,test]:std::vector<std::pair<const char*,std::function<void()>>>{
-          {"axis optimizer vs independent dense DP",axisTests}, {"XaoS autopilot",autopilotTests}, {"XaoS fixed formulas",formulaTests}, {"classic XaoS palette",paletteTests}, {"XaoS coloring reuse",coloringTests}, {"arbitrary-precision camera",numericTests},
+          {"axis optimizer vs independent dense DP",axisTests}, {"XaoS autopilot",autopilotTests}, {"XaoS fixed formulas",formulaTests}, {"classic XaoS palette",paletteTests}, {"XaoS coloring reuse",coloringTests}, {"16/32-bit preview iterations",previewStorageTests}, {"arbitrary-precision camera",numericTests},
           {"scalar/native SIMD bit identity",simdTests},{"counts/state/resume/limit decrease",resumeTests},
           {"fast quadratic precision vs GMP",fastPrecisionTests},
           {"zoom coordinates and exact refinement",zoomTests},{"rotated view rendering and reuse",rotationTests},
