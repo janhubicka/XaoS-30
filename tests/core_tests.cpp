@@ -202,6 +202,23 @@ void numericTests() {
     rotated.zoom(u,vv,.83,320,200);
     mapped=rotated.complexToScreen(anchor.first,anchor.second,320,200);
     CHECK(std::abs(mapped.first-u)<5e-5);CHECK(std::abs(mapped.second-vv)<5e-5);
+
+    // A combined two-finger similarity must map the previous midpoint to the
+    // current midpoint while changing scale and angle in one operation. This is
+    // the steering invariant used by the Android pinch handler.
+    {
+        View gestureView=View::parse("-0.743643887037151","0.13182590420533","1e-45",360);
+        const double oldU=.38,oldV=.61,newU=.47,newV=.53;
+        const auto gestureAnchor=gestureView.screenToComplex(oldU,oldV,360,240);
+        const Big oldSpan=gestureView.span;
+        gestureView.gesture(oldU,oldV,newU,newV,1.17,.083,360,240);
+        const auto gestureMapped=gestureView.complexToScreen(
+            gestureAnchor.first,gestureAnchor.second,360,240);
+        CHECK(std::abs(gestureMapped.first-newU)<5e-5);
+        CHECK(std::abs(gestureMapped.second-newV)<5e-5);
+        CHECK(std::abs(div(gestureView.span,oldSpan).toDouble()-1.0/1.17)<1e-12);
+        CHECK(std::abs(gestureView.rotation-.083)<1e-12);
+    }
     CHECK((std::is_empty_v<Storage<false,double>>));
     CHECK((std::is_empty_v<Storage<false,Big>>));
     CHECK((FormulaTag<Formula::Mandelbrot>::stateScalars==2));
@@ -774,6 +791,52 @@ void rotationTests() {
             CHECK(partial->stats.gridRows>=static_cast<uint32_t>(std::min(3,r.height)));
             CHECK(partial->stats.gridColumns>=static_cast<uint32_t>(std::min(3,r.width)));
             CHECK(partial->stats.reusableGrid);
+        }
+
+        // At deep zoom, even a tiny angle change invalidates separable
+        // row/column state mathematically. Presentation must nevertheless keep
+        // the affine previous image wherever the new basis has not produced an
+        // exact sample yet; nearest-row fill here used to create long strips.
+        {
+            Request deep;
+            deep.width=96;deep.height=60;
+            deep.view=View::parse(
+                "-0.743643887037151","0.13182590420533","1e-40",deep.width);
+            deep.settings.minimumPrecision=192;
+            deep.settings.iterations=700;
+            deep.settings.analytic=false;
+            deep.settings.solidGuessRange=3;
+            Renderer deepRenderer;
+            auto deepBase=deepRenderer.render(deep,pool,stop);
+            CHECK(deepBase->stats.complete);
+            auto deepBaseDisplay=presentFrame(*deepBase,pool,stop);
+
+            Request changed=deep;
+            changed.view.rotate(.5,.5,.0025,changed.width,changed.height);
+            changed.settings.sliceMilliseconds=2;
+            auto partial=deepRenderer.render(changed,pool,stop);
+            CHECK(partial->stats.steps>0);
+            CHECK(!partial->stats.complete);
+
+            Renderer emptyRenderer;
+            Cancellation cancelled;cancelled.cancelled.store(true);
+            auto empty=emptyRenderer.render(changed,pool,cancelled);
+            auto pureFallback=presentFrame(*empty,pool,stop,deepBaseDisplay.get());
+            auto mixed=presentFrame(*partial,pool,stop,deepBaseDisplay.get());
+
+            uint64_t preserved=0;
+            for(int y=0;y<changed.height;++y) for(int x=0;x<changed.width;++x) {
+                const bool exactAxes=
+                    partial->displayXSource[static_cast<size_t>(x)]==x &&
+                    partial->displayYSource[static_cast<size_t>(y)]==y;
+                const bool exactSample=exactAxes &&
+                    partial->qualityAt(x,y)==DisplayQuality::Exact;
+                if(!exactSample) {
+                    CHECK(mixed->at(x,y)==pureFallback->at(x,y));
+                    ++preserved;
+                }
+            }
+            CHECK(preserved>static_cast<uint64_t>(changed.width*changed.height/2));
         }
 
         r.view.rotate(.31,.64,.47,r.width,r.height);
