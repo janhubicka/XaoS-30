@@ -1375,7 +1375,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         // apparent full recomputation after zooming stopped.  Exact/unbounded
         // requests, explicit uniform-grid requests, and iteration-limit changes do
         // require mathematical refinement.
-        if(!r.settings.sliceMilliseconds || r.settings.uniform || !sameIteration)
+        if(!r.settings.sliceMilliseconds || r.settings.uniform || !sameIteration || coloringChanged)
             rasterRefine();
     }
 
@@ -1629,7 +1629,125 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
     return out;
 }
 
-/// Maps a completed iteration count to its visible colour.
+namespace {
+int64_t paletteFixed(double value) noexcept {
+    if(!std::isfinite(value)) return 0;
+    const double period=static_cast<double>(
+        std::max<size_t>(1,classicDefaultPalette().size()-1))*256.0;
+    value=std::fmod(value,period);
+    if(value>static_cast<double>(std::numeric_limits<int64_t>::max()) ||
+       value<static_cast<double>(std::numeric_limits<int64_t>::min()))
+        return 0;
+    return static_cast<int64_t>(value);
+}
+double safeRatio(double a,double b) noexcept {
+    if(std::abs(b)<1.e-30) return std::copysign(1.e30,a);
+    return a/b;
+}
+}
+
+/// Maps XaoS-style inside/outside coloring modes through the classic palette.
+uint32_t pixelColor(Count c,uint32_t limit,const Settings&s,
+                    double zre,double zim,double cre,double cim) noexcept {
+    if(c.iterations>limit) return 0xff000000u;
+    const double mag=zre*zre+zim*zim;
+
+    if(c.status==Status::Escaped) {
+        double fixed=static_cast<double>(c.iterations)*256.0;
+        switch(s.outColoring) {
+        case OutColoring::Iter:
+            break;
+        case OutColoring::IterReal:
+            fixed+=zre*256.0;
+            break;
+        case OutColoring::IterImag:
+            fixed+=zim*256.0;
+            break;
+        case OutColoring::IterRealImag:
+            fixed+=safeRatio(zre,zim)*256.0;
+            break;
+        case OutColoring::IterAll:
+            fixed+=(zre+zim+safeRatio(zre,zim))*256.0;
+            break;
+        case OutColoring::BinaryDecomposition:
+            if(zim>0) fixed=(static_cast<double>(limit)-c.iterations)*256.0;
+            break;
+        case OutColoring::Biomorphs:
+            if(std::abs(zim)<2.0 || std::abs(zre)<2.0)
+                fixed=(static_cast<double>(limit)-c.iterations)*256.0;
+            break;
+        case OutColoring::Potential:
+            if(mag>1.0 && c.iterations) {
+                const double v=std::log(mag)/(static_cast<double>(c.iterations)*256.0);
+                fixed=v>0?std::sqrt(v)*65536.0:0.0;
+            } else fixed=0;
+            break;
+        case OutColoring::ColorDecomposition:
+            fixed=(std::atan2(zre,zim)/(2.0*std::numbers::pi)+.75)*20000.0;
+            break;
+        case OutColoring::Smooth:
+            if(mag>1.0) {
+                const double logAbs=.5*std::log(mag);
+                if(logAbs>0) {
+                    const double smooth=static_cast<double>(c.iterations)+1.0-
+                        std::log(logAbs)/std::log(2.0);
+                    fixed=smooth*256.0;
+                }
+            }
+            break;
+        }
+        return classicPaletteColorFixed(paletteFixed(fixed),s.paletteShift);
+    }
+
+    // Pending at the current cap and explicit Interior both represent the inside
+    // color for this frame. A genuinely unresolved partial orbit remains black.
+    if(c.status==Status::Pending && c.iterations<limit) return 0xff000000u;
+    if(s.inColoring==InColoring::Black) return 0xff000000u;
+
+    double fixed=static_cast<double>(c.iterations);
+    switch(s.inColoring) {
+    case InColoring::Black:
+        return 0xff000000u;
+    case InColoring::ZMag:
+        fixed=mag*static_cast<double>(limit>>1)*256.0+256.0;
+        break;
+    case InColoring::Decomposition:
+        fixed=(std::atan2(zre,zim)/(2.0*std::numbers::pi)+.75)*20000.0;
+        break;
+    case InColoring::RealImag:
+        fixed=100.0+safeRatio(zre,zim)*2560.0;
+        break;
+    case InColoring::Difference:
+        fixed+=
+            (std::abs(std::abs(cre)-std::abs(zre))+
+             std::abs(std::abs(cim)-std::abs(zim)))*16384.0;
+        break;
+    case InColoring::CosMag: {
+        const double product=zre*zim*cre*cim;
+        fixed=((static_cast<int>(mag*10.0)&1)?std::cos(product):std::sin(product))*65536.0;
+        break;
+    }
+    case InColoring::MagCosReal2:
+        fixed=mag*std::cos(zre*zre)*65536.0;
+        break;
+    case InColoring::SinReal2Imag2:
+        fixed=std::sin(zre*zre-zim*zim)*65536.0;
+        break;
+    case InColoring::AtanProduct:
+        fixed=std::atan(zre*zim*cre*cim)*16384.0;
+        break;
+    case InColoring::Squares:
+        if((std::abs(static_cast<int>(zre*40.0))&1) ^
+           (std::abs(static_cast<int>(zim*40.0))&1))
+            fixed=(std::atan2(zre,zim)/(2.0*std::numbers::pi)+.75)*20000.0;
+        else
+            fixed=(std::atan2(zim,zre)/(2.0*std::numbers::pi)+.75)*20000.0;
+        break;
+    }
+    return classicPaletteColorFixed(paletteFixed(fixed),s.paletteShift);
+}
+
+/// Compatibility mapping used by tests and callers that want the historical default.
 uint32_t pixelColor(Count c,uint32_t limit) noexcept {
     if(c.status!=Status::Escaped || c.iterations>limit) return 0xff000000u;
     return classicIterationColor(c.iterations);
