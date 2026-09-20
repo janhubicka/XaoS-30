@@ -580,7 +580,10 @@ protected:
 #ifdef Q_OS_ANDROID
         if(tiltSteeringFlight_) tiltSensor_.calibrate();
 #endif
-        if(publishedFrames>0) submit(true);
+        // Before showEvent there is intentionally no work. Afterwards even
+        // a resize that arrives before frame 1 is published must replace the
+        // pending startup geometry (not wait for another user gesture).
+        if(initialSubmitted_) submit(true);
     }
 
     /// Handles direct mobile touch plus native trackpad and generic pinch gestures.
