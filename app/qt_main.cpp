@@ -389,6 +389,9 @@ class Canvas final:public QWidget {
                 presentationActive_=token;
             }
             try {
+                const bool rotatingFromStable=
+                    previous &&
+                    previous->request.view.rotation!=job.frame->request.view.rotation;
                 auto display=presentFrame(*job.frame,executor,*token,previous.get(),job.paletteShift);
                 if(token->cancelled.load(std::memory_order_relaxed)) {
                     std::lock_guard lock(presentationMutex_);
@@ -401,7 +404,13 @@ class Canvas final:public QWidget {
                     if(presentationActive_==token) presentationActive_.reset();
                     continue;
                 }
-                previous=display;
+                // During a basis transition keep the last stable image
+                // as the fallback across *all* partial refinement slices. If we
+                // replaced it with the first sparse rotated frame, the following
+                // same-angle slice would start nearest-filling its few rows again.
+                // Promote the new angle only once its grid is complete.
+                if(!rotatingFromStable || job.frame->stats.complete)
+                    previous=display;
                 const auto stats=job.frame->stats;
                 const auto view=job.frame->request.view;
                 const auto reconstruction=job.frame->request.settings.reconstruction;
