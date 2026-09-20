@@ -590,6 +590,32 @@ void zoomTests() {
         }
         r.settings.iterations=250;
         a=renderer.render(r,pool,stop); verifyCoordinates<Mandelbrot>(*a);
+
+        // Phone portrait/landscape rotation preserves complex units per pixel by
+        // scaling horizontal span with width. With matching parity, the overlap
+        // lies on the exact same sample lattice and should retain a large block
+        // of already-computed mathematical state.
+        if(precision==0 && state) {
+            Request portrait=r;
+            portrait.width=40;portrait.height=64;
+            portrait.view=View::parse("-0.5","0","3.5",portrait.width);
+            portrait.settings.iterations=180;
+            portrait.settings.uniform=false;
+            Renderer orientation;
+            auto before=orientation.render(portrait,pool,stop);
+            CHECK(before->stats.complete);
+            Request landscape=portrait;
+            landscape.width=64;landscape.height=40;
+            landscape.view.span=scale(
+                landscape.view.span,
+                static_cast<double>(landscape.width)/portrait.width);
+            auto after=orientation.render(landscape,pool,stop);
+            CHECK(after->stats.complete);
+            CHECK(after->stats.reused>=
+                  static_cast<uint64_t>(landscape.width*landscape.height/3));
+            verifyCoordinates<Mandelbrot>(*after);
+        }
+
         r.settings.uniform=true; a=renderer.render(r,pool,stop);
         Renderer fresh; auto b=fresh.render(r,pool,stop); sameCounts(*a,*b);
         CHECK(a->stats.uniform);
