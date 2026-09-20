@@ -607,6 +607,35 @@ void rotationTests() {
         Renderer renderer;
         auto base=renderer.render(r,pool,stop);CHECK(base->stats.complete);
 
+        // Rotation changes the Cartesian row/column basis, so exact orbit/grid
+        // reuse is normally impossible. It must not, however, discard the
+        // already-known *display*. An empty rotated frame should be completely
+        // reconstructed from the previous display through the full 2-D transform.
+        if(precision==0) {
+            auto baseDisplay=presentFrame(*base,pool,stop);
+            Request rotatedRequest=r;
+            rotatedRequest.view.rotate(.5,.5,.37,r.width,r.height);
+            Renderer emptyRenderer;
+            Cancellation cancelled;cancelled.cancelled.store(true);
+            auto empty=emptyRenderer.render(rotatedRequest,pool,cancelled);
+            CHECK(empty->stats.steps==0);
+            auto transformed=presentFrame(*empty,pool,stop,baseDisplay.get());
+            for(int y=0;y<rotatedRequest.height;++y) for(int x=0;x<rotatedRequest.width;++x) {
+                const double u=(x+.5)/rotatedRequest.width;
+                const double v=1.0-(y+.5)/rotatedRequest.height;
+                const auto point=rotatedRequest.view.screenToComplex(
+                    u,v,rotatedRequest.width,rotatedRequest.height);
+                const auto old=baseDisplay->request.view.complexToScreen(
+                    point.first,point.second,
+                    baseDisplay->request.width,baseDisplay->request.height);
+                long sx=std::lround(old.first*baseDisplay->request.width-.5);
+                long sy=std::lround((1.0-old.second)*baseDisplay->request.height-.5);
+                sx=std::clamp(sx,0L,static_cast<long>(baseDisplay->request.width-1));
+                sy=std::clamp(sy,0L,static_cast<long>(baseDisplay->request.height-1));
+                CHECK(transformed->at(x,y)==baseDisplay->at(static_cast<int>(sx),static_cast<int>(sy)));
+            }
+        }
+
         r.view.rotate(.31,.64,.47,r.width,r.height);
         auto rotated=renderer.render(r,pool,stop);
         CHECK(rotated->stats.complete);
