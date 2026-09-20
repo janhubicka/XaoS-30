@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "xaos/palette.hpp"
 #include <array>
+#include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace xaos {
@@ -55,12 +57,52 @@ std::span<const uint32_t> classicDefaultPalette() noexcept {
     static const std::vector<uint32_t> palette=makeClassic();
     return palette;
 }
-/// Maps an escape iteration to the classic XaoS palette entry.
-uint32_t classicIterationColor(uint32_t iteration) noexcept {
+
+const char* inColoringName(InColoring mode) noexcept {
+    static constexpr std::array<const char*,10> names{{
+        "Black","zmag","Decomposition","real/imag","abs(c)-abs(z)",
+        "cos(mag)","mag*cos(real^2)","sin(real^2-imag^2)","atan(product)","Squares"
+    }};
+    const auto i=static_cast<size_t>(mode);
+    return i<names.size()?names[i]:"Black";
+}
+const char* outColoringName(OutColoring mode) noexcept {
+    static constexpr std::array<const char*,10> names{{
+        "Iterations","iter+real","iter+imag","iter+real/imag","iter+all",
+        "Binary decomposition","Biomorphs","Potential","Color decomposition","Smooth"
+    }};
+    const auto i=static_cast<size_t>(mode);
+    return i<names.size()?names[i]:"Iterations";
+}
+
+namespace {
+uint32_t interpolate(uint32_t a,uint32_t b,unsigned fraction) noexcept {
+    auto channel=[&](unsigned shift) {
+        const int av=static_cast<int>((a>>shift)&255u);
+        const int bv=static_cast<int>((b>>shift)&255u);
+        return static_cast<uint32_t>((av*(256-static_cast<int>(fraction))+
+                                      bv*static_cast<int>(fraction)+128)>>8);
+    };
+    return 0xff000000u|(channel(16)<<16)|(channel(8)<<8)|channel(0);
+}
+}
+
+uint32_t classicPaletteColorFixed(int64_t fixed8,int shift) noexcept {
     const auto palette=classicDefaultPalette();
     if(palette.size()<2) return 0xff000000u;
-    // Original formulas.cpp: pixels[(iter % (size - 1)) + 1]. Entry zero is
-    // reserved for points inside the set.
-    return palette[(static_cast<size_t>(iteration)%(palette.size()-1))+1];
+    const int64_t cycle=static_cast<int64_t>(palette.size()-1);
+    const int64_t period=cycle*256;
+    int64_t value=fixed8+static_cast<int64_t>(shift)*256;
+    value%=period;
+    if(value<0) value+=period;
+    const size_t base=static_cast<size_t>(value>>8);
+    const unsigned fraction=static_cast<unsigned>(value&255);
+    const size_t next=(base+1)%static_cast<size_t>(cycle);
+    return interpolate(palette[base+1],palette[next+1],fraction);
+}
+
+/// Maps an escape iteration to the classic XaoS palette entry.
+uint32_t classicIterationColor(uint32_t iteration,int shift) noexcept {
+    return classicPaletteColorFixed(static_cast<int64_t>(iteration)*256,shift);
 }
 }

@@ -5,6 +5,7 @@
 #include "qt_executor.hpp"
 #include <QApplication>
 #include <QAction>
+#include <QActionGroup>
 #include <QMenu>
 #include <QKeySequence>
 #include <QCheckBox>
@@ -100,12 +101,14 @@ class Canvas final:public QWidget {
     uint64_t serial_=0,shown_=0,epoch_=1;
     QImage image_,fallback_;
     View imageView_,fallbackView_;
-    QTimer motion_,idle_,autopilotTimer_,touchMomentum_;
-    QElapsedTimer motionClock_,autopilotClock_,touchSampleClock_,touchMomentumClock_,touchGestureClock_;
+    QTimer motion_,idle_,autopilotTimer_,touchMomentum_,paletteTimer_;
+    QElapsedTimer motionClock_,autopilotClock_,touchSampleClock_,touchMomentumClock_,touchGestureClock_,paletteClock_;
     Autopilot autopilotEngine_;
     std::shared_ptr<const DisplayFrame> latestDisplay_;
     Statistics latestDisplayStats_;
     double autopilotStep_=0,zoomSpeedScale_=1.0;
+    double paletteSpeed_=48.0,palettePhase_=0;
+    int paletteDirection_=0;
     bool autopilotEnabled_=false;
     QPointF pointer_{.5,.5},lastDrag_;
     int direction_=0;
@@ -851,6 +854,7 @@ public:
     int publishedFrames=0;
     std::function<void(QString)> onStatus;
     std::function<void(bool)> onAutopilotChanged;
+    std::function<void()> onColorChanged;
     /// Constructs a Canvas instance.
     explicit Canvas(QWidget*parent=nullptr):QWidget(parent) {
         setMouseTracking(true);setFocusPolicy(Qt::StrongFocus);
@@ -858,6 +862,7 @@ public:
         grabGesture(Qt::PinchGesture);
         motion_.setInterval(16);idle_.setSingleShot(true);idle_.setInterval(180);
         touchMomentum_.setInterval(16);
+        paletteTimer_.setInterval(40); // classic XaoS color cycling cadence
         autopilotTimer_.setInterval(40); // original XaoS autopilot timer: 25 Hz
         connect(&touchMomentum_,&QTimer::timeout,this,[this] {
             const double seconds=std::clamp(touchMomentumClock_.restart()/1000.0,.001,.05);
@@ -904,13 +909,27 @@ public:
             }catch(const std::exception&e){motion_.stop();if(onStatus)onStatus(e.what());}
         });
         connect(&idle_,&QTimer::timeout,this,[this]{submit(false);});
+        connect(&paletteTimer_,&QTimer::timeout,this,[this] {
+            if(!paletteDirection_) return;
+            const double seconds=std::clamp(paletteClock_.restart()/1000.0,.001,.2);
+            palettePhase_+=static_cast<double>(paletteDirection_)*paletteSpeed_*seconds;
+            int delta=palettePhase_>0?static_cast<int>(std::floor(palettePhase_)):
+                                      static_cast<int>(std::ceil(palettePhase_));
+            if(!delta) return;
+            palettePhase_-=delta;
+            const int period=static_cast<int>(std::max<size_t>(1,classicDefaultPalette().size()-1));
+            int shift=(settings.paletteShift+delta)%period;
+            if(shift<0) shift+=period;
+            settings.paletteShift=shift;
+            submit(true);
+        });
         connect(&autopilotTimer_,&QTimer::timeout,this,[this]{autopilotTick();});
         presenter_=std::thread([this]{presentationLoop();});
         coordinator_=std::thread([this]{coordinator();});
     }
     /// Releases resources owned by the Canvas instance.
     ~Canvas() override {
-        motion_.stop();idle_.stop();autopilotTimer_.stop();touchMomentum_.stop();
+        motion_.stop();idle_.stop();autopilotTimer_.stop();touchMomentum_.stop();paletteTimer_.stop();
         shutdown_.store(true,std::memory_order_relaxed);
         {
             std::lock_guard lock(mutex_);
@@ -994,6 +1013,60 @@ public:
     /// Reports whether automatic fractal exploration is enabled.
     bool autopilotEnabled() const noexcept { return autopilotEnabled_; }
 
+    /// Starts/stops XaoS-style palette cycling. Direction is -1, 0, or +1.
+    void setPaletteCycling(int direction) {
+        direction=std::clamp(direction,-1,1);
+        if(paletteDirection_==direction) return;
+        paletteDirection_=direction;
+        palettePhase_=0;
+        if(direction) {
+            paletteClock_.restart();
+            paletteTimer_.start();
+        } else {
+            paletteTimer_.stop();
+            submit(false);
+        }
+        if(onColorChanged) onColorChanged();
+        if(onStatus) onStatus(direction>0?"Palette cycling forward":
+                              direction<0?"Palette cycling backward":"Palette cycling stopped");
+    }
+    int paletteCyclingDirection() const noexcept { return paletteDirection_; }
+
+    /// Changes XaoS color-cycling speed without touching mathematical state.
+    void adjustPaletteSpeed(bool faster) {
+        const double factor=1.25;
+        paletteSpeed_=std::clamp(faster?paletteSpeed_*factor:paletteSpeed_/factor,1.0,4096.0);
+        if(onStatus) onStatus(QString("Palette cycling: %1 entries/s").arg(paletteSpeed_,0,'f',1));
+    }
+
+    /// Shifts the palette without recalculating any orbit.
+    void shiftPalette(int delta) {
+        const int period=static_cast<int>(std::max<size_t>(1,classicDefaultPalette().size()-1));
+        int shift=(settings.paletteShift+delta)%period;
+        if(shift<0) shift+=period;
+        settings.paletteShift=shift;
+        submit(false);
+        if(onColorChanged) onColorChanged();
+    }
+
+    void resetPaletteShift() {
+        settings.paletteShift=0;submit(false);
+        if(onColorChanged) onColorChanged();
+    }
+
+    void setInColoring(InColoring mode) {
+        if(settings.inColoring==mode) return;
+        settings.inColoring=mode;
+        submit(false);
+        if(onColorChanged) onColorChanged();
+    }
+    void setOutColoring(OutColoring mode) {
+        if(settings.outColoring==mode) return;
+        settings.outColoring=mode;
+        submit(false);
+        if(onColorChanged) onColorChanged();
+    }
+
     /// Adjusts XaoS zoom acceleration/max-step by the historical 1.05 factor.
     void adjustZoomSpeed(bool faster) {
         constexpr double factor=1.05;
@@ -1075,6 +1148,7 @@ class Window final:public QMainWindow {
     QToolButton*mobileDetail_=nullptr;
     QToolButton*mobileQuality_=nullptr;
     QMenu*mobileFormulaMenu_=nullptr;
+    QMenu*mobileColorMenu_=nullptr;
     QMenu*mobileMoreMenu_=nullptr;
 
     QString qualityName() const {
@@ -1091,7 +1165,11 @@ class Window final:public QMainWindow {
         mobileBadge_->setText(QString(" XaoS 30  ·  %1 ").arg(QString::fromLatin1(info.name)));
         mobileFormula_->setText(QString::fromLatin1(info.shortName).toUpper()+"\nFORMULA");
         mobileDetail_->setText(QString::number(canvas->settings.iterations)+"\nDETAIL");
-        mobileQuality_->setText(qualityName()+"\nLOOK");
+        if(canvas->paletteCyclingDirection())
+            mobileQuality_->setText(canvas->paletteCyclingDirection()>0?"CYCLE >\nCOLOR":"< CYCLE\nCOLOR");
+        else
+            mobileQuality_->setText(QString::fromLatin1(outColoringName(canvas->settings.outColoring))
+                                    .left(8).toUpper()+"\nCOLOR");
         mobileExplore_->setText(canvas->autopilotEnabled()?"STOP\nEXPLORE":"EXPLORE\nAUTO");
         mobileExplore_->setChecked(canvas->autopilotEnabled());
         mobileBadge_->adjustSize();
@@ -1147,7 +1225,7 @@ class Window final:public QMainWindow {
         mobileExplore_->setCheckable(true);
         mobileFormula_=mobileButton("MANDEL\nFORMULA",mobileDock_);
         mobileDetail_=mobileButton("512\nDETAIL",mobileDock_);
-        mobileQuality_=mobileButton("CRISP\nLOOK",mobileDock_);
+        mobileQuality_=mobileButton("ITER\nCOLOR",mobileDock_);
         auto*reset=mobileButton("RESET\nVIEW",mobileDock_);
         auto*more=mobileButton("MORE\n···",mobileDock_);
         for(auto*b:{mobileExplore_,mobileFormula_,mobileDetail_,mobileQuality_,reset,more})
@@ -1163,6 +1241,75 @@ class Window final:public QMainWindow {
         }
         mobileFormula_->setMenu(mobileFormulaMenu_);
         mobileFormula_->setPopupMode(QToolButton::InstantPopup);
+
+        mobileColorMenu_=new QMenu(mobileQuality_);
+        auto*cycleForward=mobileColorMenu_->addAction("Cycle palette forward");
+        auto*cycleBackward=mobileColorMenu_->addAction("Cycle palette backward");
+        auto*cycleStop=mobileColorMenu_->addAction("Stop palette cycling");
+        mobileColorMenu_->addSeparator();
+        auto*shiftForward=mobileColorMenu_->addAction("Shift palette +1");
+        auto*shiftBackward=mobileColorMenu_->addAction("Shift palette -1");
+        auto*shiftReset=mobileColorMenu_->addAction("Reset palette shift");
+        auto*cycleFaster=mobileColorMenu_->addAction("Cycle faster");
+        auto*cycleSlower=mobileColorMenu_->addAction("Cycle slower");
+        mobileColorMenu_->addSeparator();
+
+        auto*outMenu=mobileColorMenu_->addMenu("Outside coloring");
+        auto*outGroup=new QActionGroup(outMenu);outGroup->setExclusive(true);
+        for(int i=0;i<10;++i) {
+            const auto mode=static_cast<OutColoring>(i);
+            auto*a=outMenu->addAction(QString::fromLatin1(outColoringName(mode)));
+            a->setCheckable(true);a->setChecked(canvas->settings.outColoring==mode);
+            a->setData(i);outGroup->addAction(a);
+            connect(a,&QAction::triggered,this,[this,mode]{
+                canvas->setOutColoring(mode);refreshMobileChrome();
+            });
+        }
+
+        auto*inMenu=mobileColorMenu_->addMenu("Inside coloring");
+        auto*inGroup=new QActionGroup(inMenu);inGroup->setExclusive(true);
+        for(int i=0;i<10;++i) {
+            const auto mode=static_cast<InColoring>(i);
+            auto*a=inMenu->addAction(QString::fromLatin1(inColoringName(mode)));
+            a->setCheckable(true);a->setChecked(canvas->settings.inColoring==mode);
+            a->setData(i);inGroup->addAction(a);
+            connect(a,&QAction::triggered,this,[this,mode]{
+                canvas->setInColoring(mode);refreshMobileChrome();
+            });
+        }
+
+        auto*reconstructMenu=mobileColorMenu_->addMenu("Reconstruction");
+        auto*reconstructGroup=new QActionGroup(reconstructMenu);reconstructGroup->setExclusive(true);
+        for(auto [name,mode]:std::array<std::pair<const char*,Reconstruction>,3>{{
+                {"Nearest (XaoS)",Reconstruction::Nearest},
+                {"Bilinear",Reconstruction::Bilinear},
+                {"Bicubic",Reconstruction::Bicubic}}}) {
+            auto*a=reconstructMenu->addAction(name);
+            a->setCheckable(true);a->setChecked(canvas->settings.reconstruction==mode);
+            a->setData(static_cast<int>(mode));reconstructGroup->addAction(a);
+            connect(a,&QAction::triggered,this,[this,mode]{
+                canvas->settings.reconstruction=mode;canvas->submit(false,true);refreshMobileChrome();
+            });
+        }
+
+        connect(cycleForward,&QAction::triggered,this,[this]{canvas->setPaletteCycling(1);refreshMobileChrome();});
+        connect(cycleBackward,&QAction::triggered,this,[this]{canvas->setPaletteCycling(-1);refreshMobileChrome();});
+        connect(cycleStop,&QAction::triggered,this,[this]{canvas->setPaletteCycling(0);refreshMobileChrome();});
+        connect(shiftForward,&QAction::triggered,canvas,[this]{canvas->shiftPalette(1);});
+        connect(shiftBackward,&QAction::triggered,canvas,[this]{canvas->shiftPalette(-1);});
+        connect(shiftReset,&QAction::triggered,canvas,[this]{canvas->resetPaletteShift();});
+        connect(cycleFaster,&QAction::triggered,canvas,[this]{canvas->adjustPaletteSpeed(true);});
+        connect(cycleSlower,&QAction::triggered,canvas,[this]{canvas->adjustPaletteSpeed(false);});
+        connect(mobileColorMenu_,&QMenu::aboutToShow,this,[this,outMenu,inMenu,reconstructMenu] {
+            for(auto*a:outMenu->actions())
+                a->setChecked(a->data().toInt()==static_cast<int>(canvas->settings.outColoring));
+            for(auto*a:inMenu->actions())
+                a->setChecked(a->data().toInt()==static_cast<int>(canvas->settings.inColoring));
+            for(auto*a:reconstructMenu->actions())
+                a->setChecked(a->data().toInt()==static_cast<int>(canvas->settings.reconstruction));
+        });
+        mobileQuality_->setMenu(mobileColorMenu_);
+        mobileQuality_->setPopupMode(QToolButton::InstantPopup);
 
         mobileMoreMenu_=new QMenu(more);
         auto*coordinates=mobileMoreMenu_->addAction("Coordinates & precision");
@@ -1181,11 +1328,6 @@ class Window final:public QMainWindow {
             static constexpr std::array<uint32_t,7> levels{{128,256,512,1024,2048,4096,8192}};
             auto it=std::upper_bound(levels.begin(),levels.end(),canvas->settings.iterations);
             setIterations(it==levels.end()?levels.front():*it);
-        });
-        connect(mobileQuality_,&QToolButton::clicked,this,[this]{
-            const int next=(static_cast<int>(canvas->settings.reconstruction)+1)%3;
-            canvas->settings.reconstruction=static_cast<Reconstruction>(next);
-            canvas->submit(false,true);refreshMobileChrome();
         });
         connect(reset,&QToolButton::clicked,canvas,[this]{canvas->reset();refreshMobileChrome();});
         connect(coordinates,&QAction::triggered,canvas,&Canvas::coordinates);
@@ -1211,6 +1353,7 @@ class Window final:public QMainWindow {
                 "Explore lets XaoS choose the next interesting boundary automatically.");
         });
         canvas->onAutopilotChanged=[this](bool){refreshMobileChrome();};
+        canvas->onColorChanged=[this]{refreshMobileChrome();};
         canvas->onStatus=[this](const QString&s){
             if(mobileBadge_) mobileBadge_->setToolTip(s);
         };
@@ -1266,6 +1409,73 @@ public:
         connect(autopilot,&QAction::toggled,canvas,&Canvas::setAutopilot);
         canvas->onAutopilotChanged=[autopilot](bool enabled){autopilot->setChecked(enabled);};
         connect(coords,&QAction::triggered,canvas,&Canvas::coordinates);connect(reset,&QAction::triggered,canvas,&Canvas::reset);
+
+        auto*colorMenu=menuBar()->addMenu("Color");
+        auto*cycleForward=colorMenu->addAction("Cycle palette forward");
+        cycleForward->setShortcut(QKeySequence(Qt::Key_Y));
+        auto*cycleBackward=colorMenu->addAction("Cycle palette backward");
+        cycleBackward->setShortcut(QKeySequence(Qt::SHIFT|Qt::Key_Y));
+        auto*cycleStop=colorMenu->addAction("Stop palette cycling");
+        colorMenu->addSeparator();
+        auto*shiftForward=colorMenu->addAction("Shift palette +1");
+        shiftForward->setShortcut(QKeySequence(Qt::Key_Plus));
+        auto*shiftBackward=colorMenu->addAction("Shift palette -1");
+        shiftBackward->setShortcut(QKeySequence(Qt::Key_Minus));
+        auto*shiftReset=colorMenu->addAction("Reset palette shift");
+        auto*cycleFaster=colorMenu->addAction("Cycle faster");
+        auto*cycleSlower=colorMenu->addAction("Cycle slower");
+        colorMenu->addSeparator();
+
+        auto*outMenu=colorMenu->addMenu("Outside coloring");
+        auto*outGroup=new QActionGroup(outMenu);outGroup->setExclusive(true);
+        for(int i=0;i<10;++i) {
+            const auto mode=static_cast<OutColoring>(i);
+            auto*a=outMenu->addAction(QString::fromLatin1(outColoringName(mode)));
+            a->setCheckable(true);a->setData(i);a->setChecked(canvas->settings.outColoring==mode);
+            outGroup->addAction(a);
+            connect(a,&QAction::triggered,canvas,[this,mode]{canvas->setOutColoring(mode);});
+        }
+
+        auto*inMenu=colorMenu->addMenu("Inside coloring");
+        auto*inGroup=new QActionGroup(inMenu);inGroup->setExclusive(true);
+        for(int i=0;i<10;++i) {
+            const auto mode=static_cast<InColoring>(i);
+            auto*a=inMenu->addAction(QString::fromLatin1(inColoringName(mode)));
+            a->setCheckable(true);a->setData(i);a->setChecked(canvas->settings.inColoring==mode);
+            inGroup->addAction(a);
+            connect(a,&QAction::triggered,canvas,[this,mode]{canvas->setInColoring(mode);});
+        }
+
+        connect(cycleForward,&QAction::triggered,canvas,[this]{
+            canvas->setPaletteCycling(canvas->paletteCyclingDirection()==1?0:1);
+        });
+        connect(cycleBackward,&QAction::triggered,canvas,[this]{
+            canvas->setPaletteCycling(canvas->paletteCyclingDirection()==-1?0:-1);
+        });
+        connect(cycleStop,&QAction::triggered,canvas,[this]{canvas->setPaletteCycling(0);});
+        connect(shiftForward,&QAction::triggered,canvas,[this]{canvas->shiftPalette(1);});
+        connect(shiftBackward,&QAction::triggered,canvas,[this]{canvas->shiftPalette(-1);});
+        connect(shiftReset,&QAction::triggered,canvas,[this]{canvas->resetPaletteShift();});
+        connect(cycleFaster,&QAction::triggered,canvas,[this]{canvas->adjustPaletteSpeed(true);});
+        connect(cycleSlower,&QAction::triggered,canvas,[this]{canvas->adjustPaletteSpeed(false);});
+
+        auto*nextOut=new QAction(this);nextOut->setShortcut(QKeySequence(Qt::Key_C));addAction(nextOut);
+        connect(nextOut,&QAction::triggered,canvas,[this]{
+            const int next=(static_cast<int>(canvas->settings.outColoring)+1)%10;
+            canvas->setOutColoring(static_cast<OutColoring>(next));
+        });
+        auto*nextIn=new QAction(this);nextIn->setShortcut(QKeySequence(Qt::Key_F));addAction(nextIn);
+        connect(nextIn,&QAction::triggered,canvas,[this]{
+            const int next=(static_cast<int>(canvas->settings.inColoring)+1)%10;
+            canvas->setInColoring(static_cast<InColoring>(next));
+        });
+        connect(colorMenu,&QMenu::aboutToShow,this,[this,outMenu,inMenu] {
+            for(auto*a:outMenu->actions())
+                a->setChecked(a->data().toInt()==static_cast<int>(canvas->settings.outColoring));
+            for(auto*a:inMenu->actions())
+                a->setChecked(a->data().toInt()==static_cast<int>(canvas->settings.inColoring));
+        });
+
         auto*file=menuBar()->addMenu("File");auto*save=file->addAction("Save frame as PNG");
         connect(save,&QAction::triggered,canvas,&Canvas::saveImage);
         auto*quit=file->addAction("Quit");quit->setShortcut(QKeySequence::Quit);connect(quit,&QAction::triggered,this,&QWidget::close);
@@ -1348,6 +1558,8 @@ int main(int argc,char**argv) {
         QTimer::singleShot(1400,&window,[&window]{window.canvas->settings.minimumPrecision=128;window.canvas->submit(false,true);});
         QTimer::singleShot(1900,&window,[&window]{window.canvas->settings.saveState=false;window.canvas->submit();});
         QTimer::singleShot(2400,&window,[&window]{window.canvas->setAutopilot(true);});
+        QTimer::singleShot(2700,&window,[&window]{window.canvas->setPaletteCycling(1);});
+        QTimer::singleShot(3200,&window,[&window]{window.canvas->setPaletteCycling(0);});
         QTimer::singleShot(3300,&window,[&window]{window.canvas->setAutopilot(false);});
         QTimer::singleShot(4500,&window,[&window,&app,state]{
             const bool ok=window.canvas->completedFrames && state->publishedDuringMotion;

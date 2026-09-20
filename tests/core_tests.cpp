@@ -611,6 +611,74 @@ void paletteTests() {
     CHECK(pixelColor(Count{0,Status::Escaped},100)==p[1]);
     CHECK(pixelColor(Count{1,Status::Escaped},100)==p[2]);
     CHECK(pixelColor(Count{99,Status::Interior},100)==0xff000000u);
+
+    // Palette shifting is entry based, matching classic XaoS color rotation.
+    CHECK(classicIterationColor(0,1)==p[2]);
+    CHECK(classicIterationColor(1,-1)==p[1]);
+    CHECK(std::string_view(inColoringName(InColoring::ZMag))=="zmag");
+    CHECK(std::string_view(outColoringName(OutColoring::Smooth))=="Smooth");
+
+    Settings settings;
+    Count escaped{12,Status::Escaped};
+    CHECK(pixelColor(escaped,100,settings,2.5,.25,-.5,0)==classicIterationColor(12));
+    settings.paletteShift=7;
+    CHECK(pixelColor(escaped,100,settings,2.5,.25,-.5,0)==classicIterationColor(12,7));
+    settings.outColoring=OutColoring::ColorDecomposition;
+    CHECK(pixelColor(escaped,100,settings,2.5,.25,-.5,0)!=
+          classicIterationColor(12,7));
+
+    settings.inColoring=InColoring::ZMag;
+    Count inside{100,Status::Pending};
+    CHECK(pixelColor(inside,100,settings,.2,.1,-.1,.1)!=0xff000000u);
+}
+
+/// Verifies that coloring changes reuse final orbit metadata rather than re-iterating.
+void coloringTests() {
+    ThreadExecutor pool(4);Cancellation stop;
+    Request r;r.width=72;r.height=48;r.settings.iterations=96;
+    r.settings.uniform=true;r.settings.solidGuessRange=0;r.settings.analytic=false;
+    r.view=View::parse("-0.5","0","3",r.width);
+    Renderer renderer;
+    auto base=renderer.render(r,pool,stop);
+    CHECK(base->stats.complete);
+    CHECK(base->stats.steps>0);
+    auto baseDisplay=presentFrame(*base,pool,stop);
+
+    r.settings.paletteShift=17;
+    auto shifted=renderer.render(r,pool,stop);
+    CHECK(shifted->stats.complete);
+    CHECK(shifted->stats.steps==0);
+    sameCounts(*base,*shifted);
+    auto shiftedDisplay=presentFrame(*shifted,pool,stop);
+    bool paletteChanged=false;
+    for(int y=0;y<r.height && !paletteChanged;++y)
+        for(int x=0;x<r.width;++x)
+            if(baseDisplay->at(x,y)!=shiftedDisplay->at(x,y)) {paletteChanged=true;break;}
+    CHECK(paletteChanged);
+
+    r.settings.outColoring=OutColoring::ColorDecomposition;
+    auto decomposed=renderer.render(r,pool,stop);
+    CHECK(decomposed->stats.steps==0);
+    sameCounts(*shifted,*decomposed);
+
+    // A non-black incoloring can also recolor from cached final z when the
+    // original render did not use the analytic interior shortcut.
+    Request insideReq;insideReq.width=48;insideReq.height=32;insideReq.settings.iterations=64;
+    insideReq.settings.uniform=true;insideReq.settings.solidGuessRange=0;
+    insideReq.settings.analytic=false;
+    insideReq.view=View::parse("-0.1","0","0.6",insideReq.width);
+    Renderer insideRenderer;
+    auto black=insideRenderer.render(insideReq,pool,stop);
+    insideReq.settings.inColoring=InColoring::ZMag;
+    auto colored=insideRenderer.render(insideReq,pool,stop);
+    CHECK(colored->stats.steps==0);
+    sameCounts(*black,*colored);
+    auto coloredDisplay=presentFrame(*colored,pool,stop);
+    bool insideChanged=false;
+    for(int y=0;y<insideReq.height && !insideChanged;++y)
+        for(int x=0;x<insideReq.width;++x)
+            if(coloredDisplay->at(x,y)!=0xff000000u) {insideChanged=true;break;}
+    CHECK(insideChanged);
 }
 
 /// Runs regression checks for preview.
@@ -930,7 +998,7 @@ void failureTests() {
 int main() {
     try {
         for(auto [name,test]:std::vector<std::pair<const char*,std::function<void()>>>{
-          {"axis optimizer vs independent dense DP",axisTests}, {"XaoS autopilot",autopilotTests}, {"XaoS fixed formulas",formulaTests}, {"classic XaoS palette",paletteTests}, {"arbitrary-precision camera",numericTests},
+          {"axis optimizer vs independent dense DP",axisTests}, {"XaoS autopilot",autopilotTests}, {"XaoS fixed formulas",formulaTests}, {"classic XaoS palette",paletteTests}, {"XaoS coloring reuse",coloringTests}, {"arbitrary-precision camera",numericTests},
           {"scalar/native SIMD bit identity",simdTests},{"counts/state/resume/limit decrease",resumeTests},
           {"fast quadratic precision vs GMP",fastPrecisionTests},
           {"zoom coordinates and exact refinement",zoomTests},{"rotated view rendering and reuse",rotationTests},

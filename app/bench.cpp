@@ -46,6 +46,17 @@ int main(int argc,char**argv) {
             else if(a=="--state") r.settings.saveState=true;
             else if(a=="--scalar") r.settings.simd=false;
             else if(a=="--gmp") r.settings.fastPrecision=false;
+            else if(a=="--palette-shift") r.settings.paletteShift=integer<int>(next());
+            else if(a=="--incolor") {
+                const int mode=integer<int>(next());
+                if(mode<0||mode>9) throw std::invalid_argument("incolor must be 0..9");
+                r.settings.inColoring=static_cast<InColoring>(mode);
+            }
+            else if(a=="--outcolor") {
+                const int mode=integer<int>(next());
+                if(mode<0||mode>9) throw std::invalid_argument("outcolor must be 0..9");
+                r.settings.outColoring=static_cast<OutColoring>(mode);
+            }
             else if(a=="--no-interior") r.settings.analytic=false;
             else if(a=="--uniform") r.settings.uniform=true;
             else if(a=="--slice") r.settings.sliceMilliseconds=integer<unsigned>(next());
@@ -74,6 +85,7 @@ int main(int argc,char**argv) {
                 std::cout<<"XaoS Modern headless renderer/benchmark\n"
                 "--width N --height N --iterations N --precision BITS (0=adaptive)\n"
                 "--threads N --counts | --state --scalar --gmp --no-interior --uniform\n"
+                "--palette-shift N --incolor 0..9 --outcolor 0..9\n"
                 "--slice MS --solid-guess N | --no-guess --no-fill --reconstruct MODE\n"
                 "--center-re DECIMAL --center-im DECIMAL --span DECIMAL --rotation DEGREES\n"
                 "--formula NAME --list-formulas --julia-re DECIMAL --julia-im DECIMAL\n"

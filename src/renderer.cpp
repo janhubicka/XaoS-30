@@ -10,6 +10,7 @@
 #include <fstream>
 #include <functional>
 #include <numeric>
+#include <numbers>
 #include <type_traits>
 
 namespace xaos {
@@ -49,7 +50,7 @@ QuadraticBackend backendFromName(std::string_view name) noexcept {
 /// Estimates memory consumed by one frame and optional saved orbit state.
 size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state,unsigned stateScalars,
                 QuadraticBackend backend=QuadraticBackend::GMP) {
-    size_t each=sizeof(Count)+sizeof(uint32_t)+sizeof(uint8_t);
+    size_t each=sizeof(Count)+sizeof(uint32_t)+sizeof(uint8_t)+2*sizeof(float);
     if(state) {
         if(big && backend!=QuadraticBackend::GMP) {
             switch(backend) {
@@ -562,6 +563,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         ((!big && hasNativeSIMD()) ||
          (big && quadraticBackend==QuadraticBackend::DoubleDouble && hasDoubleDoubleSIMD()));
     f->counts.resize(pixels); f->state.resize(pixels,stateScalars,quadraticBackend);
+    f->colorRe.assign(pixels,0.0f);f->colorIm.assign(pixels,0.0f);
     f->samplePixels.assign(pixels,0xff000000u);
     f->sampleQuality.assign(pixels,static_cast<uint8_t>(DisplayQuality::Missing));
 
@@ -599,6 +601,39 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         return r.view.rotation==0?dy[static_cast<size_t>(y)]:
             dxImag[static_cast<size_t>(x)]+dyImag[static_cast<size_t>(y)];
     };
+    const auto colorParameterAt=[&](size_t index) {
+        if(r.settings.formula==Formula::Julia)
+            return std::pair{r.settings.juliaRe.toDouble(),r.settings.juliaIm.toDouble()};
+        const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
+        const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
+        if constexpr(!big)
+            return std::pair{doubleRealAt(x,y),doubleImagAt(x,y)};
+        if(r.view.rotation==0)
+            return std::pair{f->xs[static_cast<size_t>(x)].toDouble(),
+                             f->ys[static_cast<size_t>(y)].toDouble()};
+        return std::pair{
+            bxReal[static_cast<size_t>(x)].toDouble()+byReal[static_cast<size_t>(y)].toDouble(),
+            bxImag[static_cast<size_t>(x)].toDouble()+byImag[static_cast<size_t>(y)].toDouble()};
+    };
+    const auto colorForIndex=[&](size_t index) {
+        const auto [cr,ci]=colorParameterAt(index);
+        return pixelColor(f->counts[index],r.settings.iterations,r.settings,
+                          f->colorRe[index],f->colorIm[index],cr,ci);
+    };
+    const auto rememberOrbitColor=[&](size_t index,const auto&x,const auto&y) {
+        auto toDouble=[](const auto&v)->double {
+            using T=std::decay_t<decltype(v)>;
+            if constexpr(std::is_same_v<T,double>) return v;
+            else return v.toDouble();
+        };
+        f->colorRe[index]=static_cast<float>(toDouble(x));
+        f->colorIm[index]=static_cast<float>(toDouble(y));
+    };
+    const bool coloringChanged=gridOld &&
+        (gridOld->request.settings.paletteShift!=r.settings.paletteShift ||
+         gridOld->request.settings.inColoring!=r.settings.inColoring ||
+         gridOld->request.settings.outColoring!=r.settings.outColoring);
+    const bool analyticForOrbit=r.settings.analytic && r.settings.inColoring==InColoring::Black;
 
     std::vector<LocalStats> stats(executor.concurrency());
     // Move display samples from the last valid grid and mathematical state from
@@ -620,7 +655,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     // Presentation reuse follows the collapsed preview coordinate
                     // tables, as the old image mover did.  If that visual sample is
                     // not also our true sample coordinate, downgrade it to Fill.
-                    if(gridOld && r.settings.sliceMilliseconds && psx>=0 && psy>=0 &&
+                    if(gridOld && !coloringChanged && r.settings.sliceMilliseconds &&
+                       psx>=0 && psy>=0 &&
                        gridOld->request.settings.iterations==r.settings.iterations) {
                         // Timeout fill is stored as row/column source maps rather
                         // than materialized pixels. Resolve the reused presentation
@@ -658,16 +694,29 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     if(!countOld) continue;
                     const size_t ss=static_cast<size_t>(csy)*static_cast<size_t>(countOld->stride)+static_cast<size_t>(csx);
                     Count reusedCount=countOld->counts[ss];
+                    // Analytic Mandelbrot interior shortcuts intentionally do not
+                    // carry a final orbit. Once an incoloring mode needs z_n, only
+                    // those shortcut pixels are recalculated; escaped state remains reusable.
+                    if(r.settings.inColoring!=InColoring::Black &&
+                       reusedCount.status==Status::Interior)
+                        reusedCount={};
+                    else if(countOld->colorRe.size()>ss && countOld->colorIm.size()>ss) {
+                        f->colorRe[d]=countOld->colorRe[ss];
+                        f->colorIm[d]=countOld->colorIm[ss];
+                    }
                     if constexpr(Save) {
-                        if(typedCountOld) f->state.copy(d,typedCountOld->state,ss);
-                        else if(reusedCount.status==Status::Pending) reusedCount={};
+                        if(typedCountOld && reusedCount.iterations)
+                            f->state.copy(d,typedCountOld->state,ss);
+                        else if(reusedCount.status==Status::Pending && reusedCount.iterations)
+                            reusedCount={};
                     }
                     f->counts[d]=reusedCount;
                     if(f->counts[d].known(r.settings.iterations)) {
-                        f->samplePixels[d]=pixelColor(f->counts[d],r.settings.iterations);
+                        f->samplePixels[d]=colorForIndex(d);
                         f->sampleQuality[d]=static_cast<uint8_t>(DisplayQuality::Exact);
                         ++stat.reused;
-                    } else if(countOld->request.settings.iterations==r.settings.iterations &&
+                    } else if(!coloringChanged &&
+                              countOld->request.settings.iterations==r.settings.iterations &&
                               f->sampleQuality[d]==static_cast<uint8_t>(DisplayQuality::Missing) &&
                               countOld->sampleQuality[ss]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
                         f->samplePixels[d]=countOld->samplePixels[ss];
@@ -741,7 +790,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             const size_t index=list[k++];
                             Count before=f->counts[index];
                             if(before.known(r.settings.iterations)) {
-                                f->samplePixels[index]=pixelColor(before,r.settings.iterations);
+                                f->samplePixels[index]=colorForIndex(index);
                                 f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                                 continue;
                             }
@@ -768,7 +817,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             }
                             if(!saved) {
                                 if constexpr(F::interior) {
-                                    if(r.settings.analytic && mainInterior(real.toDouble(),imag.toDouble()))
+                                    if(analyticForOrbit && mainInterior(real.toDouble(),imag.toDouble()))
                                         lane.count.status=Status::Interior;
                                 }
                                 if(lane.count.status==Status::Pending &&
@@ -788,9 +837,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             if(!Save && lane.count.status==Status::Pending &&
                                lane.count.iterations<f->counts[index].iterations) continue;
                             f->counts[index]=lane.count;
+                            rememberOrbitColor(index,lane.x,lane.y);
                             if constexpr(Save) state->store(index,lane);
                             if(lane.count.known(r.settings.iterations)) {
-                                f->samplePixels[index]=pixelColor(lane.count,r.settings.iterations);
+                                f->samplePixels[index]=colorForIndex(index);
                                 f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                             }
                         }
@@ -830,7 +880,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         const size_t index=list[k];
                         Count before=f->counts[index];
                         if(before.known(r.settings.iterations)) {
-                            f->samplePixels[index]=pixelColor(before,r.settings.iterations);
+                            f->samplePixels[index]=colorForIndex(index);
                             f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                             continue;
                         }
@@ -855,9 +905,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                         if(!Save && result.status==Status::Pending &&
                            result.iterations<before.iterations) continue;
                         f->counts[index]=result;
+                        rememberOrbitColor(index,scratch.x,scratch.y);
                         if constexpr(Save) state->store(index,scratch);
                         if(result.known(r.settings.iterations)) {
-                            f->samplePixels[index]=pixelColor(result,r.settings.iterations);
+                            f->samplePixels[index]=colorForIndex(index);
                             f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                         }
                     }
@@ -915,7 +966,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
                             Count before=f->counts[index];
                             if(before.known(r.settings.iterations)) {
-                                f->samplePixels[index]=pixelColor(before,r.settings.iterations);
+                                f->samplePixels[index]=colorForIndex(index);
                                 f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                                 continue;
                             }
@@ -934,7 +985,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                                        f->ys[static_cast<size_t>(y)],
                                                        r.settings.juliaRe,r.settings.juliaIm,
                                                        before,saved,r.settings.iterations,
-                                                       calculationStop,Save,r.settings.analytic);
+                                                       calculationStop,Save,analyticForOrbit);
                             } else {
                                 Big real=add(bxReal[static_cast<size_t>(x)],byReal[static_cast<size_t>(y)]);
                                 Big imag=add(bxImag[static_cast<size_t>(x)],byImag[static_cast<size_t>(y)]);
@@ -944,13 +995,14 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                 else
                                     result=scratch.run(real,imag,r.settings.juliaRe,r.settings.juliaIm,
                                                        before,saved,r.settings.iterations,
-                                                       calculationStop,Save,r.settings.analytic);
+                                                       calculationStop,Save,analyticForOrbit);
                             }
                             stat.steps+=result.iterations-startIterations;
                             if(saved && startIterations) ++stat.resumed; else ++stat.started;
                             if(!Save && result.status==Status::Pending &&
                                result.iterations<before.iterations) continue;
                             f->counts[index]=result;
+                            rememberOrbitColor(index,scratch.x,scratch.y);
                             if constexpr(Save) {
                                 if(result.status!=Status::Pending) {
                                     state->orbit[index].reset();
@@ -963,7 +1015,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                 }
                             }
                             if(result.known(r.settings.iterations)) {
-                                f->samplePixels[index]=pixelColor(result,r.settings.iterations);
+                                f->samplePixels[index]=colorForIndex(index);
                                 f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                             }
                         }
@@ -979,7 +1031,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             const size_t index=list[k];
                             Count before=f->counts[index];
                             if(before.known(r.settings.iterations)) {
-                                f->samplePixels[index]=pixelColor(before,r.settings.iterations);
+                                f->samplePixels[index]=colorForIndex(index);
                                 f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                                 continue;
                             }
@@ -1002,9 +1054,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             if(!Save && result.status==Status::Pending &&
                                result.iterations<before.iterations) continue;
                             f->counts[index]=result;
+                            rememberOrbitColor(index,scratch.x,scratch.y);
                             if constexpr(Save) state->store(index,scratch);
                             if(result.known(r.settings.iterations)) {
-                                f->samplePixels[index]=pixelColor(result,r.settings.iterations);
+                                f->samplePixels[index]=colorForIndex(index);
                                 f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                             }
                         }
@@ -1025,7 +1078,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                 const size_t index=list[k++];
                                 Count before=f->counts[index];
                                 if(before.known(r.settings.iterations)) {
-                                    f->samplePixels[index]=pixelColor(before,r.settings.iterations);
+                                    f->samplePixels[index]=colorForIndex(index);
                                     f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                                     continue;
                                 }
@@ -1040,7 +1093,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                     }
                                 }
                                 lanes[used]=prepareLane<F>(doubleRealAt(x,y),doubleImagAt(x,y),
-                                    juliaReal,juliaImag,before,saved,r.settings.analytic);
+                                    juliaReal,juliaImag,before,saved,analyticForOrbit);
                                 indexes[used]=index;starts[used]=saved?before.iterations:0;
                                 if(saved && before.iterations) ++stat.resumed; else ++stat.started;
                                 ++used;
@@ -1054,9 +1107,10 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                                 if(!Save && lane.count.status==Status::Pending &&
                                    lane.count.iterations<f->counts[index].iterations) continue;
                                 f->counts[index]=lane.count;
+                                rememberOrbitColor(index,lane.x,lane.y);
                                 if constexpr(Save) state->store(index,lane);
                                 if(lane.count.known(r.settings.iterations)) {
-                                    f->samplePixels[index]=pixelColor(lane.count,r.settings.iterations);
+                                    f->samplePixels[index]=colorForIndex(index);
                                     f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                                 }
                             }
@@ -1177,7 +1231,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 const size_t index=f->index(x,y);
                 if(!f->counts[index].known(r.settings.iterations)) row.push_back(index);
                 else if(f->sampleQuality[index]!=static_cast<uint8_t>(DisplayQuality::Exact)) {
-                    f->samplePixels[index]=pixelColor(f->counts[index],r.settings.iterations);
+                    f->samplePixels[index]=colorForIndex(index);
                     f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                 }
             }
@@ -1261,7 +1315,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 for(int x:positions) {
                     const size_t index=f->index(x,y);
                     if(f->counts[index].known(r.settings.iterations)) {
-                        f->samplePixels[index]=pixelColor(f->counts[index],r.settings.iterations);
+                        f->samplePixels[index]=colorForIndex(index);
                         f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                     } else {
                         uint32_t guessed=0;
@@ -1291,7 +1345,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 for(int y:positions) {
                     const size_t index=f->index(x,y);
                     if(f->counts[index].known(r.settings.iterations)) {
-                        f->samplePixels[index]=pixelColor(f->counts[index],r.settings.iterations);
+                        f->samplePixels[index]=colorForIndex(index);
                         f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
                     } else {
                         uint32_t guessed=0;
@@ -1322,7 +1376,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         // apparent full recomputation after zooming stopped.  Exact/unbounded
         // requests, explicit uniform-grid requests, and iteration-limit changes do
         // require mathematical refinement.
-        if(!r.settings.sliceMilliseconds || r.settings.uniform || !sameIteration)
+        if(!r.settings.sliceMilliseconds || r.settings.uniform || !sameIteration || coloringChanged)
             rasterRefine();
     }
 
@@ -1576,7 +1630,125 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
     return out;
 }
 
-/// Maps a completed iteration count to its visible colour.
+namespace {
+int64_t paletteFixed(double value) noexcept {
+    if(!std::isfinite(value)) return 0;
+    const double period=static_cast<double>(
+        std::max<size_t>(1,classicDefaultPalette().size()-1))*256.0;
+    value=std::fmod(value,period);
+    if(value>static_cast<double>(std::numeric_limits<int64_t>::max()) ||
+       value<static_cast<double>(std::numeric_limits<int64_t>::min()))
+        return 0;
+    return static_cast<int64_t>(value);
+}
+double safeRatio(double a,double b) noexcept {
+    if(std::abs(b)<1.e-30) return std::copysign(1.e30,a);
+    return a/b;
+}
+}
+
+/// Maps XaoS-style inside/outside coloring modes through the classic palette.
+uint32_t pixelColor(Count c,uint32_t limit,const Settings&s,
+                    double zre,double zim,double cre,double cim) noexcept {
+    if(c.iterations>limit) return 0xff000000u;
+    const double mag=zre*zre+zim*zim;
+
+    if(c.status==Status::Escaped) {
+        double fixed=static_cast<double>(c.iterations)*256.0;
+        switch(s.outColoring) {
+        case OutColoring::Iter:
+            break;
+        case OutColoring::IterReal:
+            fixed+=zre*256.0;
+            break;
+        case OutColoring::IterImag:
+            fixed+=zim*256.0;
+            break;
+        case OutColoring::IterRealImag:
+            fixed+=safeRatio(zre,zim)*256.0;
+            break;
+        case OutColoring::IterAll:
+            fixed+=(zre+zim+safeRatio(zre,zim))*256.0;
+            break;
+        case OutColoring::BinaryDecomposition:
+            if(zim>0) fixed=(static_cast<double>(limit)-c.iterations)*256.0;
+            break;
+        case OutColoring::Biomorphs:
+            if(std::abs(zim)<2.0 || std::abs(zre)<2.0)
+                fixed=(static_cast<double>(limit)-c.iterations)*256.0;
+            break;
+        case OutColoring::Potential:
+            if(mag>1.0 && c.iterations) {
+                const double v=std::log(mag)/(static_cast<double>(c.iterations)*256.0);
+                fixed=v>0?std::sqrt(v)*65536.0:0.0;
+            } else fixed=0;
+            break;
+        case OutColoring::ColorDecomposition:
+            fixed=(std::atan2(zre,zim)/(2.0*std::numbers::pi)+.75)*20000.0;
+            break;
+        case OutColoring::Smooth:
+            if(mag>1.0) {
+                const double logAbs=.5*std::log(mag);
+                if(logAbs>0) {
+                    const double smooth=static_cast<double>(c.iterations)+1.0-
+                        std::log(logAbs)/std::log(2.0);
+                    fixed=smooth*256.0;
+                }
+            }
+            break;
+        }
+        return classicPaletteColorFixed(paletteFixed(fixed),s.paletteShift);
+    }
+
+    // Pending at the current cap and explicit Interior both represent the inside
+    // color for this frame. A genuinely unresolved partial orbit remains black.
+    if(c.status==Status::Pending && c.iterations<limit) return 0xff000000u;
+    if(s.inColoring==InColoring::Black) return 0xff000000u;
+
+    double fixed=static_cast<double>(c.iterations);
+    switch(s.inColoring) {
+    case InColoring::Black:
+        return 0xff000000u;
+    case InColoring::ZMag:
+        fixed=mag*static_cast<double>(limit>>1)*256.0+256.0;
+        break;
+    case InColoring::Decomposition:
+        fixed=(std::atan2(zre,zim)/(2.0*std::numbers::pi)+.75)*20000.0;
+        break;
+    case InColoring::RealImag:
+        fixed=100.0+safeRatio(zre,zim)*2560.0;
+        break;
+    case InColoring::Difference:
+        fixed+=
+            (std::abs(std::abs(cre)-std::abs(zre))+
+             std::abs(std::abs(cim)-std::abs(zim)))*16384.0;
+        break;
+    case InColoring::CosMag: {
+        const double product=zre*zim*cre*cim;
+        fixed=((static_cast<int>(mag*10.0)&1)?std::cos(product):std::sin(product))*65536.0;
+        break;
+    }
+    case InColoring::MagCosReal2:
+        fixed=mag*std::cos(zre*zre)*65536.0;
+        break;
+    case InColoring::SinReal2Imag2:
+        fixed=std::sin(zre*zre-zim*zim)*65536.0;
+        break;
+    case InColoring::AtanProduct:
+        fixed=std::atan(zre*zim*cre*cim)*16384.0;
+        break;
+    case InColoring::Squares:
+        if((std::abs(static_cast<int>(zre*40.0))&1) ^
+           (std::abs(static_cast<int>(zim*40.0))&1))
+            fixed=(std::atan2(zre,zim)/(2.0*std::numbers::pi)+.75)*20000.0;
+        else
+            fixed=(std::atan2(zim,zre)/(2.0*std::numbers::pi)+.75)*20000.0;
+        break;
+    }
+    return classicPaletteColorFixed(paletteFixed(fixed),s.paletteShift);
+}
+
+/// Compatibility mapping used by tests and callers that want the historical default.
 uint32_t pixelColor(Count c,uint32_t limit) noexcept {
     if(c.status!=Status::Escaped || c.iterations>limit) return 0xff000000u;
     return classicIterationColor(c.iterations);

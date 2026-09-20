@@ -2,6 +2,7 @@
 #pragma once
 #include "xaos/kernel.hpp"
 #include "xaos/fast_mandel.hpp"
+#include "xaos/palette.hpp"
 #include <memory>
 #include <new>
 #include <string>
@@ -35,6 +36,9 @@ struct Settings {
     bool saveState=true, analytic=true, simd=true, uniform=false;
     bool fastPrecision=true; // specialized DD/fixed-point quadratic kernels before GMP
     Formula formula=Formula::Mandelbrot;
+    InColoring inColoring=InColoring::Black;
+    OutColoring outColoring=OutColoring::Iter;
+    int paletteShift=0;
     Big juliaRe=Big::parse("-0.8"),juliaIm=Big::parse("0.156");
     double reuseRadius=4,focusX=.5,focusY=.5;
     // The classic XaoS solid-guessing radius. Set to zero to force every
@@ -72,6 +76,10 @@ struct FrameBase {
     // xs/ys and resumable orbit state remain mathematically honest.
     std::vector<Big> previewXs,previewYs;
     AlignedVector<Count> counts;
+    // Final orbit coordinates are compact display metadata, not resumable numeric
+    // state. They make XaoS in/out coloring and palette changes independent of
+    // expensive orbit recomputation. Float precision is ample for palette indices.
+    AlignedVector<float> colorRe,colorIm;
     // Adaptive-grid samples are deliberately separate from count/orbit state. A
     // guessed colour must never become resumable mathematical state.
     AlignedVector<uint32_t> samplePixels;
@@ -269,6 +277,9 @@ public:
 // Palette is separate from iteration storage. Changing a palette does not require
 // recalculating orbits. Output is packed 0xFFRRGGBB; unresolved/inside is black.
 /// Maps a completed iteration count to its visible colour.
+uint32_t pixelColor(Count count,uint32_t limit,const Settings&,
+                    double zre=0,double zim=0,double cre=0,double cim=0) noexcept;
+/// Compatibility helper for the classic black-inside/iteration-outside mapping.
 uint32_t pixelColor(Count count,uint32_t limit) noexcept;
 /// Reconstructs an immutable grid frame into a visible raster using a separate executor.
 std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&,Executor&,const Cancellation&,
