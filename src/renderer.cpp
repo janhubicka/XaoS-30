@@ -1833,7 +1833,7 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
                         ok=bicubicColor(frame,colors,cubicX[static_cast<size_t>(x)],
                                        cubicY[static_cast<size_t>(y)],color);
                     if(!ok && !linearX.empty() && !linearY.empty())
-                        ok=bilinearColor(frame,linearX[static_cast<size_t>(x)],
+                        ok=bilinearColor(frame,colors,linearX[static_cast<size_t>(x)],
                                         linearY[static_cast<size_t>(y)],color);
                     if(!ok) ok=gridColor(frame,colors,nx,ny,color);
                     break;
