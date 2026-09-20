@@ -289,6 +289,14 @@ bool previewKnown(uint8_t q) noexcept {
     return q!=static_cast<uint8_t>(DisplayQuality::Missing);
 }
 
+/// Solid guessing copies only an iteration code plus one neighbour's final z.
+/// That is exact for the classic Iter/Black display, but metadata-sensitive
+/// in/out colorings use the actual final z at every pixel and must not inherit
+/// a neighbour's orbit metadata.
+bool solidGuessColorSafe(const Settings&s) noexcept {
+    return s.inColoring==InColoring::Black && s.outColoring==OutColoring::Iter;
+}
+
 /// Builds the classic interlaced row-refinement order.
 std::vector<int> interlacedOrder(int n,int range) {
     range=std::clamp(range,1,16);
@@ -853,6 +861,23 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 }
             }
         });
+    }
+
+    const bool allowSolidGuess=solidGuessColorSafe(r.settings);
+    bool discardedUnsafeGuesses=false;
+    if(!allowSolidGuess) {
+        for(size_t i=0;i<f->sampleQuality.size();++i) {
+            if(f->sampleQuality[i]==static_cast<uint8_t>(DisplayQuality::Guess)) {
+                // A guess created under Iter/Black copied a neighbour's z. Keep
+                // exact count/state where it exists, but never expose that copied
+                // z to Smooth/decomposition/incoloring modes.
+                if(!f->counts[i].known(r.settings.iterations))
+                    f->sampleQuality[i]=static_cast<uint8_t>(DisplayQuality::Missing);
+                else
+                    setExactSample(i);
+                discardedUnsafeGuesses=true;
+            }
+        }
     }
 
     Cancellation workStop; workStop.parent=&stop;
@@ -1450,7 +1475,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         return true;
     };
     auto guessRow=[&](int y,int x,PreviewSample&sample)->bool {
-        if(!r.settings.solidGuessRange) return false;
+        if(!allowSolidGuess || !r.settings.solidGuessRange) return false;
         int down=y-1,up=y+1;
         while(down>=0 && !rowReady[static_cast<size_t>(down)] && y-down<=static_cast<int>(r.settings.solidGuessRange)) --down;
         while(up<r.height && !rowReady[static_cast<size_t>(up)] && up-y<=static_cast<int>(r.settings.solidGuessRange)) ++up;
@@ -1462,7 +1487,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         return sameSeven({{{x,down},{x,up},{left,y},{left,down},{right,down},{right,up},{left,up}}},sample);
     };
     auto guessColumn=[&](int x,int y,PreviewSample&sample)->bool {
-        if(!r.settings.solidGuessRange) return false;
+        if(!allowSolidGuess || !r.settings.solidGuessRange) return false;
         int left=x-1,right=x+1;
         while(left>=0 && !colReady[static_cast<size_t>(left)] && x-left<=static_cast<int>(r.settings.solidGuessRange)) --left;
         while(right<r.width && !colReady[static_cast<size_t>(right)] && right-x<=static_cast<int>(r.settings.solidGuessRange)) ++right;
@@ -1519,7 +1544,7 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         }
     };
 
-    if(!gridOld) {
+    if(!gridOld || discardedUnsafeGuesses) {
         rasterRefine();
     } else if(hasNewLines && r.settings.sliceMilliseconds) {
         std::vector<uint8_t> xDirty(colReady.size()),yDirty(rowReady.size());
@@ -1535,14 +1560,32 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         const auto py=linePriorities(f->ys,oldPreviewY,yDirty,step,yBegin,yEnd);
         const auto xMotion=classifyAxisMotion(xBegin,xEnd,oldPreviewX);
         const auto yMotion=classifyAxisMotion(yBegin,yEnd,oldPreviewY);
-        const double edgePriority=std::numeric_limits<double>::infinity();
+        auto edgeRunDepth=[](const std::vector<uint8_t>&dirty,int index)->int {
+            const int n=static_cast<int>(dirty.size());
+            if(index<0 || index>=n || !dirty[static_cast<size_t>(index)]) return -1;
+            if(dirty.front()) {
+                int end=0;
+                while(end+1<n && dirty[static_cast<size_t>(end+1)]) ++end;
+                if(index<=end) return index;
+            }
+            if(dirty.back()) {
+                int start=n-1;
+                while(start>0 && dirty[static_cast<size_t>(start-1)]) --start;
+                if(index>=start) return n-1-index;
+            }
+            return -1;
+        };
         auto priority=[&](bool row,int index) {
-            if(row && yMotion==AxisMotion::ZoomOut &&
-               (index==0 || index==r.height-1))
-                return edgePriority;
-            if(!row && xMotion==AxisMotion::ZoomOut &&
-               (index==0 || index==r.width-1))
-                return edgePriority;
+            const auto motion=row?yMotion:xMotion;
+            const auto&dirty=row?yDirty:xDirty;
+            const int depth=edgeRunDepth(dirty,index);
+            if(motion!=AxisMotion::ZoomIn && depth>=0) {
+                // New area exposed by pan/zoom-out is a contiguous dirty run at
+                // a screen edge. Compute it outside-in before recursive midpoint
+                // refinement so the visible boundary never remains a huge copied
+                // block while interior lines are being refined.
+                return 1.e12/(1.0+static_cast<double>(depth));
+            }
             return row?py[static_cast<size_t>(index)]:px[static_cast<size_t>(index)];
         };
         std::vector<LineTask> tasks;
@@ -1570,13 +1613,15 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
             // invariant: newly exposed support must reach the literal screen
             // boundaries before we honor the deadline. Otherwise interpolation
             // clamps an interior line across a visible uncomputed border.
-            const bool zoomOutBoundary=
-                (t.row && yMotion==AxisMotion::ZoomOut &&
-                 (t.index==0 || t.index==r.height-1)) ||
-                (!t.row && xMotion==AxisMotion::ZoomOut &&
-                 (t.index==0 || t.index==r.width-1));
+            const auto motion=t.row?yMotion:xMotion;
+            const auto&dirty=t.row?yDirty:xDirty;
+            const int axisSize=t.row?r.height:r.width;
+            const bool urgentBoundary=
+                motion!=AxisMotion::ZoomIn &&
+                (t.index==0 || t.index==axisSize-1) &&
+                dirty[static_cast<size_t>(t.index)];
             if(workStop.requested() && readyRows>=minimumRows && readyCols>=minimumCols &&
-               !zoomOutBoundary)
+               !urgentBoundary)
                 break;
             calculate.clear();
             bool visuallyComplete=true;
