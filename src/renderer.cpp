@@ -10,6 +10,7 @@
 #include <fstream>
 #include <functional>
 #include <numeric>
+#include <numbers>
 #include <type_traits>
 
 namespace xaos {
@@ -611,8 +612,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
             return std::pair{f->xs[static_cast<size_t>(x)].toDouble(),
                              f->ys[static_cast<size_t>(y)].toDouble()};
         return std::pair{
-            add(bxReal[static_cast<size_t>(x)],byReal[static_cast<size_t>(y)]).toDouble(),
-            add(bxImag[static_cast<size_t>(x)],byImag[static_cast<size_t>(y)]).toDouble()};
+            bxReal[static_cast<size_t>(x)].toDouble()+byReal[static_cast<size_t>(y)].toDouble(),
+            bxImag[static_cast<size_t>(x)].toDouble()+byImag[static_cast<size_t>(y)].toDouble()};
     };
     const auto colorForIndex=[&](size_t index) {
         const auto [cr,ci]=colorParameterAt(index);
