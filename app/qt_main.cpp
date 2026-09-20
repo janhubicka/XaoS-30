@@ -1260,9 +1260,13 @@ public:
 #ifdef Q_OS_ANDROID
         if(enabled) {
             tiltSensor_.setDataRate(60);
-            if(tiltSensor_.isFeatureSupported(QSensor::AxesOrientation))
+            // Feature metadata is valid only after a backend is connected.
+            tiltSteeringAvailable_=tiltSensor_.connectToBackend();
+            if(tiltSteeringAvailable_ &&
+               tiltSensor_.isFeatureSupported(QSensor::AxesOrientation))
                 tiltSensor_.setAxesOrientationMode(QSensor::AutomaticOrientation);
-            tiltSteeringAvailable_=tiltSensor_.start();
+            if(tiltSteeringAvailable_)
+                tiltSteeringAvailable_=tiltSensor_.start();
         } else {
             tiltSensor_.stop();
             tiltSteeringAvailable_=false;
