@@ -474,23 +474,53 @@ RGB mix(const RGB&a,const RGB&b,double t) {
     return {a.r+(b.r-a.r)*t,a.g+(b.g-a.g)*t,a.b+(b.b-a.b)*t};
 }
 
-/// Reads a usable colour from one adaptive-grid intersection.
-bool gridColor(const FrameBase&frame,int x,int y,uint32_t&color) {
+struct ColorContext {
+    std::vector<double> x,y;
+    double cs=1,sn=0,juliaRe=0,juliaIm=0;
+};
+ColorContext makeColorContext(const FrameBase&frame) {
+    ColorContext out;
+    out.cs=std::cos(frame.request.view.rotation);
+    out.sn=std::sin(frame.request.view.rotation);
+    out.juliaRe=frame.request.settings.juliaRe.toDouble();
+    out.juliaIm=frame.request.settings.juliaIm.toDouble();
+    out.x.reserve(frame.xs.size());out.y.reserve(frame.ys.size());
+    for(const auto&x:frame.xs) out.x.push_back(x.toDouble());
+    for(const auto&y:frame.ys) out.y.push_back(y.toDouble());
+    return out;
+}
+std::pair<double,double> colorParameter(const FrameBase&frame,const ColorContext&ctx,
+                                        int x,int y) {
+    if(frame.request.settings.formula==Formula::Julia)
+        return {ctx.juliaRe,ctx.juliaIm};
+    const double gx=ctx.x[static_cast<size_t>(x)];
+    const double gy=ctx.y[static_cast<size_t>(y)];
+    if(frame.request.view.rotation==0) return {gx,gy};
+    return {gx*ctx.cs-gy*ctx.sn,gx*ctx.sn+gy*ctx.cs};
+}
+
+/// Reads and colors one usable iteration-space sample from the adaptive grid.
+bool gridColor(const FrameBase&frame,const ColorContext&ctx,int x,int y,uint32_t&color) {
     if(x<0 || y<0 || x>=frame.request.width || y>=frame.request.height) return false;
     const size_t i=frame.index(x,y);
     if(static_cast<DisplayQuality>(frame.sampleQuality[i])==DisplayQuality::Missing)
         return false;
-    color=frame.samplePixels[i];
+    const Count count=previewCount(
+        frame.sampleIterationCode(i),frame.request.settings.iterations);
+    const auto [cr,ci]=colorParameter(frame,ctx,x,y);
+    color=pixelColor(count,frame.request.settings.iterations,frame.request.settings,
+                     frame.colorRe[i],frame.colorIm[i],cr,ci);
     return true;
 }
 
-/// Reconstructs a target pixel from four nonuniform grid neighbours.
-bool bilinearColor(const FrameBase&frame,const LinearPoint&x,const LinearPoint&y,
-                   uint32_t&color) {
+/// Reconstructs a target pixel from four nonuniform grid neighbours. RGB exists
+/// only here in presentation; the reusable source field remains iteration-space.
+bool bilinearColor(const FrameBase&frame,const ColorContext&ctx,
+                   const LinearPoint&x,const LinearPoint&y,uint32_t&color) {
     if(x.a<0 || y.a<0) return false;
     uint32_t c00=0,c10=0,c01=0,c11=0;
-    if(!gridColor(frame,x.a,y.a,c00) || !gridColor(frame,x.b,y.a,c10) ||
-       !gridColor(frame,x.a,y.b,c01) || !gridColor(frame,x.b,y.b,c11))
+    if(!gridColor(frame,ctx,x.a,y.a,c00) || !gridColor(frame,ctx,x.b,y.a,c10) ||
+       !gridColor(frame,ctx,x.a,y.b,c01) || !gridColor(frame,ctx,x.b,y.b,c11))
         return false;
     const RGB r0=mix(unpack(c00),unpack(c10),x.t);
     const RGB r1=mix(unpack(c01),unpack(c11),x.t);
@@ -499,23 +529,20 @@ bool bilinearColor(const FrameBase&frame,const LinearPoint&x,const LinearPoint&y
 }
 
 /// Reconstructs a target pixel from a clamped 4x4 nonuniform cubic stencil.
-bool bicubicColor(const FrameBase&frame,const CubicPoint&x,const CubicPoint&y,
-                  uint32_t&color) {
+bool bicubicColor(const FrameBase&frame,const ColorContext&ctx,
+                  const CubicPoint&x,const CubicPoint&y,uint32_t&color) {
     if(!x.valid || !y.valid) return false;
     RGB sum{};
     double minr=255,ming=255,minb=255,maxr=0,maxg=0,maxb=0;
     for(size_t j=0;j<4;++j) for(size_t i=0;i<4;++i) {
         uint32_t c=0;
-        if(!gridColor(frame,x.index[i],y.index[j],c)) return false;
+        if(!gridColor(frame,ctx,x.index[i],y.index[j],c)) return false;
         const RGB rgb=unpack(c);
         const double w=x.weight[i]*y.weight[j];
         sum.r+=w*rgb.r; sum.g+=w*rgb.g; sum.b+=w*rgb.b;
         minr=std::min(minr,rgb.r); ming=std::min(ming,rgb.g); minb=std::min(minb,rgb.b);
         maxr=std::max(maxr,rgb.r); maxg=std::max(maxg,rgb.g); maxb=std::max(maxb,rgb.b);
     }
-    // Cubics can ring strongly across an escape-time palette edge. Preserve the
-    // smoother cubic shape but forbid channel excursions outside the 4x4 support
-    // range, which removes the most distracting neon halos.
     sum.r=std::clamp(sum.r,minr,maxr);
     sum.g=std::clamp(sum.g,ming,maxg);
     sum.b=std::clamp(sum.b,minb,maxb);
