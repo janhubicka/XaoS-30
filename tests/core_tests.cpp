@@ -738,6 +738,8 @@ void coloringTests() {
     auto shiftedDisplay=presentFrame(*shifted,pool,stop);
     auto presentationOnly=presentFrame(*base,pool,stop,nullptr,17);
     CHECK(presentationOnly->pixels==shiftedDisplay->pixels);
+    CHECK(presentationOnly->paletteCodes==baseDisplay->paletteCodes);
+    CHECK(shiftedDisplay->paletteCodes==baseDisplay->paletteCodes);
     bool paletteChanged=false;
     for(int y=0;y<r.height && !paletteChanged;++y)
         for(int x=0;x<r.width;++x)
@@ -1132,13 +1134,17 @@ void presentationTests() {
     auto a=presentFrame(*frame,one,go);
     auto b=presentFrame(*frame,many,go);
     CHECK(a->pixels==b->pixels);
+    CHECK(a->paletteCodes==b->paletteCodes);
 }
 
 /// Runs regression checks for failure.
 void failureTests() {
     ThreadExecutor pool(2);Renderer renderer;Request r;Cancellation stop;
     r.width=0;rejects([&]{renderer.render(r,pool,stop);});r.width=32;r.height=20;
-    r.settings.iterations=0;rejects([&]{renderer.render(r,pool,stop);});r.settings.iterations=10;
+    r.settings.iterations=0;rejects([&]{renderer.render(r,pool,stop);});
+    r.settings.iterations=std::numeric_limits<uint32_t>::max();
+    rejects([&]{renderer.render(r,pool,stop);});
+    r.settings.iterations=10;
     r.settings.minimumPrecision=std::numeric_limits<mp_bitcnt_t>::max();
     rejects([&]{renderer.render(r,pool,stop);}); r.settings.minimumPrecision=0;
     r.settings.memoryBudget=1;rejects([&]{renderer.render(r,pool,stop);});r.settings.memoryBudget=1024*1024;
