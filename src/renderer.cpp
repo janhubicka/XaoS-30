@@ -654,7 +654,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     // Presentation reuse follows the collapsed preview coordinate
                     // tables, as the old image mover did.  If that visual sample is
                     // not also our true sample coordinate, downgrade it to Fill.
-                    if(gridOld && r.settings.sliceMilliseconds && psx>=0 && psy>=0 &&
+                    if(gridOld && !coloringChanged && r.settings.sliceMilliseconds &&
+                       psx>=0 && psy>=0 &&
                        gridOld->request.settings.iterations==r.settings.iterations) {
                         // Timeout fill is stored as row/column source maps rather
                         // than materialized pixels. Resolve the reused presentation
@@ -692,16 +693,29 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                     if(!countOld) continue;
                     const size_t ss=static_cast<size_t>(csy)*static_cast<size_t>(countOld->stride)+static_cast<size_t>(csx);
                     Count reusedCount=countOld->counts[ss];
+                    // Analytic Mandelbrot interior shortcuts intentionally do not
+                    // carry a final orbit. Once an incoloring mode needs z_n, only
+                    // those shortcut pixels are recalculated; escaped state remains reusable.
+                    if(r.settings.inColoring!=InColoring::Black &&
+                       reusedCount.status==Status::Interior)
+                        reusedCount={};
+                    else if(countOld->colorRe.size()>ss && countOld->colorIm.size()>ss) {
+                        f->colorRe[d]=countOld->colorRe[ss];
+                        f->colorIm[d]=countOld->colorIm[ss];
+                    }
                     if constexpr(Save) {
-                        if(typedCountOld) f->state.copy(d,typedCountOld->state,ss);
-                        else if(reusedCount.status==Status::Pending) reusedCount={};
+                        if(typedCountOld && reusedCount.iterations)
+                            f->state.copy(d,typedCountOld->state,ss);
+                        else if(reusedCount.status==Status::Pending && reusedCount.iterations)
+                            reusedCount={};
                     }
                     f->counts[d]=reusedCount;
                     if(f->counts[d].known(r.settings.iterations)) {
-                        f->samplePixels[d]=pixelColor(f->counts[d],r.settings.iterations);
+                        f->samplePixels[d]=colorForIndex(d);
                         f->sampleQuality[d]=static_cast<uint8_t>(DisplayQuality::Exact);
                         ++stat.reused;
-                    } else if(countOld->request.settings.iterations==r.settings.iterations &&
+                    } else if(!coloringChanged &&
+                              countOld->request.settings.iterations==r.settings.iterations &&
                               f->sampleQuality[d]==static_cast<uint8_t>(DisplayQuality::Missing) &&
                               countOld->sampleQuality[ss]!=static_cast<uint8_t>(DisplayQuality::Missing)) {
                         f->samplePixels[d]=countOld->samplePixels[ss];
