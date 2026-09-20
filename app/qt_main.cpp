@@ -791,19 +791,14 @@ protected:
                         touchSampleClock_.restart();
                     } else {
                         bool changed=false;
-                        const QPointF delta=center-touchLastCenter_;
-                        double zoomLog=0,rotation=0;
-                        if(std::hypot(delta.x(),delta.y())>.01) {
-                            view.pan(delta.x(),delta.y(),std::max(1,width()));
-                            changed=true;
-                        }
+                        const QPointF previousCenter=touchLastCenter_;
+                        const QPointF delta=center-previousCenter;
+                        double zoomLog=0,rotation=0,gestureScale=1.0;
                         if(distance>4.0 && touchLastDistance_>4.0) {
                             const double scale=distance/touchLastDistance_;
                             if(std::isfinite(scale) && scale>0 && std::abs(scale-1.0)>1e-4) {
+                                gestureScale=scale;
                                 zoomLog=std::log(scale);
-                                view.zoom(center.x()/std::max(1,width()),
-                                          center.y()/std::max(1,height()),1.0/scale,
-                                          std::max(1,width()),std::max(1,height()));
                                 changed=true;
                             }
                         }
@@ -841,13 +836,20 @@ protected:
                             rotation=0;
                             touchRotationVelocity_=0;
                         }
-                        if(std::abs(rotation)>1e-5) {
-                            view.rotate(center.x()/std::max(1,width()),
-                                        center.y()/std::max(1,height()),rotation,
-                                        std::max(1,width()),std::max(1,height()));
-                            changed=true;
+                        if(std::abs(rotation)>1e-5) changed=true;
+                        if(std::hypot(delta.x(),delta.y())>.01) changed=true;
+                        if(changed) {
+                            const int w=std::max(1,width()),h=std::max(1,height());
+                            // Apply the complete two-finger similarity in one
+                            // operation. This maps the old midpoint to the new
+                            // midpoint while changing scale/angle, so dragging
+                            // both fingers directly steers the zoom instead of
+                            // pan/zoom/rotation partially cancelling each other.
+                            view.gesture(previousCenter.x()/w,previousCenter.y()/h,
+                                         center.x()/w,center.y()/h,
+                                         gestureScale,rotation,w,h);
+                            sampleTouchVelocity(delta,zoomLog,rotation);
                         }
-                        if(changed) sampleTouchVelocity(delta,zoomLog,rotation);
                         touchLastCenter_=center;
                         touchLastDistance_=distance;
                         touchLastAngle_=angle;
@@ -866,7 +868,7 @@ protected:
                             touchAfterPinchSingle_=true;
                             touchStart_=touchLastCenter_=position;
                         } else if(std::hypot(position.x()-touchStart_.x(),
-                                             position.y()-touchStart_.y())>=8.0) {
+                                             position.y()-touchStart_.y())>=5.0) {
                             touchMode_=TouchMode::Pan;
                             touchPanStarted_=true;
                             touchPanVelocity_=QPointF{};
@@ -885,7 +887,7 @@ protected:
                         // The dead zone gives a second finger time to land without
                         // moving the image underneath an intended pinch.
                         if(std::hypot(position.x()-touchStart_.x(),
-                                      position.y()-touchStart_.y())>=8.0) {
+                                      position.y()-touchStart_.y())>=5.0) {
                             touchPanStarted_=true;
                             touchTapCandidate_=false;
                             touchLastCenter_=position;
@@ -1674,7 +1676,7 @@ class Window final:public QMainWindow {
             QMessageBox::information(this,"Explore XaoS",
                 "Motion works like Frax:\n\n"
                 "Swipe with one finger to pan; release with speed to coast.\n"
-                "Move, pinch and twist two fingers together — pan, zoom and rotation combine.\n"
+                "Move the midpoint of two fingers to steer while pinching; twist to rotate.\n"
                 "Release a moving gesture to keep flying; tap once to stop and refine.\n"
                 "While a pan is flying, tilt the phone a few degrees to steer, stop or reverse it.\n"
                 "Tilt is relative to the phone angle at release and does not change zoom speed.\n"
