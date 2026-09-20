@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "xaos/kernel.hpp"
+#include "xaos/fast_mandel.hpp"
 #include <optional>
 #include <span>
 #include <string_view>
@@ -72,6 +73,43 @@ template<> struct NumberOps<Big> {
     static bool zero(const Big&a) { return !a.sign(); }
     static bool lt(const Big&a,const Big&b) { return a<b; }
     static bool gt(const Big&a,const Big&b) { return b<a; }
+};
+
+template<> struct NumberOps<DoubleDouble> {
+    static DoubleDouble value(double v,const DoubleDouble&) { return {v,0}; }
+    static DoubleDouble add(DoubleDouble a,DoubleDouble b) { return a+b; }
+    static DoubleDouble sub(DoubleDouble a,DoubleDouble b) { return a-b; }
+    static DoubleDouble mul(DoubleDouble a,DoubleDouble b) { return a*b; }
+    static DoubleDouble div(DoubleDouble a,DoubleDouble b) { return a/b; }
+    static DoubleDouble scale(DoubleDouble a,double b) { return a*DoubleDouble{b,0}; }
+    static DoubleDouble abs(DoubleDouble a) { return xaos::absolute(a); }
+    static bool zero(DoubleDouble a) { return a.hi==0 && a.lo==0; }
+    static bool lt(DoubleDouble a,DoubleDouble b) {
+        return a.hi<b.hi || (a.hi==b.hi && a.lo<b.lo);
+    }
+    static bool gt(DoubleDouble a,DoubleDouble b) { return lt(b,a); }
+};
+
+template<size_t N,unsigned I> struct NumberOps<Fixed<N,I>> {
+    using R=Fixed<N,I>;
+    static R value(double v,const R&) { return R::fromDouble(v); }
+    static R add(const R&a,const R&b) { return a+b; }
+    static R sub(const R&a,const R&b) { return a-b; }
+    static R mul(const R&a,const R&b) { return a*b; }
+    static R scale(const R&a,double b) { return a*R::fromDouble(b); }
+    static R abs(R a) { return xaos::absolute(a); }
+    static bool zero(const R&a) {
+        for(auto limb:a.limb) if(limb) return false;
+        return true;
+    }
+    static bool lt(const R&a,const R&b) {
+        const bool na=(a.limb[N-1]>>63)!=0,nb=(b.limb[N-1]>>63)!=0;
+        if(na!=nb) return na;
+        for(size_t i=N;i-->0;) if(a.limb[i]!=b.limb[i])
+            return a.limb[i]<b.limb[i];
+        return false;
+    }
+    static bool gt(const R&a,const R&b) { return lt(b,a); }
 };
 
 template<class R> XAOS_ALWAYS_INLINE R sq(const R&a) {
@@ -479,7 +517,7 @@ template<class R,class F> struct FixedFormulaKernel {
     R x,y,a,b;
 
     /// Constructs a formula-specialized kernel at native precision.
-    FixedFormulaKernel() requires std::is_same_v<R,double> = default;
+    FixedFormulaKernel() requires (!std::is_same_v<R,Big>) = default;
     /// Constructs a formula-specialized kernel at arbitrary precision.
     explicit FixedFormulaKernel(mp_bitcnt_t bits) requires std::is_same_v<R,Big>
         :x(bits),y(bits),a(bits),b(bits) {}

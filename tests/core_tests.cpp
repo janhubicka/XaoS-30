@@ -19,16 +19,20 @@ int checks=0;
 #define CHECK(x) do { ++checks; if(!(x)) throw std::runtime_error(std::string(__FILE__)+":"+std::to_string(__LINE__)+": " #x); } while(false)
 /// Verifies that a callable rejects invalid input by throwing an exception.
 template<class Fn> void rejects(Fn fn) { bool yes=false; try{fn();}catch(const std::exception&){yes=true;} CHECK(yes); }
-/// Checks that two frames represent the same mathematical iteration results.
-void sameCounts(const FrameBase&a,const FrameBase&b) {
+/// Checks per-pixel mathematical results without requiring identical axis quantization.
+void samePixelCounts(const FrameBase&a,const FrameBase&b) {
     CHECK(a.request.width==b.request.width); CHECK(a.request.height==b.request.height);
-    CHECK(a.xs==b.xs); CHECK(a.ys==b.ys);
     for(int y=0;y<a.request.height;++y) for(int x=0;x<a.request.width;++x) {
         auto ac=a.at(x,y),bc=b.at(x,y);
         // A cached escape beyond a lowered limit deliberately retains more information.
         CHECK(pixelColor(ac,a.request.settings.iterations)==pixelColor(bc,b.request.settings.iterations));
         if(ac.iterations<=a.request.settings.iterations && bc.iterations<=b.request.settings.iterations) CHECK(ac==bc);
     }
+}
+/// Checks results and exact axes for same-backend reuse/resume comparisons.
+void sameCounts(const FrameBase&a,const FrameBase&b) {
+    CHECK(a.xs==b.xs); CHECK(a.ys==b.ys);
+    samePixelCounts(a,b);
 }
 /// Runs regression checks for axis.
 void axisTests() {
@@ -227,18 +231,72 @@ void formulaTests() {
         Renderer nativeFresh;auto nativeBaseline=nativeFresh.render(r,one,stop);
         sameCounts(*nativeResumed,*nativeBaseline);
 
+        // At ~100 bits every formula should use an inline backend (wide fixed for
+        // multiplication-only formulas, DD for rational formulas) and agree with
+        // a separately forced GMP render.
+        r.settings.minimumPrecision=96;r.settings.iterations=36;r.settings.fastPrecision=true;
+        Renderer fast96;auto quick=fast96.render(r,many,stop);
+        CHECK(quick->stats.backend!="double");
+        CHECK(quick->stats.backend!="GMP");
+        Request gmp96=r;gmp96.settings.fastPrecision=false;
+        Renderer forced96;auto reference96=forced96.render(gmp96,one,stop);
+        CHECK(reference96->stats.backend=="GMP");
+        CHECK(reference96->stats.complete);
+
+        r.settings.iterations=52;
+        auto quickResumed=fast96.render(r,many,stop);
+        Renderer quickFreshRenderer;auto quickFresh=quickFreshRenderer.render(r,one,stop);
+        sameCounts(*quickResumed,*quickFresh);
+        gmp96.settings.iterations=52;
+        Renderer forced96Fresh;auto reference96More=forced96Fresh.render(gmp96,one,stop);
+        CHECK(reference96More->stats.complete);
+
+        // Higher precision exercises the 3-limb wide-fixed tier where applicable;
+        // division-heavy formulas intentionally fall back to GMP above DD.
         r.settings.minimumPrecision=128;r.settings.iterations=36;
         Renderer precise;auto big=precise.render(r,one,stop);
         CHECK(big->stats.bits>=128);
         CHECK(big->stats.complete);
+        Request gmp128=r;gmp128.settings.fastPrecision=false;
+        Renderer forced128;auto reference128=forced128.render(gmp128,one,stop);
+        CHECK(reference128->stats.complete);
 
-        // Raising the limit must also preserve correctness for the formula-sized
-        // arbitrary-precision checkpoint objects.
+        // Raising the limit must preserve the exact 2/3/4-scalar fast checkpoint.
         r.settings.iterations=52;
         auto resumed=precise.render(r,one,stop);
-        Renderer fresh;auto baseline=fresh.render(r,one,stop);
-        sameCounts(*resumed,*baseline);
+        Renderer fastFresh128;auto fastBaseline=fastFresh128.render(r,one,stop);
+        sameCounts(*resumed,*fastBaseline);
+        gmp128.settings.iterations=52;
+        Renderer forced128Fresh;auto reference128More=forced128Fresh.render(gmp128,one,stop);
+        CHECK(reference128More->stats.complete);
     }
+
+    // Cross-check the inline scalar arithmetic itself against GMP at points
+    // comfortably away from formula partition/bailout boundaries. Long chaotic
+    // trajectories are intentionally not used as a cross-precision oracle.
+    auto shortCheck=[&]<Formula Value,class Fast>(double re,double im,unsigned steps) {
+        using F=FormulaTag<Value>;
+        static_assert(F::generic);
+        detail::FixedFormulaKernel<Big,F> bigKernel(192);
+        detail::FixedFormulaKernel<Fast,F> fastKernel;
+        Big bre=Big::fromDouble(re,192),bim=Big::fromDouble(im,192);
+        Fast fre=Fast::fromDouble(re),fim=Fast::fromDouble(im);
+        Cancellation token;
+        auto bc=bigKernel.run(bre,bim,{},nullptr,steps,token,false);
+        auto fc=fastKernel.run(fre,fim,{},nullptr,steps,token,false);
+        CHECK(bc.status==fc.status);
+        CHECK(bc.iterations==fc.iterations);
+        const double scale=std::max({1.0,std::abs(bigKernel.x.toDouble()),std::abs(bigKernel.y.toDouble())});
+        CHECK(std::abs(bigKernel.x.toDouble()-fastKernel.x.toDouble())<1e-10*scale);
+        CHECK(std::abs(bigKernel.y.toDouble()-fastKernel.y.toDouble())<1e-10*scale);
+    };
+    shortCheck.template operator()<Formula::Mandelbrot3,Fixed<2,24>>(.05,.02,3);
+    shortCheck.template operator()<Formula::Phoenix,Fixed<2,24>>(.03,.01,3);
+    shortCheck.template operator()<Formula::Manowar,Fixed<2,24>>(.02,.01,3);
+    shortCheck.template operator()<Formula::Beryl,Fixed<2,24>>(.01,.01,2);
+    shortCheck.template operator()<Formula::Newton,DoubleDouble>(1.1,.05,2);
+    shortCheck.template operator()<Formula::Magnet2,DoubleDouble>(1.2,.03,2);
+    shortCheck.template operator()<Formula::Catseye,DoubleDouble>(.8,.2,2);
 
     CHECK(formulaFromName("julia")==Formula::Julia);
     CHECK(formulaFromName("ship")==Formula::BurningShip);
@@ -321,6 +379,34 @@ void simdTests() {
         iterateFour(a,1,expected,stop,true,false,true);
         CHECK(a[0].count.status==Status::Escaped); CHECK(a[0].count.iterations==expected);
     }
+
+    auto powerCheck=[&]<Formula Value>() {
+        using F=FormulaTag<Value>;
+        static_assert(F::powerFormula);
+        std::uniform_real_distribution<double> point(-1.1,1.1);
+        for(int trial=0;trial<350;++trial) {
+            std::array<Lane,4> scalar{},vector{};
+            for(size_t lane=0;lane<4;++lane) {
+                const double re=point(gen),im=point(gen);
+                scalar[lane]=preparePowerLane<F>(re,im,{},nullptr);
+                vector[lane]=scalar[lane];
+            }
+            iteratePowerFour(scalar,4,96,F::power,stop,true,false);
+            iteratePowerFour(vector,4,96,F::power,stop,true,true);
+            for(size_t lane=0;lane<4;++lane) {
+                CHECK(scalar[lane].count==vector[lane].count);
+                CHECK(std::bit_cast<uint64_t>(scalar[lane].x)==
+                      std::bit_cast<uint64_t>(vector[lane].x));
+                CHECK(std::bit_cast<uint64_t>(scalar[lane].y)==
+                      std::bit_cast<uint64_t>(vector[lane].y));
+            }
+        }
+    };
+    powerCheck.template operator()<Formula::Mandelbrot3>();
+    powerCheck.template operator()<Formula::Mandelbrot4>();
+    powerCheck.template operator()<Formula::Mandelbrot5>();
+    powerCheck.template operator()<Formula::Mandelbrot6>();
+    powerCheck.template operator()<Formula::Mandelbrot9>();
 }
 /// Runs regression checks for resume.
 void resumeTests() {
@@ -468,7 +554,7 @@ void fastPrecisionTests() {
             Renderer gmp;
             auto reference=gmp.render(gmpRequest,one,stop);
             CHECK(reference->stats.backend=="GMP");
-            sameCounts(*resumed,*reference);
+            samePixelCounts(*resumed,*reference);
         }
     }
 

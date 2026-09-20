@@ -36,6 +36,9 @@ const char* backendName(QuadraticBackend backend) noexcept {
     case QuadraticBackend::Fixed128:return "fixed128";
     case QuadraticBackend::Fixed192:return "fixed192";
     case QuadraticBackend::Fixed256:return "fixed256";
+    case QuadraticBackend::WideFixed128:return "wide-fixed128";
+    case QuadraticBackend::WideFixed192:return "wide-fixed192";
+    case QuadraticBackend::WideFixed256:return "wide-fixed256";
     case QuadraticBackend::GMP:return "GMP";
     }
     return "GMP";
@@ -45,6 +48,9 @@ QuadraticBackend backendFromName(std::string_view name) noexcept {
     if(name=="fixed128") return QuadraticBackend::Fixed128;
     if(name=="fixed192") return QuadraticBackend::Fixed192;
     if(name=="fixed256") return QuadraticBackend::Fixed256;
+    if(name=="wide-fixed128") return QuadraticBackend::WideFixed128;
+    if(name=="wide-fixed192") return QuadraticBackend::WideFixed192;
+    if(name=="wide-fixed256") return QuadraticBackend::WideFixed256;
     return QuadraticBackend::GMP;
 }
 /// Estimates memory consumed by one frame and optional saved orbit state.
@@ -54,10 +60,20 @@ size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state,unsigned stat
     if(state) {
         if(big && backend!=QuadraticBackend::GMP) {
             switch(backend) {
-            case QuadraticBackend::DoubleDouble: each=plusChecked(each,4*sizeof(double));break;
-            case QuadraticBackend::Fixed128: each=plusChecked(each,4*sizeof(uint64_t));break;
-            case QuadraticBackend::Fixed192: each=plusChecked(each,6*sizeof(uint64_t));break;
-            case QuadraticBackend::Fixed256: each=plusChecked(each,8*sizeof(uint64_t));break;
+            case QuadraticBackend::DoubleDouble:
+                each=plusChecked(each,multiplyChecked(2*stateScalars,sizeof(double)));break;
+            case QuadraticBackend::Fixed128:
+                each=plusChecked(each,multiplyChecked(2*stateScalars,sizeof(uint64_t)));break;
+            case QuadraticBackend::Fixed192:
+                each=plusChecked(each,multiplyChecked(3*stateScalars,sizeof(uint64_t)));break;
+            case QuadraticBackend::Fixed256:
+                each=plusChecked(each,multiplyChecked(4*stateScalars,sizeof(uint64_t)));break;
+            case QuadraticBackend::WideFixed128:
+                each=plusChecked(each,multiplyChecked(2*stateScalars,sizeof(uint64_t)));break;
+            case QuadraticBackend::WideFixed192:
+                each=plusChecked(each,multiplyChecked(3*stateScalars,sizeof(uint64_t)));break;
+            case QuadraticBackend::WideFixed256:
+                each=plusChecked(each,multiplyChecked(4*stateScalars,sizeof(uint64_t)));break;
             case QuadraticBackend::GMP:break;
             }
         } else if(big) {
@@ -179,10 +195,15 @@ bool quadraticFormula(Formula formula) noexcept {
     return formula==Formula::Mandelbrot || formula==Formula::Julia ||
            formula==Formula::BurningShip;
 }
-bool fixedRangeSafe(const Request&r) {
-    auto safe=[](const Big&v) {
+bool divisionFormula(Formula formula) noexcept {
+    return formula==Formula::Newton || formula==Formula::Newton4 ||
+           formula==Formula::Magnet || formula==Formula::Magnet2 ||
+           formula==Formula::Catseye;
+}
+bool coordinateRangeSafe(const Request&r,double maximum) {
+    auto safe=[=](const Big&v) {
         const double d=v.toDouble();
-        return std::isfinite(d) && std::abs(d)<=2.9;
+        return std::isfinite(d) && std::abs(d)<=maximum;
     };
     for(double u:{0.0,1.0}) for(double v:{0.0,1.0}) {
         const auto point=r.view.screenToComplex(u,v,r.width,r.height);
@@ -193,14 +214,31 @@ bool fixedRangeSafe(const Request&r) {
     return true;
 }
 QuadraticBackend chooseQuadraticBackend(const Request&r,mp_bitcnt_t requestedBits) {
-    if(!r.settings.fastPrecision || !quadraticFormula(r.settings.formula))
+    if(!r.settings.fastPrecision) return QuadraticBackend::GMP;
+
+    if(quadraticFormula(r.settings.formula)) {
+        if(requestedBits<=100 && preferDoubleDoubleBackend())
+            return QuadraticBackend::DoubleDouble;
+        if(!fixedBackendAvailable || !coordinateRangeSafe(r,2.9))
+            return requestedBits<=100?QuadraticBackend::DoubleDouble:QuadraticBackend::GMP;
+        if(requestedBits<=120) return QuadraticBackend::Fixed128;
+        if(requestedBits<=184) return QuadraticBackend::Fixed192;
+        if(requestedBits<=248) return QuadraticBackend::Fixed256;
         return QuadraticBackend::GMP;
-    if(requestedBits<=100 && preferDoubleDoubleBackend())
-        return QuadraticBackend::DoubleDouble;
-    if(!fixedBackendAvailable || !fixedRangeSafe(r)) return QuadraticBackend::GMP;
-    if(requestedBits<=120) return QuadraticBackend::Fixed128;
-    if(requestedBits<=184) return QuadraticBackend::Fixed192;
-    if(requestedBits<=248) return QuadraticBackend::Fixed256;
+    }
+
+    // Rational formulas still benefit from fully inlined DD division at moderate
+    // precision, but a fixed-point reciprocal would need its own benchmark.
+    if(divisionFormula(r.settings.formula))
+        return requestedBits<=100?QuadraticBackend::DoubleDouble:QuadraticBackend::GMP;
+
+    // Generic polynomial/piecewise formulas use Q24.* so high powers can overshoot
+    // an escape radius before the following continuation test without wrapping.
+    if(!fixedBackendAvailable || !coordinateRangeSafe(r,1024.0))
+        return requestedBits<=100?QuadraticBackend::DoubleDouble:QuadraticBackend::GMP;
+    if(requestedBits<=100) return QuadraticBackend::WideFixed128; // 104 fraction bits
+    if(requestedBits<=164) return QuadraticBackend::WideFixed192; // 168 fraction bits
+    if(requestedBits<=228) return QuadraticBackend::WideFixed256; // 232 fraction bits
     return QuadraticBackend::GMP;
 }
 mp_bitcnt_t backendBits(QuadraticBackend backend) noexcept {
@@ -209,6 +247,9 @@ mp_bitcnt_t backendBits(QuadraticBackend backend) noexcept {
     case QuadraticBackend::Fixed128:return Fixed<2>::precision;
     case QuadraticBackend::Fixed192:return Fixed<3>::precision;
     case QuadraticBackend::Fixed256:return Fixed<4>::precision;
+    case QuadraticBackend::WideFixed128:return Fixed<2,24>::precision;
+    case QuadraticBackend::WideFixed192:return Fixed<3,24>::precision;
+    case QuadraticBackend::WideFixed256:return Fixed<4,24>::precision;
     case QuadraticBackend::GMP:return 0;
     }
     return 0;
@@ -559,7 +600,12 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     const bool quadratic=r.settings.formula==Formula::Mandelbrot ||
                          r.settings.formula==Formula::Julia ||
                          r.settings.formula==Formula::BurningShip;
-    f->stats.simd=quadratic && r.settings.simd &&
+    const bool powerFormula=r.settings.formula==Formula::Mandelbrot3 ||
+                            r.settings.formula==Formula::Mandelbrot4 ||
+                            r.settings.formula==Formula::Mandelbrot5 ||
+                            r.settings.formula==Formula::Mandelbrot6 ||
+                            r.settings.formula==Formula::Mandelbrot9;
+    f->stats.simd=(quadratic||(!big&&powerFormula)) && r.settings.simd &&
         ((!big && hasNativeSIMD()) ||
          (big && quadraticBackend==QuadraticBackend::DoubleDouble && hasDoubleDoubleSIMD()));
     f->counts.resize(pixels); f->state.resize(pixels,stateScalars,quadraticBackend);
@@ -759,8 +805,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     auto makeDoubleDoubleList=[&]<class F>() -> CalculateList {
         static_assert(F::quadratic);
         auto coordinates=makeFastCoordinates.template operator()<DoubleDouble>();
-        DoubleDoubleStateStorage* state=nullptr;
-        if constexpr(Save && big) state=&f->state.getDoubleDouble();
+        DoubleDoubleStateStorage<F::stateScalars>* state=nullptr;
+        if constexpr(Save && big) state=&f->state.template getDoubleDouble<F>();
         const DoubleDouble jr=[](const Settings&s) {
             if constexpr(F::julia) return DoubleDouble::fromBig(s.juliaRe);
             else return DoubleDouble{};
@@ -854,8 +900,8 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         static_assert(F::quadratic);
         using Fast=Fixed<N>;
         auto coordinates=makeFastCoordinates.template operator()<Fast>();
-        FixedStateStorage<N>* state=nullptr;
-        if constexpr(Save && big) state=&f->state.template getFixed<N>();
+        FixedStateStorage<N,4,F::stateScalars>* state=nullptr;
+        if constexpr(Save && big) state=&f->state.template getFixed<N,4,F>();
         const Fast jr=[](const Settings&s) {
             if constexpr(F::julia) return Fast::fromBig(s.juliaRe);
             else return Fast{};
@@ -917,6 +963,71 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         };
     };
 
+    auto makeGenericFastList=[&]<class F,class Fast,size_t N=0,unsigned I=0>() -> CalculateList {
+        static_assert(F::generic);
+        auto coordinates=makeFastCoordinates.template operator()<Fast>();
+        auto*state=[&]<class StorageType>(StorageType&storage) {
+            if constexpr(!Save) return static_cast<void*>(nullptr);
+            else if constexpr(std::is_same_v<Fast,DoubleDouble>)
+                return &storage.template getDoubleDouble<F>();
+            else
+                return &storage.template getFixed<N,I,F>();
+        }(f->state);
+
+        return [&,coordinates,state](const std::vector<size_t>&list,
+                                     const Cancellation&calculationStop) {
+            if(list.empty()) return;
+            std::atomic<size_t> next{0};
+            executor.run([&](size_t worker) {
+                auto&stat=stats.at(worker);
+                detail::FixedFormulaKernel<Fast,F> scratch;
+                const size_t chunk=list.size()>512?64:8;
+                while(!calculationStop.requested()) {
+                    const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
+                    if(first>=list.size()) break;
+                    const size_t last=std::min(first+chunk,list.size());
+                    for(size_t k=first;k<last && !calculationStop.requested();++k) {
+                        const size_t index=list[k];
+                        Count before=f->counts[index];
+                        if(before.known(r.settings.iterations)) {
+                            f->samplePixels[index]=colorForIndex(index);
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                            continue;
+                        }
+                        const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
+                        const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
+                        const auto&xr=(*coordinates)[0];const auto&xi=(*coordinates)[1];
+                        const auto&yr=(*coordinates)[2];const auto&yi=(*coordinates)[3];
+                        const Fast real=r.view.rotation==0?xr[static_cast<size_t>(x)]:
+                            xr[static_cast<size_t>(x)]+yr[static_cast<size_t>(y)];
+                        const Fast imag=r.view.rotation==0?yi[static_cast<size_t>(y)]:
+                            xi[static_cast<size_t>(x)]+yi[static_cast<size_t>(y)];
+
+                        FormulaOrbit<Fast,F> orbit{};
+                        const FormulaOrbit<Fast,F>*saved=nullptr;
+                        if constexpr(Save) {
+                            if(before.iterations) {orbit=state->load(index);saved=&orbit;}
+                        }
+                        const uint32_t startIterations=saved?before.iterations:0;
+                        Count result=scratch.run(real,imag,before,saved,r.settings.iterations,
+                                                 calculationStop,Save);
+                        stat.steps+=result.iterations-startIterations;
+                        if(saved && startIterations) ++stat.resumed;else ++stat.started;
+                        if(!Save && result.status==Status::Pending &&
+                           result.iterations<before.iterations) continue;
+                        f->counts[index]=result;
+                        rememberOrbitColor(index,scratch.x,scratch.y);
+                        if constexpr(Save) state->store(index,scratch);
+                        if(result.known(r.settings.iterations)) {
+                            f->samplePixels[index]=colorForIndex(index);
+                            f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                        }
+                    }
+                }
+            });
+        };
+    };
+
     auto makeCalculateList=[&]<class F>() -> CalculateList {
         if constexpr(big && F::quadratic) {
             switch(quadraticBackend) {
@@ -928,8 +1039,27 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                 return makeFixedList.template operator()<F,3>();
             case QuadraticBackend::Fixed256:
                 return makeFixedList.template operator()<F,4>();
-            case QuadraticBackend::GMP:
+            default:
                 break;
+            }
+        }
+        if constexpr(big && F::generic) {
+            if constexpr(F::needsDivision) {
+                if(quadraticBackend==QuadraticBackend::DoubleDouble)
+                    return makeGenericFastList.template operator()<F,DoubleDouble>();
+            } else {
+                switch(quadraticBackend) {
+                case QuadraticBackend::DoubleDouble:
+                    return makeGenericFastList.template operator()<F,DoubleDouble>();
+                case QuadraticBackend::WideFixed128:
+                    return makeGenericFastList.template operator()<F,Fixed<2,24>,2,24>();
+                case QuadraticBackend::WideFixed192:
+                    return makeGenericFastList.template operator()<F,Fixed<3,24>,3,24>();
+                case QuadraticBackend::WideFixed256:
+                    return makeGenericFastList.template operator()<F,Fixed<4,24>,4,24>();
+                default:
+                    break;
+                }
             }
         }
         using BigScratch=std::conditional_t<F::generic,detail::FixedFormulaKernel<Big,F>,BigKernel<F>>;
@@ -1017,6 +1147,57 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
                             if(result.known(r.settings.iterations)) {
                                 f->samplePixels[index]=colorForIndex(index);
                                 f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                            }
+                        }
+                    }
+                } else if constexpr(F::generic && F::powerFormula) {
+                    std::array<Lane,4> lanes{};
+                    std::array<size_t,4> indexes{};
+                    std::array<uint32_t,4> starts{};
+                    const size_t chunk=list.size()>512?64:4;
+                    while(!calculationStop.requested()) {
+                        const size_t first=next.fetch_add(chunk,std::memory_order_relaxed);
+                        if(first>=list.size()) break;
+                        const size_t last=std::min(first+chunk,list.size());
+                        size_t k=first;
+                        while(k<last && !calculationStop.requested()) {
+                            size_t used=0;
+                            while(used<4 && k<last) {
+                                const size_t index=list[k++];
+                                Count before=f->counts[index];
+                                if(before.known(r.settings.iterations)) {
+                                    f->samplePixels[index]=colorForIndex(index);
+                                    f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                                    continue;
+                                }
+                                const int y=static_cast<int>(index/static_cast<size_t>(f->stride));
+                                const int x=static_cast<int>(index%static_cast<size_t>(f->stride));
+                                FormulaOrbit<double,F> orbit{};
+                                const FormulaOrbit<double,F>*saved=nullptr;
+                                if constexpr(Save) {
+                                    if(before.iterations) {orbit=state->load(index);saved=&orbit;}
+                                }
+                                lanes[used]=preparePowerLane<F>(
+                                    doubleRealAt(x,y),doubleImagAt(x,y),before,saved);
+                                indexes[used]=index;starts[used]=saved?before.iterations:0;
+                                if(saved && before.iterations) ++stat.resumed;else ++stat.started;
+                                ++used;
+                            }
+                            if(!used) continue;
+                            iteratePowerFour(lanes,used,r.settings.iterations,F::power,
+                                             calculationStop,Save,r.settings.simd);
+                            for(size_t j=0;j<used;++j) {
+                                const size_t index=indexes[j];auto&lane=lanes[j];
+                                stat.steps+=lane.count.iterations-starts[j];
+                                if(!Save && lane.count.status==Status::Pending &&
+                                   lane.count.iterations<f->counts[index].iterations) continue;
+                                f->counts[index]=lane.count;
+                                rememberOrbitColor(index,lane.x,lane.y);
+                                if constexpr(Save) state->store(index,lane);
+                                if(lane.count.known(r.settings.iterations)) {
+                                    f->samplePixels[index]=colorForIndex(index);
+                                    f->sampleQuality[index]=static_cast<uint8_t>(DisplayQuality::Exact);
+                                }
                             }
                         }
                     }

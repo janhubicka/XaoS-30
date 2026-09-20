@@ -37,6 +37,17 @@ template<Formula Value> struct FormulaTag {
     static constexpr bool julia=Value==Formula::Julia;
     static constexpr bool ship=Value==Formula::BurningShip;
     static constexpr bool interior=Value==Formula::Mandelbrot;
+    static constexpr unsigned power=
+        Value==Formula::Mandelbrot3?3u:
+        Value==Formula::Mandelbrot4?4u:
+        Value==Formula::Mandelbrot5?5u:
+        Value==Formula::Mandelbrot6?6u:
+        Value==Formula::Mandelbrot9?9u:0u;
+    static constexpr bool powerFormula=power!=0;
+    static constexpr bool needsDivision=
+        Value==Formula::Newton || Value==Formula::Newton4 ||
+        Value==Formula::Magnet || Value==Formula::Magnet2 ||
+        Value==Formula::Catseye;
     // Resumable state is formula-specific. Most formulas only need z=(x,y);
     // Newton additionally needs its convergence delta, while recurrence formulas
     // need a second complex value.
@@ -89,6 +100,22 @@ bool hasNativeSIMD() noexcept;
 /// Advances up to four independent double-precision fractal orbits.
 void iterateFour(std::array<Lane,4>& lanes,size_t valid,uint32_t limit,
                  const Cancellation&,bool allowTimeBudget,bool ship,bool allowSIMD);
+
+/// Advances power-family z^p+c orbits. Formula selection happens once before the
+/// specialized SIMD/scalar loop, never inside an iteration.
+void iteratePowerFour(std::array<Lane,4>& lanes,size_t valid,uint32_t limit,unsigned power,
+                      const Cancellation&,bool allowTimeBudget,bool allowSIMD);
+
+template<class F>
+Lane preparePowerLane(double cx,double cy,const Count&previous,
+                      const FormulaOrbit<double,F>*saved) {
+    static_assert(F::powerFormula);
+    Lane lane;lane.cr=cx;lane.ci=cy;lane.x=cx;lane.y=cy;
+    if(saved) {lane.x=saved->x;lane.y=saved->y;lane.count=previous;}
+    if(lane.count.status==Status::Pending && lane.x*lane.x+lane.y*lane.y>=4.0)
+        lane.count.status=Status::Escaped;
+    return lane;
+}
 
 template<class F>
 /// Builds one SIMD/scalar lane from a coordinate and optional resumable orbit state.
