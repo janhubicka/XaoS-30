@@ -9,7 +9,10 @@
 
 namespace xaos {
 
-enum class QuadraticBackend:uint8_t { GMP, DoubleDouble, Fixed128, Fixed192, Fixed256 };
+enum class QuadraticBackend:uint8_t {
+    GMP, DoubleDouble, Fixed128, Fixed192, Fixed256,
+    WideFixed128, WideFixed192, WideFixed256
+};
 
 struct DoubleDouble {
     double hi=0,lo=0;
@@ -35,6 +38,18 @@ inline DoubleDouble operator*(DoubleDouble a,DoubleDouble b) noexcept {
     e+=a.lo*b.lo;
     return ddRenorm(p,e);
 }
+inline DoubleDouble operator/(DoubleDouble a,DoubleDouble b) noexcept {
+    // Bailey-style compensated quotient. Two residual corrections are cheap
+    // compared with GMP and recover close to the full double-double mantissa.
+    const double q1=a.hi/b.hi;
+    DoubleDouble q{q1,0};
+    DoubleDouble r=a-b*q;
+    const double q2=r.hi/b.hi;
+    q=q+DoubleDouble{q2,0};
+    r=a-b*q;
+    const double q3=r.hi/b.hi;
+    return q+DoubleDouble{q3,0};
+}
 inline DoubleDouble twice(DoubleDouble a) noexcept { return a+a; }
 inline DoubleDouble absolute(DoubleDouble a) noexcept {
     return a.hi<0 || (a.hi==0 && a.lo<0)?-a:a;
@@ -49,10 +64,12 @@ inline constexpr bool fixedBackendAvailable=true;
 inline constexpr bool fixedBackendAvailable=false;
 #endif
 
-template<size_t N> struct Fixed {
+template<size_t N,unsigned IntegerBits=4> struct Fixed {
     static_assert(N>=2 && N<=4);
+    static_assert(IntegerBits>=2 && IntegerBits<64);
     std::array<uint64_t,N> limb{};
-    static constexpr unsigned fractional=static_cast<unsigned>(64*N-4);
+    static constexpr unsigned integerBits=IntegerBits;
+    static constexpr unsigned fractional=static_cast<unsigned>(64*N-IntegerBits);
     static constexpr unsigned precision=fractional;
 
     static Fixed fromDouble(double value) {
@@ -150,16 +167,16 @@ template<size_t N> struct Fixed {
     friend Fixed operator-(const Fixed&a,const Fixed&b) noexcept { return a+(-b); }
 };
 
-template<size_t N>
-inline std::array<uint64_t,N> fixedMagnitude(const Fixed<N>&v,bool&negative) noexcept {
+template<size_t N,unsigned I>
+inline std::array<uint64_t,N> fixedMagnitude(const Fixed<N,I>&v,bool&negative) noexcept {
     negative=(v.limb[N-1]>>63)!=0;
     return negative?(-v).limb:v.limb;
 }
-template<size_t N>
-inline Fixed<N> fixedScaledProduct(const std::array<uint64_t,2*N>&product,bool negative) noexcept {
-    Fixed<N> r;
+template<size_t N,unsigned I>
+inline Fixed<N,I> fixedScaledProduct(const std::array<uint64_t,2*N>&product,bool negative) noexcept {
+    Fixed<N,I> r;
     constexpr size_t base=N-1;
-    constexpr unsigned shift=60;
+    constexpr unsigned shift=64-I;
     for(size_t k=0;k<N;++k) {
         const size_t i=base+k;
         r.limb[k]=product[i]>>shift;
@@ -167,8 +184,8 @@ inline Fixed<N> fixedScaledProduct(const std::array<uint64_t,2*N>&product,bool n
     }
     return negative?-r:r;
 }
-template<size_t N>
-inline Fixed<N> operator*(const Fixed<N>&a,const Fixed<N>&b) noexcept {
+template<size_t N,unsigned I>
+inline Fixed<N,I> operator*(const Fixed<N,I>&a,const Fixed<N,I>&b) noexcept {
 #if defined(__SIZEOF_INT128__)
     bool na=false,nb=false;
     const auto aa=fixedMagnitude(a,na),bb=fixedMagnitude(b,nb);
@@ -183,21 +200,21 @@ inline Fixed<N> operator*(const Fixed<N>&a,const Fixed<N>&b) noexcept {
         }
         p[i+N]=static_cast<uint64_t>(carry);
     }
-    return fixedScaledProduct<N>(p,na!=nb);
+    return fixedScaledProduct<N,I>(p,na!=nb);
 #else
     (void)a;(void)b;
     return {};
 #endif
 }
-template<size_t N> inline Fixed<N> absolute(Fixed<N>a) noexcept {
+template<size_t N,unsigned I> inline Fixed<N,I> absolute(Fixed<N,I>a) noexcept {
     return (a.limb[N-1]>>63)?-a:a;
 }
-template<size_t N> inline bool fixedGreater(const Fixed<N>&a,const Fixed<N>&b) noexcept {
+template<size_t N,unsigned I> inline bool fixedGreater(const Fixed<N,I>&a,const Fixed<N,I>&b) noexcept {
     for(size_t i=N;i-->0;) if(a.limb[i]!=b.limb[i]) return a.limb[i]>b.limb[i];
     return false;
 }
-template<size_t N> inline bool greaterThan4(const Fixed<N>&a) {
-    static const Fixed<N> four=Fixed<N>::fromDouble(4.0);
+template<size_t N,unsigned I> inline bool greaterThan4(const Fixed<N,I>&a) {
+    static const Fixed<N,I> four=Fixed<N,I>::fromDouble(4.0);
     return fixedGreater(a,four);
 }
 
