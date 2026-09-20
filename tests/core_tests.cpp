@@ -386,7 +386,6 @@ void simdTests() {
         std::uniform_real_distribution<double> point(-1.1,1.1);
         for(int trial=0;trial<350;++trial) {
             std::array<Lane,4> scalar{},vector{};
-            std::array<detail::FixedFormulaKernel<double,F>,4> reference{};
             for(size_t lane=0;lane<4;++lane) {
                 const double re=point(gen),im=point(gen);
                 scalar[lane]=preparePowerLane<F>(re,im,{},nullptr);
