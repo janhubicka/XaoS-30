@@ -558,6 +558,58 @@ void fastPrecisionTests() {
         }
     }
 
+    // Adaptive precision must keep climbing past the double-double tier as
+    // the viewport shrinks. This is the GUI path (minimumPrecision == 0), not a
+    // manually forced backend test.
+    {
+        static constexpr std::array<const char*,5> spans{{
+            "1e-18","1e-28","1e-45","1e-65","1e-90"}};
+        mp_bitcnt_t previousBits=0;
+        for(const char*span:spans) {
+            Request r;
+            r.width=32;r.height=20;
+            r.view=View::parse("-0.743643887037151","0.13182590420533",span,r.width);
+            r.settings.minimumPrecision=0;
+            r.settings.iterations=32;
+            r.settings.analytic=false;
+            r.settings.uniform=true;
+            r.settings.solidGuessRange=0;
+            Renderer adaptive;
+            auto frame=adaptive.render(r,one,stop);
+            const auto required=r.view.requiredBits(r.width,r.settings.guardBits);
+            CHECK(frame->stats.bits>=required);
+            CHECK(frame->stats.bits>=previousBits);
+            if(required>106) CHECK(frame->stats.backend!="double-double");
+            if(required>248) CHECK(frame->stats.backend=="GMP");
+            previousBits=frame->stats.bits;
+        }
+    }
+
+    // At a depth where native doubles cannot distinguish adjacent coordinates,
+    // the DD backend must still agree with a forced-GMP render. Under fast-math
+    // reassociation its compensated low word used to collapse and this became
+    // visible as coarse/pixelated blocks before the next precision tier.
+    {
+        Request r;
+        r.width=24;r.height=16;
+        r.view=View::parse("-0.743643887037151","0.13182590420533","1e-18",r.width);
+        r.settings.minimumPrecision=0;
+        r.settings.iterations=600;
+        r.settings.analytic=false;
+        r.settings.uniform=true;
+        r.settings.solidGuessRange=0;
+        Renderer fast;
+        auto dd=fast.render(r,many,stop);
+        if(dd->stats.backend=="double-double") {
+            Request exact=r;
+            exact.settings.fastPrecision=false;
+            Renderer gmp;
+            auto reference=gmp.render(exact,one,stop);
+            CHECK(reference->stats.backend=="GMP");
+            samePixelCounts(*dd,*reference);
+        }
+    }
+
     // Precision above the fixed-size range must transparently fall back to GMP.
     Request deep;
     deep.width=16;deep.height=8;
