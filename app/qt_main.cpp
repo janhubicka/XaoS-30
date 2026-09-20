@@ -1330,13 +1330,18 @@ public:
 #ifdef Q_OS_ANDROID
         if(enabled) {
             tiltSensor_.setDataRate(60);
-            // Feature metadata is valid only after a backend is connected.
+            // Steering is defined in screen axes. Only enable it when the backend
+            // can rotate readings with the GUI orientation; raw native-device
+            // axes would swap/change direction in landscape.
             tiltSteeringAvailable_=tiltSensor_.connectToBackend();
-            if(tiltSteeringAvailable_ &&
-               tiltSensor_.isFeatureSupported(QSensor::AxesOrientation))
-                tiltSensor_.setAxesOrientationMode(QSensor::AutomaticOrientation);
-            if(tiltSteeringAvailable_)
-                tiltSteeringAvailable_=tiltSensor_.start();
+            if(tiltSteeringAvailable_) {
+                if(tiltSensor_.isFeatureSupported(QSensor::AxesOrientation)) {
+                    tiltSensor_.setAxesOrientationMode(QSensor::AutomaticOrientation);
+                    tiltSteeringAvailable_=tiltSensor_.start();
+                } else {
+                    tiltSteeringAvailable_=false;
+                }
+            }
         } else {
             tiltSensor_.stop();
             tiltSteeringAvailable_=false;
