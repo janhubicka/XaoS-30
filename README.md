@@ -51,18 +51,27 @@ CI now builds Linux x86-64, Windows x86-64, macOS arm64/x86-64, and Android arm6
 
 The phone layout is deliberately almost all fractal. It runs full-screen with a
 small translucent identity pill at the top and a floating control dock at the
-bottom. One finger drags the plane, a two-finger pinch zooms, a two-finger twist
-rotates, and double-tap dives in at the touched point. The dock exposes automatic
-exploration, formula choice, iteration detail, reconstruction style, reset, and a
-small overflow menu for exact coordinates/precision, rotation leveling, saved
-orbit state and image export. On desktop, pass `--mobile-ui` to preview this
-layout without an Android device.
+bottom. Motion follows the Frax-style direct-manipulation controls: one-finger
+swipe/pan can continue at release velocity, two fingers combine pan, pinch and
+rotation, one-finger double-tap performs an exact 3x centered zoom in, and a
+two-finger tap performs a 3x centered zoom out. A tap stops ongoing motion.
+
+The dock exposes automatic exploration, formula choice, iteration detail,
+**COLOR**, reset, and an overflow menu. COLOR contains forward/reverse/stop
+palette cycling, cycling speed, palette +/- shift, all XaoS inside/outside
+coloring modes, and nearest/bilinear/bicubic reconstruction. The overflow menu
+keeps exact coordinates/precision, rotation leveling, saved orbit state and image
+export. On desktop, pass `--mobile-ui` to preview this layout without an Android
+device.
 
 ### Desktop
 
 Hold the left/right mouse button to zoom in/out around the pointer; use the wheel
 for stepped zoom and middle-button dragging to pan. `I` doubles the iteration
-limit. `Escape` stops continuous zoom or autopilot. **Up/Down** adjust the continuous
+limit. The **Color** menu exposes the same XaoS palette and in/out coloring modes
+as the phone UI. `Y` toggles forward palette cycling, `Shift+Y` toggles reverse
+cycling, `+`/`-` shift the palette, `C` advances the outcoloring mode, and
+`F` advances the incoloring mode. `Escape` stops continuous zoom or autopilot. **Up/Down** adjust the continuous
 zoom speed by the original XaoS ×/÷1.05 factor. **Autopilot** (toolbar or `A`)
 ports the classic XaoS automatic explorer: it searches displayed 5x5
 neighborhoods for set boundaries or noisy multi-colour regions, prefers targets
@@ -162,8 +171,10 @@ python3 tests/benchmark.py build-headless/xaos-bench local-benchmarks.json
 
 CSV output reports elapsed renderer time, precision, reused/started/resumed
 samples, actual iteration steps, unresolved samples, solid guesses, timeout
-fills, and estimated memory. `--slice MS`, `--no-guess`, `--solid-guess N`, and
-`--no-fill`, and `--reconstruct nearest|bilinear|bicubic` expose the interactive policy for measurement. See
+fills, and estimated memory. `--slice MS`, `--no-guess`, `--solid-guess N`,
+`--no-fill`, and `--reconstruct nearest|bilinear|bicubic` expose the interactive
+policy for measurement. `--palette-shift N`, `--incolor 0..9`, and
+`--outcolor 0..9` expose the XaoS coloring pipeline in headless renders. See
 [the benchmark report](docs/BENCHMARKS.md) before interpreting speedup numbers.
 
 ## Precision and memory contract
@@ -205,11 +216,15 @@ Beryl, Circle 7, Clock, and Symmetric Barnsley. The optional upstream SFFE
 user-expression engine is not embedded. There are no
 reference-orbit perturbation, series approximation, GPU, AVX-512, ARM NEON,
 periodicity-detection, certified interval, deep-reference glitch-repair, or
-full upstream filter/animation compatibility implementations here. The default
-escape-time colours do use the original XaoS `mkdefaultpalette` control colours,
-8-entry interpolation, palette size quirk, and `(iter % (size-1))+1` indexing.
-The only interior shortcuts are conservative floating-point tests for the main
-Mandelbrot cardioid and period-two bulb; `--no-interior` disables them.
+full upstream filter/animation compatibility implementations here. The coloring pipeline uses the original XaoS `mkdefaultpalette` control colours,
+8-entry interpolation and palette-size quirk, plus signed palette shifting/color
+cycling. It exposes XaoS-style incoloring modes 0..9 (black through squares) and
+outcoloring modes 0..9 (iterations through smooth). Final orbit coordinates are
+cached separately from resumable numeric state, so palette and coloring changes
+normally recolor without new orbit steps. The only interior shortcuts are
+conservative floating-point tests for the main Mandelbrot cardioid and period-two
+bulb; a non-black incoloring disables those shortcuts so a final orbit is
+available. `--no-interior` disables them explicitly as well.
 
 The code has not been merged or submitted to upstream. It can be built separately
 or added under `` without changing the production engine.
