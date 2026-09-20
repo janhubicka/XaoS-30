@@ -220,6 +220,36 @@ struct View {
         re=add(re,sub(anchor.first,moved.first));
         im=add(im,sub(anchor.second,moved.second));
     }
+    /// Resizes the screen grid while preserving the exact sample lattice.
+    ///
+    /// Keeping span/width constant is not enough when the old and new pixel
+    /// counts have different parity: pixel centers then move by half a sample,
+    /// destroying exact row/column reuse. Shift the screen-basis center by one
+    /// half-step on each parity change. The sign follows the resize direction so
+    /// a portrait->landscape->portrait round trip does not accumulate drift.
+    void resizePreservingPixelGrid(int oldWidth,int oldHeight,int newWidth,int newHeight) {
+        if(oldWidth<1||oldHeight<1||newWidth<1||newHeight<1)
+            throw std::invalid_argument("invalid screen resize");
+        ensure(std::max<mp_bitcnt_t>(128,requiredBits(oldWidth,32)));
+        const Big step=divide(span,static_cast<unsigned long>(oldWidth));
+        auto [axisX,axisY]=axisCenter();
+        auto halfShift=[&](int oldCount,int newCount) {
+            if((oldCount&1)==(newCount&1)) return Big(step.precision());
+            const double sign=newCount>oldCount?0.5:-0.5;
+            return scale(step,sign);
+        };
+        axisX=add(axisX,halfShift(oldWidth,newWidth));
+        axisY=add(axisY,halfShift(oldHeight,newHeight));
+
+        // Construct the new span from the old pixel step, rather than multiplying
+        // the old span by a rounded width ratio.
+        Big nextSpan(step.precision());
+        mpf_mul_ui(nextSpan.get(),step.get(),static_cast<unsigned long>(newWidth));
+        span=std::move(nextSpan);
+        const auto center=complexFromAxes(axisX,axisY);
+        re=center.first;im=center.second;
+    }
+
     /// Moves the arbitrary-precision viewport by a screen-space offset.
     void pan(double dx,double dy,int width) {
         if(width<1||!std::isfinite(dx)||!std::isfinite(dy)) throw std::invalid_argument("invalid pan");
