@@ -45,8 +45,10 @@ function(xaos_optimize_release_target target)
     if(XAOS_FAST_MATH)
       target_compile_options(${target} PRIVATE
         "$<$<CONFIG:Release>:-ffast-math>"
+        "$<$<CONFIG:Release>:-fno-finite-math-only>"
         "$<$<CONFIG:Release>:-ffp-contract=fast>"
         "$<$<CONFIG:RelWithDebInfo>:-ffast-math>"
+        "$<$<CONFIG:RelWithDebInfo>:-fno-finite-math-only>"
         "$<$<CONFIG:RelWithDebInfo>:-ffp-contract=fast>")
     endif()
   elseif(MSVC)
@@ -99,6 +101,17 @@ elseif(MSVC)
 endif()
 xaos_optimize_release_target(xaos_core)
 
+# GCC's slim LTO objects force every consumer of xaos_core through the LTO
+# plugin. Keep a native copy beside the LTO IR so the deliberately non-LTO
+# regression executable can link quickly and, on MinGW, without duplicate
+# COMDAT/template definitions. The shipped app still links the same objects
+# through LTO.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND XAOS_IPO_SUPPORTED)
+  target_compile_options(xaos_core PRIVATE
+    "$<$<CONFIG:Release>:-ffat-lto-objects>"
+    "$<$<CONFIG:RelWithDebInfo>:-ffat-lto-objects>")
+endif()
+
 # The default palette is a compatibility artifact: its 65,534 entries must be
 # bit-identical to the original XaoS floating-point mksmooth() loop. Fast-math
 # reassociation changes a few entries, so keep this tiny presentation-only TU
@@ -139,6 +152,9 @@ if(NOT ANDROID)
     # much slower; it still exercises the separately optimized xaos_core library.
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
       target_compile_options(xaos-tests PRIVATE -O0)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND XAOS_IPO_SUPPORTED)
+        target_link_options(xaos-tests PRIVATE -fno-lto)
+      endif()
     elseif(MSVC)
       target_compile_options(xaos-tests PRIVATE /Od)
     endif()
