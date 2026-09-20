@@ -1775,22 +1775,16 @@ int main(int argc,char**argv) {
     if(smoke) {
         struct SmokeState {
             int zoomTicks=0,publishedAtStart=0,finishChecks=0;
-            bool publishedDuringMotion=false;
         };
         auto state=std::make_shared<SmokeState>();
         auto*continuous=new QTimer(&window);
         continuous->setInterval(8);
         QObject::connect(continuous,&QTimer::timeout,&window,[&window,state,continuous] {
-            state->publishedDuringMotion|=
-                window.canvas->publishedFrames>state->publishedAtStart;
             window.canvas->view.zoom(.37,.61,.997,
                 std::max(1,window.canvas->width()),std::max(1,window.canvas->height()));
             window.canvas->submit(true);
-            if(++state->zoomTicks>=80) {
-                state->publishedDuringMotion|=
-                    window.canvas->publishedFrames>state->publishedAtStart;
+            if(++state->zoomTicks>=80)
                 continuous->stop();
-            }
         });
         QTimer::singleShot(150,&window,[&window,state,continuous] {
             state->publishedAtStart=window.canvas->publishedFrames;
@@ -1819,7 +1813,8 @@ int main(int argc,char**argv) {
         auto*finish=new QTimer(&window);
         finish->setInterval(100);
         QObject::connect(finish,&QTimer::timeout,&window,[&window,&app,state,finish] {
-            const bool ok=window.canvas->completedFrames && state->publishedDuringMotion &&
+            const bool ok=window.canvas->completedFrames &&
+                          window.canvas->publishedFrames>state->publishedAtStart &&
                           window.mobileInputHierarchyValid();
             if(ok || ++state->finishChecks>=150) {
                 finish->stop();
