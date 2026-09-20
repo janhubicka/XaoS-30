@@ -119,11 +119,11 @@ class Canvas final:public QWidget {
     TouchMode touchMode_=TouchMode::None;
     QPointF touchLastCenter_,touchStart_,lastTapPosition_,touchLastTwoCenter_;
     QPointF touchPanVelocity_,touchMomentumAnchor_;
-    double touchLastDistance_=0,touchLastAngle_=0;
+    double touchLastDistance_=0,touchLastAngle_=0,touchRotationCandidate_=0;
     double touchZoomVelocity_=0,touchRotationVelocity_=0,touchGestureMaxTravel_=0;
-    int touchGestureMaxPoints_=0;
+    int touchGestureMaxPoints_=0,touchPointId0_=-1,touchPointId1_=-1;
     bool touchChanged_=false,touchTapCandidate_=false,touchPanStarted_=false;
-    bool touchAfterPinchSingle_=false,touchStoppedMotion_=false;
+    bool touchAfterPinchSingle_=false,touchStoppedMotion_=false,touchRotationActive_=false;
     QElapsedTimer lastTapClock_;
     size_t threads_=std::max<size_t>(1,defaultWorkerCount()-presentationWorkerCount());
     /// Stops Frax-style kinetic touch motion. Returns whether anything was moving.
@@ -467,12 +467,21 @@ protected:
                          event->type()==QEvent::TouchCancel)) {
             auto*touch=static_cast<QTouchEvent*>(event);
 
-            std::vector<QPointF> active;
-            active.reserve(2);
+            // Qt does not promise touch-point list order. Keep the pair ordered by
+            // stable point id so a list-order swap cannot look like a 180-degree twist.
+            std::vector<std::pair<int,QPointF>> orderedActive;
+            orderedActive.reserve(2);
             for(const auto&point:touch->points()) {
-                if(point.state()!=QEventPoint::State::Released && active.size()<2)
-                    active.push_back(point.position());
+                if(point.state()!=QEventPoint::State::Released && orderedActive.size()<2)
+                    orderedActive.emplace_back(point.id(),point.position());
             }
+            std::sort(orderedActive.begin(),orderedActive.end(),
+                      [](const auto&a,const auto&b){return a.first<b.first;});
+            std::vector<QPointF> active;
+            active.reserve(orderedActive.size());
+            for(const auto&point:orderedActive) active.push_back(point.second);
+            const int activeId0=orderedActive.empty()?-1:orderedActive[0].first;
+            const int activeId1=orderedActive.size()<2?-1:orderedActive[1].first;
 
             if(event->type()==QEvent::TouchBegin) {
                 const bool stoppedAutopilot=autopilotEnabled_;
@@ -490,6 +499,9 @@ protected:
                 touchPanVelocity_=QPointF{};
                 touchZoomVelocity_=0;
                 touchRotationVelocity_=0;
+                touchRotationCandidate_=0;
+                touchRotationActive_=false;
+                touchPointId0_=touchPointId1_=-1;
                 if(!active.empty()) {
                     touchStart_=touchLastCenter_=active.front();
                     pointer_=active.front();
@@ -574,6 +586,9 @@ protected:
                 touchStoppedMotion_=false;
                 touchGestureMaxPoints_=0;
                 touchGestureMaxTravel_=0;
+                touchRotationCandidate_=0;
+                touchRotationActive_=false;
+                touchPointId0_=touchPointId1_=-1;
                 dragging_=false;
                 touch->accept();return true;
             }
@@ -589,13 +604,19 @@ protected:
                     touchAfterPinchSingle_=false;
                     dragging_=false;
 
-                    if(touchMode_!=TouchMode::Pinch) {
-                        // Re-baseline when the second finger arrives. This both prevents
-                        // pinch-as-pan misclassification and avoids a kinetic velocity spike.
+                    const bool newPair=touchMode_!=TouchMode::Pinch ||
+                        activeId0!=touchPointId0_ || activeId1!=touchPointId1_;
+                    if(newPair) {
+                        // Re-baseline when the second finger arrives or the active pair
+                        // changes. Besides preventing pinch-as-pan, this avoids both a
+                        // distance spike and an angle jump from touch-point replacement.
                         touchMode_=TouchMode::Pinch;
+                        touchPointId0_=activeId0;touchPointId1_=activeId1;
                         touchLastCenter_=center;
                         touchLastDistance_=distance;
                         touchLastAngle_=angle;
+                        touchRotationCandidate_=0;
+                        touchRotationActive_=false;
                         touchPanVelocity_=QPointF{};
                         touchZoomVelocity_=0;
                         touchRotationVelocity_=0;
@@ -618,7 +639,40 @@ protected:
                                 changed=true;
                             }
                         }
-                        rotation=std::remainder(angle-touchLastAngle_,2.0*std::numbers::pi);
+                        const double rawRotation=
+                            std::remainder(angle-touchLastAngle_,2.0*std::numbers::pi);
+                        // Rotation is exceptionally noisy when the fingers are close.
+                        // More importantly, *any* accidental angle change invalidates
+                        // XaoS's reusable row/column coordinate system. Keep rotation
+                        // locked until the user has made a deliberate twist.
+                        const double minSeparation=std::clamp(width()*.09,32.0,56.0);
+                        constexpr double unlockRotation=6.0*std::numbers::pi/180.0;
+                        constexpr double maxSampleRotation=35.0*std::numbers::pi/180.0;
+                        const bool stableAngle=distance>=minSeparation &&
+                            touchLastDistance_>=minSeparation &&
+                            std::abs(rawRotation)<=maxSampleRotation;
+                        if(!touchRotationActive_) {
+                            if(stableAngle) {
+                                touchRotationCandidate_+=rawRotation;
+                                if(std::abs(touchRotationCandidate_)>=unlockRotation) {
+                                    // Unlock without applying the dead-zone angle. The
+                                    // next sample starts smooth rotation with no snap.
+                                    touchRotationActive_=true;
+                                    touchRotationCandidate_=0;
+                                    touchRotationVelocity_=0;
+                                }
+                            } else {
+                                touchRotationCandidate_=0;
+                            }
+                            rotation=0;
+                        } else if(stableAngle) {
+                            rotation=rawRotation;
+                        } else {
+                            // A one-frame tracking glitch should never rotate the
+                            // image by tens of degrees and destroy the reusable grid.
+                            rotation=0;
+                            touchRotationVelocity_=0;
+                        }
                         if(std::abs(rotation)>1e-5) {
                             view.rotate(center.x()/std::max(1,width()),
                                         center.y()/std::max(1,height()),rotation,
