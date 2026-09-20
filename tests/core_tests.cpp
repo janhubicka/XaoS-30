@@ -817,6 +817,15 @@ void previewTests() {
         }
     }
     CHECK(guesses==preview->stats.solidGuessed);
+
+    // Rotating the palette while the image contains solid guesses must not alter
+    // the mathematical preview field or trigger exact orbit work.
+    r.settings.paletteShift=137;
+    auto cycled=renderer.render(r,pool,stop);
+    CHECK(cycled->stats.steps==0);
+    CHECK(cycled->sampleIterations==preview->sampleIterations);
+    CHECK(cycled->sampleQuality==preview->sampleQuality);
+
     auto refined=renderer.render(r,pool,stop);
     CHECK(refined->stats.complete);
     CHECK(refined->stats.reused>0);
