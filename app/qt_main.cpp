@@ -33,6 +33,7 @@
 #include <QPinchGesture>
 #include <QPolygonF>
 #include <QResizeEvent>
+#include <QShowEvent>
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QTimer>
@@ -124,6 +125,7 @@ class Canvas final:public QWidget {
     int direction_=0;
     bool dragging_=false;
     bool mobileUi_=false;
+    bool initialSubmitted_=false;
     bool nativeGestureActive_=false,gestureChanged_=false;
     enum class TouchMode { None, Pan, Pinch };
     TouchMode touchMode_=TouchMode::None;
@@ -547,6 +549,17 @@ class Canvas final:public QWidget {
         p.restore();
     }
 protected:
+    /// Starts the first render only after Qt has assigned the canvas its real
+    /// on-screen geometry. Resize events before the first published frame cannot
+    /// seed rendering because there is no previous image to preserve.
+    void showEvent(QShowEvent*event) override {
+        QWidget::showEvent(event);
+        if(!initialSubmitted_) {
+            initialSubmitted_=true;
+            submit(false);
+        }
+    }
+
     /// Re-render adaptively after a phone orientation/window-size change while
     /// immediately continuing to draw the transformed previous image.
     void resizeEvent(QResizeEvent*event) override {
@@ -567,7 +580,10 @@ protected:
 #ifdef Q_OS_ANDROID
         if(tiltSteeringFlight_) tiltSensor_.calibrate();
 #endif
-        if(publishedFrames>0) submit(true);
+        // Before showEvent there is intentionally no work. Afterwards even
+        // a resize that arrives before frame 1 is published must replace the
+        // pending startup geometry (not wait for another user gesture).
+        if(initialSubmitted_) submit(true);
     }
 
     /// Handles direct mobile touch plus native trackpad and generic pinch gestures.
@@ -861,30 +877,37 @@ protected:
             }
             if(type==Qt::EndNativeGesture) {
                 nativeGestureActive_=false;
-                if(gestureChanged_) submit(true); else update();
+                // Finish with a longer non-interactive slice so holes exposed by
+                // rotation/zoom are refined immediately after the fingers lift.
+                if(gestureChanged_) submit(false); else update();
                 gestureChanged_=false;gesture->accept();return true;
             }
             const QPointF position=gesture->position();
             const double u=position.x()/std::max(1,width());
             const double v=position.y()/std::max(1,height());
+            bool changedThisEvent=false;
             try {
                 if(type==Qt::RotateNativeGesture) {
                     view.rotate(u,v,gesture->value()*std::numbers::pi/180.0,
                                 std::max(1,width()),std::max(1,height()));
-                    gestureChanged_=true;
+                    gestureChanged_=changedThisEvent=true;
                 } else if(type==Qt::ZoomNativeGesture) {
                     const double magnification=1.0+gesture->value();
                     if(magnification>0) {
                         view.zoom(u,v,1.0/magnification,
                                   std::max(1,width()),std::max(1,height()));
-                        gestureChanged_=true;
+                        gestureChanged_=changedThisEvent=true;
                     }
                 } else if(type==Qt::PanNativeGesture) {
                     const QPointF delta=gesture->delta();
                     view.pan(delta.x(),delta.y(),std::max(1,width()));
-                    gestureChanged_=true;
+                    gestureChanged_=changedThisEvent=true;
                 } else return QWidget::event(event);
-                pointer_=position;idle_.stop();update();
+                pointer_=position;idle_.stop();
+                // Keep the affine old-image preview for instant feedback, but
+                // also let the coordinator calculate the newest geometry while
+                // the two-finger gesture is still active.
+                if(changedThisEvent) submit(true); else update();
             } catch(const std::exception&ex) {
                 if(onStatus) onStatus(ex.what());
             }
@@ -908,31 +931,38 @@ protected:
 #endif
                 const double u=center.x()/std::max(1,width());
                 const double v=center.y()/std::max(1,height());
+                bool changedThisEvent=false;
                 try {
                     const auto flags=pinch->changeFlags();
                     if(flags.testFlag(QPinchGesture::CenterPointChanged)) {
                         const QPointF delta=center-lastCenter;
                         view.pan(delta.x(),delta.y(),std::max(1,width()));
-                        gestureChanged_=true;
+                        gestureChanged_=changedThisEvent=true;
                     }
                     if(flags.testFlag(QPinchGesture::ScaleFactorChanged) && pinch->scaleFactor()>0) {
                         view.zoom(u,v,1.0/pinch->scaleFactor(),
                                   std::max(1,width()),std::max(1,height()));
-                        gestureChanged_=true;
+                        gestureChanged_=changedThisEvent=true;
                     }
                     if(flags.testFlag(QPinchGesture::RotationAngleChanged)) {
                         const double degrees=pinch->rotationAngle()-pinch->lastRotationAngle();
                         view.rotate(u,v,degrees*std::numbers::pi/180.0,
                                     std::max(1,width()),std::max(1,height()));
-                        gestureChanged_=true;
+                        gestureChanged_=changedThisEvent=true;
                     }
-                    pointer_=center;update();
+                    pointer_=center;
                 } catch(const std::exception&ex) {
                     if(onStatus) onStatus(ex.what());
                 }
-                if(pinch->state()==Qt::GestureFinished || pinch->state()==Qt::GestureCanceled) {
-                    if(gestureChanged_) submit(true);
+                const bool finished=pinch->state()==Qt::GestureFinished ||
+                                    pinch->state()==Qt::GestureCanceled;
+                if(finished) {
+                    if(gestureChanged_) submit(false); else update();
                     gestureChanged_=false;
+                } else if(changedThisEvent) {
+                    submit(true);
+                } else {
+                    update();
                 }
                 gestureEvent->accept(pinch);return true;
             }
@@ -1015,6 +1045,8 @@ public:
     Settings settings;
     int completedFrames=0;
     int publishedFrames=0;
+    /// Number of render requests queued by the UI; used by startup smoke coverage.
+    uint64_t submittedFrames() const noexcept { return serial_; }
     std::function<void(QString)> onStatus;
     std::function<void(bool)> onAutopilotChanged;
     std::function<void()> onColorChanged;
@@ -1767,12 +1799,17 @@ int main(int argc,char**argv) {
     const bool smoke=app.arguments().contains("--smoke-test");
     if(smoke) {
         window.resize(mobile?390:520,mobile?760:360);
-        window.setIterations(64);
+        window.canvas->settings.iterations=64;
         window.canvas->settings.reconstruction=Reconstruction::Bicubic;
-        window.canvas->setThreads(2);
     }
     if(mobile && !smoke) window.showFullScreen(); else window.show();
     if(smoke) {
+        // No setter above submitted work. The first request must therefore come
+        // from Canvas::showEvent; this catches a black startup screen without
+        // making the assertion depend on renderer throughput under sanitizers.
+        QTimer::singleShot(0,&window,[&window,&app] {
+            if(window.canvas->submittedFrames()==0) app.exit(3);
+        });
         struct SmokeState {
             int zoomTicks=0,publishedAtStart=0,finishChecks=0;
         };
