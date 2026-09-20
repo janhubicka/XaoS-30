@@ -922,7 +922,6 @@ public:
             if(shift<0) shift+=period;
             settings.paletteShift=shift;
             submit(true);
-            if(onColorChanged) onColorChanged();
         });
         connect(&autopilotTimer_,&QTimer::timeout,this,[this]{autopilotTick();});
         presenter_=std::thread([this]{presentationLoop();});
@@ -1149,6 +1148,7 @@ class Window final:public QMainWindow {
     QToolButton*mobileDetail_=nullptr;
     QToolButton*mobileQuality_=nullptr;
     QMenu*mobileFormulaMenu_=nullptr;
+    QMenu*mobileColorMenu_=nullptr;
     QMenu*mobileMoreMenu_=nullptr;
 
     QString qualityName() const {
@@ -1165,7 +1165,11 @@ class Window final:public QMainWindow {
         mobileBadge_->setText(QString(" XaoS 30  ·  %1 ").arg(QString::fromLatin1(info.name)));
         mobileFormula_->setText(QString::fromLatin1(info.shortName).toUpper()+"\nFORMULA");
         mobileDetail_->setText(QString::number(canvas->settings.iterations)+"\nDETAIL");
-        mobileQuality_->setText(qualityName()+"\nLOOK");
+        if(canvas->paletteCyclingDirection())
+            mobileQuality_->setText(canvas->paletteCyclingDirection()>0?"CYCLE >\nCOLOR":"< CYCLE\nCOLOR");
+        else
+            mobileQuality_->setText(QString::fromLatin1(outColoringName(canvas->settings.outColoring))
+                                    .left(8).toUpper()+"\nCOLOR");
         mobileExplore_->setText(canvas->autopilotEnabled()?"STOP\nEXPLORE":"EXPLORE\nAUTO");
         mobileExplore_->setChecked(canvas->autopilotEnabled());
         mobileBadge_->adjustSize();
@@ -1221,7 +1225,7 @@ class Window final:public QMainWindow {
         mobileExplore_->setCheckable(true);
         mobileFormula_=mobileButton("MANDEL\nFORMULA",mobileDock_);
         mobileDetail_=mobileButton("512\nDETAIL",mobileDock_);
-        mobileQuality_=mobileButton("CRISP\nLOOK",mobileDock_);
+        mobileQuality_=mobileButton("ITER\nCOLOR",mobileDock_);
         auto*reset=mobileButton("RESET\nVIEW",mobileDock_);
         auto*more=mobileButton("MORE\n···",mobileDock_);
         for(auto*b:{mobileExplore_,mobileFormula_,mobileDetail_,mobileQuality_,reset,more})
@@ -1237,6 +1241,67 @@ class Window final:public QMainWindow {
         }
         mobileFormula_->setMenu(mobileFormulaMenu_);
         mobileFormula_->setPopupMode(QToolButton::InstantPopup);
+
+        mobileColorMenu_=new QMenu(mobileQuality_);
+        auto*cycleForward=mobileColorMenu_->addAction("Cycle palette forward");
+        auto*cycleBackward=mobileColorMenu_->addAction("Cycle palette backward");
+        auto*cycleStop=mobileColorMenu_->addAction("Stop palette cycling");
+        mobileColorMenu_->addSeparator();
+        auto*shiftForward=mobileColorMenu_->addAction("Shift palette +1");
+        auto*shiftBackward=mobileColorMenu_->addAction("Shift palette -1");
+        auto*shiftReset=mobileColorMenu_->addAction("Reset palette shift");
+        auto*cycleFaster=mobileColorMenu_->addAction("Cycle faster");
+        auto*cycleSlower=mobileColorMenu_->addAction("Cycle slower");
+        mobileColorMenu_->addSeparator();
+
+        auto*outMenu=mobileColorMenu_->addMenu("Outside coloring");
+        auto*outGroup=new QActionGroup(outMenu);outGroup->setExclusive(true);
+        for(int i=0;i<10;++i) {
+            const auto mode=static_cast<OutColoring>(i);
+            auto*a=outMenu->addAction(QString::fromLatin1(outColoringName(mode)));
+            a->setCheckable(true);a->setChecked(canvas->settings.outColoring==mode);
+            outGroup->addAction(a);
+            connect(a,&QAction::triggered,this,[this,mode]{
+                canvas->setOutColoring(mode);refreshMobileChrome();
+            });
+        }
+
+        auto*inMenu=mobileColorMenu_->addMenu("Inside coloring");
+        auto*inGroup=new QActionGroup(inMenu);inGroup->setExclusive(true);
+        for(int i=0;i<10;++i) {
+            const auto mode=static_cast<InColoring>(i);
+            auto*a=inMenu->addAction(QString::fromLatin1(inColoringName(mode)));
+            a->setCheckable(true);a->setChecked(canvas->settings.inColoring==mode);
+            inGroup->addAction(a);
+            connect(a,&QAction::triggered,this,[this,mode]{
+                canvas->setInColoring(mode);refreshMobileChrome();
+            });
+        }
+
+        auto*reconstructMenu=mobileColorMenu_->addMenu("Reconstruction");
+        auto*reconstructGroup=new QActionGroup(reconstructMenu);reconstructGroup->setExclusive(true);
+        for(auto [name,mode]:std::array<std::pair<const char*,Reconstruction>,3>{{
+                {"Nearest (XaoS)",Reconstruction::Nearest},
+                {"Bilinear",Reconstruction::Bilinear},
+                {"Bicubic",Reconstruction::Bicubic}}}) {
+            auto*a=reconstructMenu->addAction(name);
+            a->setCheckable(true);a->setChecked(canvas->settings.reconstruction==mode);
+            reconstructGroup->addAction(a);
+            connect(a,&QAction::triggered,this,[this,mode]{
+                canvas->settings.reconstruction=mode;canvas->submit(false,true);refreshMobileChrome();
+            });
+        }
+
+        connect(cycleForward,&QAction::triggered,this,[this]{canvas->setPaletteCycling(1);refreshMobileChrome();});
+        connect(cycleBackward,&QAction::triggered,this,[this]{canvas->setPaletteCycling(-1);refreshMobileChrome();});
+        connect(cycleStop,&QAction::triggered,this,[this]{canvas->setPaletteCycling(0);refreshMobileChrome();});
+        connect(shiftForward,&QAction::triggered,canvas,[this]{canvas->shiftPalette(1);});
+        connect(shiftBackward,&QAction::triggered,canvas,[this]{canvas->shiftPalette(-1);});
+        connect(shiftReset,&QAction::triggered,canvas,[this]{canvas->resetPaletteShift();});
+        connect(cycleFaster,&QAction::triggered,canvas,[this]{canvas->adjustPaletteSpeed(true);});
+        connect(cycleSlower,&QAction::triggered,canvas,[this]{canvas->adjustPaletteSpeed(false);});
+        mobileQuality_->setMenu(mobileColorMenu_);
+        mobileQuality_->setPopupMode(QToolButton::InstantPopup);
 
         mobileMoreMenu_=new QMenu(more);
         auto*coordinates=mobileMoreMenu_->addAction("Coordinates & precision");
@@ -1255,11 +1320,6 @@ class Window final:public QMainWindow {
             static constexpr std::array<uint32_t,7> levels{{128,256,512,1024,2048,4096,8192}};
             auto it=std::upper_bound(levels.begin(),levels.end(),canvas->settings.iterations);
             setIterations(it==levels.end()?levels.front():*it);
-        });
-        connect(mobileQuality_,&QToolButton::clicked,this,[this]{
-            const int next=(static_cast<int>(canvas->settings.reconstruction)+1)%3;
-            canvas->settings.reconstruction=static_cast<Reconstruction>(next);
-            canvas->submit(false,true);refreshMobileChrome();
         });
         connect(reset,&QToolButton::clicked,canvas,[this]{canvas->reset();refreshMobileChrome();});
         connect(coordinates,&QAction::triggered,canvas,&Canvas::coordinates);
@@ -1285,6 +1345,7 @@ class Window final:public QMainWindow {
                 "Explore lets XaoS choose the next interesting boundary automatically.");
         });
         canvas->onAutopilotChanged=[this](bool){refreshMobileChrome();};
+        canvas->onColorChanged=[this]{refreshMobileChrome();};
         canvas->onStatus=[this](const QString&s){
             if(mobileBadge_) mobileBadge_->setToolTip(s);
         };
