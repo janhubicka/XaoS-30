@@ -1042,6 +1042,8 @@ public:
     Settings settings;
     int completedFrames=0;
     int publishedFrames=0;
+    /// Number of render requests queued by the UI; used by startup smoke coverage.
+    uint64_t submittedFrames() const noexcept { return serial_; }
     std::function<void(QString)> onStatus;
     std::function<void(bool)> onAutopilotChanged;
     std::function<void()> onColorChanged;
@@ -1799,6 +1801,12 @@ int main(int argc,char**argv) {
     }
     if(mobile && !smoke) window.showFullScreen(); else window.show();
     if(smoke) {
+        // No setter above submitted work. The first request must therefore come
+        // from Canvas::showEvent; this catches a black startup screen without
+        // making the assertion depend on renderer throughput under sanitizers.
+        QTimer::singleShot(0,&window,[&window,&app] {
+            if(window.canvas->submittedFrames()==0) app.exit(3);
+        });
         struct SmokeState {
             int zoomTicks=0,publishedAtStart=0,finishChecks=0;
         };
