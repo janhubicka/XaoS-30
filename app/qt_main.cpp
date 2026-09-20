@@ -953,8 +953,6 @@ protected:
             p.drawText(12,22,"Hold left/right: zoom   |   Middle drag: pan   |   Wheel/pinch: zoom   |   Two-finger twist: rotate   |   A: autopilot");
         }
     }
-    /// Submits a new render request after the canvas size changes.
-    void resizeEvent(QResizeEvent*e) override { QWidget::resizeEvent(e); submit(false,true); }
     /// Starts zooming or panning in response to a mouse press.
     void mousePressEvent(QMouseEvent*e) override {
         if(mobileUi_ && e->source()!=Qt::MouseEventNotSynthesized) {e->accept();return;}
