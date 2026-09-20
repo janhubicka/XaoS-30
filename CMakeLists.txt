@@ -77,8 +77,11 @@ add_library(xaos_core
 target_include_directories(xaos_core PUBLIC include ${GMP_INCLUDE_DIR})
 target_link_libraries(xaos_core PUBLIC ${GMP_LIBRARY} Threads::Threads)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  # Contracting just one of the scalar/SIMD kernels changes escape counts.
-  target_compile_options(xaos_core PUBLIC -ffp-contract=off)
+  # Strict builds keep scalar/SIMD contraction identical. Fast release builds
+  # deliberately allow contraction/reassociation for maximum throughput.
+  if(NOT XAOS_FAST_MATH OR XAOS_SANITIZE OR XAOS_TSAN)
+    target_compile_options(xaos_core PUBLIC -ffp-contract=off)
+  endif()
   target_compile_options(xaos_core PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
   if(XAOS_NATIVE)
     target_compile_options(xaos_core PRIVATE -march=native)
@@ -107,7 +110,8 @@ if(NOT ANDROID)
   add_executable(xaos-formula-kernel-bench app/formula_kernel_bench.cpp)
   target_link_libraries(xaos-formula-kernel-bench PRIVATE xaos_core)
   xaos_optimize_release_target(xaos-formula-kernel-bench)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND
+     (NOT XAOS_FAST_MATH OR XAOS_SANITIZE OR XAOS_TSAN))
     target_compile_options(xaos-kernel-bench PRIVATE -ffp-contract=off)
     target_compile_options(xaos-formula-kernel-bench PRIVATE -ffp-contract=off)
   endif()
