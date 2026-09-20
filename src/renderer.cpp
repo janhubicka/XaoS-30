@@ -260,7 +260,23 @@ mp_bitcnt_t backendBits(QuadraticBackend backend) noexcept {
 struct alignas(64) LocalStats { uint64_t reused=0,started=0,resumed=0,steps=0; };
 struct LineTask { bool row=false; int index=0; double priority=0; size_t serial=0; };
 
-/// Reports whether a sample has a display colour usable by solid guessing.
+/// Encodes mathematical state into the palette-independent adaptive image.
+/// Zero is the inside/not-escaped code; escaped iteration n is n+1.
+uint32_t previewIterationCode(Count count,uint32_t limit) noexcept {
+    if(count.status==Status::Escaped && count.iterations<=limit)
+        return count.iterations+1;
+    return 0;
+}
+/// Reconstructs the display-level Count represented by an adaptive image sample.
+Count previewCount(uint32_t code,uint32_t limit) noexcept {
+    return code?Count{code-1,Status::Escaped}:Count{limit,Status::Pending};
+}
+struct PreviewSample {
+    uint32_t iteration=0;
+    float re=0,im=0;
+};
+
+/// Reports whether a sample has an iteration value usable by solid guessing.
 bool previewKnown(uint8_t q) noexcept {
     // Classic XaoS treats timeout-filled pixels as ordinary samples on the next
     // low-resolution pass. Their collapsed presentation coordinates make that
