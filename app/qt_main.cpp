@@ -553,8 +553,16 @@ protected:
         const QSize old=event->oldSize();
         QWidget::resizeEvent(event);
         if(old.width()>0 && old.height()>0 && width()>0 && height()>0) {
-            pointer_.setX(pointer_.x()*static_cast<double>(width())/old.width());
+            const double widthRatio=static_cast<double>(width())/old.width();
+            pointer_.setX(pointer_.x()*widthRatio);
             pointer_.setY(pointer_.y()*static_cast<double>(height())/old.height());
+
+            // On phones a portrait/landscape rotation should preserve fractal
+            // scale, not preserve horizontal field of view. Keeping span/width
+            // constant leaves the overlapping old/new viewport on the same
+            // row/column lattice, so exact samples survive the orientation change.
+            if(mobileUi_ && publishedFrames>0)
+                view.span=scale(view.span,widthRatio);
         }
 #ifdef Q_OS_ANDROID
         if(tiltSteeringFlight_) tiltSensor_.calibrate();
