@@ -488,14 +488,14 @@ void fastPrecisionTests() {
 
             Renderer fresh;
             auto baseline=fresh.render(r,one,stop);
-            samePixelCounts(*resumed,*baseline);
+            sameCounts(*resumed,*baseline);
 
             Request gmpRequest=r;
             gmpRequest.settings.fastPrecision=false;
             Renderer gmp;
             auto reference=gmp.render(gmpRequest,one,stop);
             CHECK(reference->stats.backend=="GMP");
-            sameCounts(*resumed,*reference);
+            samePixelCounts(*resumed,*reference);
         }
     }
 
