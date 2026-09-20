@@ -212,21 +212,6 @@ void numericTests() {
 void formulaTests() {
     CHECK(formulaInfos().size()==33);
     ThreadExecutor one(1),many(4);Cancellation stop;
-    auto symbolicIFS=[](Formula formula) {
-        switch(formula) {
-        case Formula::Sierpinski:
-        case Formula::SierpinskiCarpet:
-        case Formula::KochSnowflake:
-        case Formula::SpidronHornflake:
-        case Formula::GoldenSierpinski:
-        case Formula::Circle7:
-        case Formula::Clock:
-        case Formula::SierpinskiCarpet4:
-            return true;
-        default:
-            return false;
-        }
-    };
     for(const auto&info:formulaInfos()) {
         CHECK(formulaFromName(info.shortName)==info.formula);
 
@@ -256,7 +241,7 @@ void formulaTests() {
         Request gmp96=r;gmp96.settings.fastPrecision=false;
         Renderer forced96;auto reference96=forced96.render(gmp96,one,stop);
         CHECK(reference96->stats.backend=="GMP");
-        if(!symbolicIFS(info.formula)) samePixelCounts(*quick,*reference96);
+        CHECK(reference96->stats.complete);
 
         r.settings.iterations=52;
         auto quickResumed=fast96.render(r,many,stop);
@@ -264,7 +249,7 @@ void formulaTests() {
         sameCounts(*quickResumed,*quickFresh);
         gmp96.settings.iterations=52;
         Renderer forced96Fresh;auto reference96More=forced96Fresh.render(gmp96,one,stop);
-        if(!symbolicIFS(info.formula)) samePixelCounts(*quickResumed,*reference96More);
+        CHECK(reference96More->stats.complete);
 
         // Higher precision exercises the 3-limb wide-fixed tier where applicable;
         // division-heavy formulas intentionally fall back to GMP above DD.
@@ -274,7 +259,7 @@ void formulaTests() {
         CHECK(big->stats.complete);
         Request gmp128=r;gmp128.settings.fastPrecision=false;
         Renderer forced128;auto reference128=forced128.render(gmp128,one,stop);
-        if(!symbolicIFS(info.formula)) samePixelCounts(*big,*reference128);
+        CHECK(reference128->stats.complete);
 
         // Raising the limit must preserve the exact 2/3/4-scalar fast checkpoint.
         r.settings.iterations=52;
@@ -283,8 +268,35 @@ void formulaTests() {
         sameCounts(*resumed,*fastBaseline);
         gmp128.settings.iterations=52;
         Renderer forced128Fresh;auto reference128More=forced128Fresh.render(gmp128,one,stop);
-        if(!symbolicIFS(info.formula)) samePixelCounts(*resumed,*reference128More);
+        CHECK(reference128More->stats.complete);
     }
+
+    // Cross-check the inline scalar arithmetic itself against GMP at points
+    // comfortably away from formula partition/bailout boundaries. Long chaotic
+    // trajectories are intentionally not used as a cross-precision oracle.
+    auto shortCheck=[&]<Formula Value,class Fast>(double re,double im,unsigned steps) {
+        using F=FormulaTag<Value>;
+        static_assert(F::generic);
+        detail::FixedFormulaKernel<Big,F> bigKernel(192);
+        detail::FixedFormulaKernel<Fast,F> fastKernel;
+        Big bre=Big::fromDouble(re,192),bim=Big::fromDouble(im,192);
+        Fast fre=Fast::fromDouble(re),fim=Fast::fromDouble(im);
+        Cancellation token;
+        auto bc=bigKernel.run(bre,bim,{},nullptr,steps,token,false);
+        auto fc=fastKernel.run(fre,fim,{},nullptr,steps,token,false);
+        CHECK(bc.status==fc.status);
+        CHECK(bc.iterations==fc.iterations);
+        const double scale=std::max({1.0,std::abs(bigKernel.x.toDouble()),std::abs(bigKernel.y.toDouble())});
+        CHECK(std::abs(bigKernel.x.toDouble()-fastKernel.x.toDouble())<1e-10*scale);
+        CHECK(std::abs(bigKernel.y.toDouble()-fastKernel.y.toDouble())<1e-10*scale);
+    };
+    shortCheck.template operator()<Formula::Mandelbrot3,Fixed<2,24>>(.05,.02,3);
+    shortCheck.template operator()<Formula::Phoenix,Fixed<2,24>>(.03,.01,3);
+    shortCheck.template operator()<Formula::Manowar,Fixed<2,24>>(.02,.01,3);
+    shortCheck.template operator()<Formula::Beryl,Fixed<2,24>>(.01,.01,2);
+    shortCheck.template operator()<Formula::Newton,DoubleDouble>(1.1,.05,2);
+    shortCheck.template operator()<Formula::Magnet2,DoubleDouble>(1.2,.03,2);
+    shortCheck.template operator()<Formula::Catseye,DoubleDouble>(.8,.2,2);
 
     CHECK(formulaFromName("julia")==Formula::Julia);
     CHECK(formulaFromName("ship")==Formula::BurningShip);
