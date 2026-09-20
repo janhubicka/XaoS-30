@@ -1533,13 +1533,27 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         const Big yEnd=add(axisYCenter,scale(yExtent,.5));
         const auto px=linePriorities(f->xs,oldPreviewX,xDirty,step,xBegin,xEnd);
         const auto py=linePriorities(f->ys,oldPreviewY,yDirty,step,yBegin,yEnd);
+        const auto xMotion=classifyAxisMotion(xBegin,xEnd,oldPreviewX);
+        const auto yMotion=classifyAxisMotion(yBegin,yEnd,oldPreviewY);
+        const double edgePriority=std::numeric_limits<double>::infinity();
+        auto priority=[&](bool row,int index) {
+            if(row && yMotion==AxisMotion::ZoomOut &&
+               (index==0 || index==r.height-1))
+                return edgePriority;
+            if(!row && xMotion==AxisMotion::ZoomOut &&
+               (index==0 || index==r.width-1))
+                return edgePriority;
+            return row?py[static_cast<size_t>(index)]:px[static_cast<size_t>(index)];
+        };
         std::vector<LineTask> tasks;
         tasks.reserve(static_cast<size_t>(r.width+r.height));
         size_t serial=0;
         const int maximum=std::max(r.width,r.height);
         for(int i=0;i<maximum;++i) {
-            if(i<r.height && !rowReady[static_cast<size_t>(i)]) tasks.push_back({true,i,py[static_cast<size_t>(i)],serial++});
-            if(i<r.width && !colReady[static_cast<size_t>(i)]) tasks.push_back({false,i,px[static_cast<size_t>(i)],serial++});
+            if(i<r.height && !rowReady[static_cast<size_t>(i)])
+                tasks.push_back({true,i,priority(true,i),serial++});
+            if(i<r.width && !colReady[static_cast<size_t>(i)])
+                tasks.push_back({false,i,priority(false,i),serial++});
         }
         std::stable_sort(tasks.begin(),tasks.end(),[](const LineTask&a,const LineTask&b) {
             if(a.priority!=b.priority) return a.priority>b.priority;
@@ -1552,10 +1566,17 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
         const int minimumCols=std::min(3,r.width);
         for(const auto&t:tasks) {
             // Original processqueue() ignores cfilter.interrupt until there are at
-            // least three non-dirty rows and columns. Without this bootstrap a
-            // deadline can leave no source for fill/reconstruction, producing a
-            // black frame or black zoom-out border.
-            if(workStop.requested() && readyRows>=minimumRows && readyCols>=minimumCols)
+            // least three non-dirty rows and columns. Zoom-out needs one stronger
+            // invariant: newly exposed support must reach the literal screen
+            // boundaries before we honor the deadline. Otherwise interpolation
+            // clamps an interior line across a visible uncomputed border.
+            const bool zoomOutBoundary=
+                (t.row && yMotion==AxisMotion::ZoomOut &&
+                 (t.index==0 || t.index==r.height-1)) ||
+                (!t.row && xMotion==AxisMotion::ZoomOut &&
+                 (t.index==0 || t.index==r.width-1));
+            if(workStop.requested() && readyRows>=minimumRows && readyCols>=minimumCols &&
+               !zoomOutBoundary)
                 break;
             calculate.clear();
             bool visuallyComplete=true;
