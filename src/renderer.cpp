@@ -1978,7 +1978,8 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
                     if(!linearX.empty() && !linearY.empty())
                         ok=bilinearColor(frame,colors,displaySettings,linearX[static_cast<size_t>(x)],
                                         linearY[static_cast<size_t>(y)],color);
-                    if(!ok) ok=gridColor(frame,colors,displaySettings,nx,ny,color);
+                    if(!ok && currentSampleUsable)
+                        ok=gridColor(frame,colors,displaySettings,nx,ny,color);
                     break;
                 case Reconstruction::Bicubic:
                     if(!cubicX.empty() && !cubicY.empty())
@@ -1987,7 +1988,8 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
                     if(!ok && !linearX.empty() && !linearY.empty())
                         ok=bilinearColor(frame,colors,displaySettings,linearX[static_cast<size_t>(x)],
                                         linearY[static_cast<size_t>(y)],color);
-                    if(!ok) ok=gridColor(frame,colors,displaySettings,nx,ny,color);
+                    if(!ok && currentSampleUsable)
+                        ok=gridColor(frame,colors,displaySettings,nx,ny,color);
                     break;
                 }
                 bool usedFallback=false;
