@@ -736,6 +736,8 @@ void coloringTests() {
     CHECK(shifted->stats.steps==0);
     sameCounts(*base,*shifted);
     auto shiftedDisplay=presentFrame(*shifted,pool,stop);
+    auto presentationOnly=presentFrame(*base,pool,stop,nullptr,17);
+    CHECK(presentationOnly->pixels==shiftedDisplay->pixels);
     bool paletteChanged=false;
     for(int y=0;y<r.height && !paletteChanged;++y)
         for(int x=0;x<r.width;++x)
