@@ -36,6 +36,9 @@ const char* backendName(QuadraticBackend backend) noexcept {
     case QuadraticBackend::Fixed128:return "fixed128";
     case QuadraticBackend::Fixed192:return "fixed192";
     case QuadraticBackend::Fixed256:return "fixed256";
+    case QuadraticBackend::WideFixed128:return "wide-fixed128";
+    case QuadraticBackend::WideFixed192:return "wide-fixed192";
+    case QuadraticBackend::WideFixed256:return "wide-fixed256";
     case QuadraticBackend::GMP:return "GMP";
     }
     return "GMP";
@@ -45,6 +48,9 @@ QuadraticBackend backendFromName(std::string_view name) noexcept {
     if(name=="fixed128") return QuadraticBackend::Fixed128;
     if(name=="fixed192") return QuadraticBackend::Fixed192;
     if(name=="fixed256") return QuadraticBackend::Fixed256;
+    if(name=="wide-fixed128") return QuadraticBackend::WideFixed128;
+    if(name=="wide-fixed192") return QuadraticBackend::WideFixed192;
+    if(name=="wide-fixed256") return QuadraticBackend::WideFixed256;
     return QuadraticBackend::GMP;
 }
 /// Estimates memory consumed by one frame and optional saved orbit state.
@@ -54,10 +60,20 @@ size_t estimate(size_t pixels,mp_bitcnt_t bits,bool big,bool state,unsigned stat
     if(state) {
         if(big && backend!=QuadraticBackend::GMP) {
             switch(backend) {
-            case QuadraticBackend::DoubleDouble: each=plusChecked(each,4*sizeof(double));break;
-            case QuadraticBackend::Fixed128: each=plusChecked(each,4*sizeof(uint64_t));break;
-            case QuadraticBackend::Fixed192: each=plusChecked(each,6*sizeof(uint64_t));break;
-            case QuadraticBackend::Fixed256: each=plusChecked(each,8*sizeof(uint64_t));break;
+            case QuadraticBackend::DoubleDouble:
+                each=plusChecked(each,multiplyChecked(2*stateScalars,sizeof(double)));break;
+            case QuadraticBackend::Fixed128:
+                each=plusChecked(each,multiplyChecked(2*stateScalars,sizeof(uint64_t)));break;
+            case QuadraticBackend::Fixed192:
+                each=plusChecked(each,multiplyChecked(3*stateScalars,sizeof(uint64_t)));break;
+            case QuadraticBackend::Fixed256:
+                each=plusChecked(each,multiplyChecked(4*stateScalars,sizeof(uint64_t)));break;
+            case QuadraticBackend::WideFixed128:
+                each=plusChecked(each,multiplyChecked(2*stateScalars,sizeof(uint64_t)));break;
+            case QuadraticBackend::WideFixed192:
+                each=plusChecked(each,multiplyChecked(3*stateScalars,sizeof(uint64_t)));break;
+            case QuadraticBackend::WideFixed256:
+                each=plusChecked(each,multiplyChecked(4*stateScalars,sizeof(uint64_t)));break;
             case QuadraticBackend::GMP:break;
             }
         } else if(big) {
@@ -179,10 +195,15 @@ bool quadraticFormula(Formula formula) noexcept {
     return formula==Formula::Mandelbrot || formula==Formula::Julia ||
            formula==Formula::BurningShip;
 }
-bool fixedRangeSafe(const Request&r) {
-    auto safe=[](const Big&v) {
+bool divisionFormula(Formula formula) noexcept {
+    return formula==Formula::Newton || formula==Formula::Newton4 ||
+           formula==Formula::Magnet || formula==Formula::Magnet2 ||
+           formula==Formula::Catseye;
+}
+bool coordinateRangeSafe(const Request&r,double maximum) {
+    auto safe=[=](const Big&v) {
         const double d=v.toDouble();
-        return std::isfinite(d) && std::abs(d)<=2.9;
+        return std::isfinite(d) && std::abs(d)<=maximum;
     };
     for(double u:{0.0,1.0}) for(double v:{0.0,1.0}) {
         const auto point=r.view.screenToComplex(u,v,r.width,r.height);
@@ -193,14 +214,31 @@ bool fixedRangeSafe(const Request&r) {
     return true;
 }
 QuadraticBackend chooseQuadraticBackend(const Request&r,mp_bitcnt_t requestedBits) {
-    if(!r.settings.fastPrecision || !quadraticFormula(r.settings.formula))
+    if(!r.settings.fastPrecision) return QuadraticBackend::GMP;
+
+    if(quadraticFormula(r.settings.formula)) {
+        if(requestedBits<=100 && preferDoubleDoubleBackend())
+            return QuadraticBackend::DoubleDouble;
+        if(!fixedBackendAvailable || !coordinateRangeSafe(r,2.9))
+            return requestedBits<=100?QuadraticBackend::DoubleDouble:QuadraticBackend::GMP;
+        if(requestedBits<=120) return QuadraticBackend::Fixed128;
+        if(requestedBits<=184) return QuadraticBackend::Fixed192;
+        if(requestedBits<=248) return QuadraticBackend::Fixed256;
         return QuadraticBackend::GMP;
-    if(requestedBits<=100 && preferDoubleDoubleBackend())
-        return QuadraticBackend::DoubleDouble;
-    if(!fixedBackendAvailable || !fixedRangeSafe(r)) return QuadraticBackend::GMP;
-    if(requestedBits<=120) return QuadraticBackend::Fixed128;
-    if(requestedBits<=184) return QuadraticBackend::Fixed192;
-    if(requestedBits<=248) return QuadraticBackend::Fixed256;
+    }
+
+    // Rational formulas still benefit from fully inlined DD division at moderate
+    // precision, but a fixed-point reciprocal would need its own benchmark.
+    if(divisionFormula(r.settings.formula))
+        return requestedBits<=100?QuadraticBackend::DoubleDouble:QuadraticBackend::GMP;
+
+    // Generic polynomial/piecewise formulas use Q24.* so high powers can overshoot
+    // an escape radius before the following continuation test without wrapping.
+    if(!fixedBackendAvailable || !coordinateRangeSafe(r,1024.0))
+        return requestedBits<=100?QuadraticBackend::DoubleDouble:QuadraticBackend::GMP;
+    if(requestedBits<=100) return QuadraticBackend::WideFixed128; // 104 fraction bits
+    if(requestedBits<=164) return QuadraticBackend::WideFixed192; // 168 fraction bits
+    if(requestedBits<=228) return QuadraticBackend::WideFixed256; // 232 fraction bits
     return QuadraticBackend::GMP;
 }
 mp_bitcnt_t backendBits(QuadraticBackend backend) noexcept {
@@ -209,6 +247,9 @@ mp_bitcnt_t backendBits(QuadraticBackend backend) noexcept {
     case QuadraticBackend::Fixed128:return Fixed<2>::precision;
     case QuadraticBackend::Fixed192:return Fixed<3>::precision;
     case QuadraticBackend::Fixed256:return Fixed<4>::precision;
+    case QuadraticBackend::WideFixed128:return Fixed<2,24>::precision;
+    case QuadraticBackend::WideFixed192:return Fixed<3,24>::precision;
+    case QuadraticBackend::WideFixed256:return Fixed<4,24>::precision;
     case QuadraticBackend::GMP:return 0;
     }
     return 0;
