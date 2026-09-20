@@ -961,13 +961,13 @@ std::shared_ptr<const FrameBase> compute(const Request&r,Executor&executor,const
     auto makeGenericFastList=[&]<class F,class Fast,size_t N=0,unsigned I=0>() -> CalculateList {
         static_assert(F::generic);
         auto coordinates=makeFastCoordinates.template operator()<Fast>();
-        auto*state=[&] {
+        auto*state=[&]<class StorageType>(StorageType&storage) {
             if constexpr(!Save) return static_cast<void*>(nullptr);
             else if constexpr(std::is_same_v<Fast,DoubleDouble>)
-                return &f->state.template getDoubleDouble<F>();
+                return &storage.template getDoubleDouble<F>();
             else
-                return &f->state.template getFixed<N,I,F>();
-        }();
+                return &storage.template getFixed<N,I,F>();
+        }(f->state);
 
         return [&,coordinates,state](const std::vector<size_t>&list,
                                      const Cancellation&calculationStop) {
