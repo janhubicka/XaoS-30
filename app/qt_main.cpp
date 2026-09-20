@@ -1260,7 +1260,7 @@ class Window final:public QMainWindow {
             const auto mode=static_cast<OutColoring>(i);
             auto*a=outMenu->addAction(QString::fromLatin1(outColoringName(mode)));
             a->setCheckable(true);a->setChecked(canvas->settings.outColoring==mode);
-            outGroup->addAction(a);
+            a->setData(i);outGroup->addAction(a);
             connect(a,&QAction::triggered,this,[this,mode]{
                 canvas->setOutColoring(mode);refreshMobileChrome();
             });
@@ -1272,7 +1272,7 @@ class Window final:public QMainWindow {
             const auto mode=static_cast<InColoring>(i);
             auto*a=inMenu->addAction(QString::fromLatin1(inColoringName(mode)));
             a->setCheckable(true);a->setChecked(canvas->settings.inColoring==mode);
-            inGroup->addAction(a);
+            a->setData(i);inGroup->addAction(a);
             connect(a,&QAction::triggered,this,[this,mode]{
                 canvas->setInColoring(mode);refreshMobileChrome();
             });
@@ -1286,7 +1286,7 @@ class Window final:public QMainWindow {
                 {"Bicubic",Reconstruction::Bicubic}}}) {
             auto*a=reconstructMenu->addAction(name);
             a->setCheckable(true);a->setChecked(canvas->settings.reconstruction==mode);
-            reconstructGroup->addAction(a);
+            a->setData(static_cast<int>(mode));reconstructGroup->addAction(a);
             connect(a,&QAction::triggered,this,[this,mode]{
                 canvas->settings.reconstruction=mode;canvas->submit(false,true);refreshMobileChrome();
             });
@@ -1300,6 +1300,14 @@ class Window final:public QMainWindow {
         connect(shiftReset,&QAction::triggered,canvas,[this]{canvas->resetPaletteShift();});
         connect(cycleFaster,&QAction::triggered,canvas,[this]{canvas->adjustPaletteSpeed(true);});
         connect(cycleSlower,&QAction::triggered,canvas,[this]{canvas->adjustPaletteSpeed(false);});
+        connect(mobileColorMenu_,&QMenu::aboutToShow,this,[this,outMenu,inMenu,reconstructMenu] {
+            for(auto*a:outMenu->actions())
+                a->setChecked(a->data().toInt()==static_cast<int>(canvas->settings.outColoring));
+            for(auto*a:inMenu->actions())
+                a->setChecked(a->data().toInt()==static_cast<int>(canvas->settings.inColoring));
+            for(auto*a:reconstructMenu->actions())
+                a->setChecked(a->data().toInt()==static_cast<int>(canvas->settings.reconstruction));
+        });
         mobileQuality_->setMenu(mobileColorMenu_);
         mobileQuality_->setPopupMode(QToolButton::InstantPopup);
 
@@ -1401,6 +1409,73 @@ public:
         connect(autopilot,&QAction::toggled,canvas,&Canvas::setAutopilot);
         canvas->onAutopilotChanged=[autopilot](bool enabled){autopilot->setChecked(enabled);};
         connect(coords,&QAction::triggered,canvas,&Canvas::coordinates);connect(reset,&QAction::triggered,canvas,&Canvas::reset);
+
+        auto*colorMenu=menuBar()->addMenu("Color");
+        auto*cycleForward=colorMenu->addAction("Cycle palette forward");
+        cycleForward->setShortcut(QKeySequence(Qt::Key_Y));
+        auto*cycleBackward=colorMenu->addAction("Cycle palette backward");
+        cycleBackward->setShortcut(QKeySequence(Qt::SHIFT|Qt::Key_Y));
+        auto*cycleStop=colorMenu->addAction("Stop palette cycling");
+        colorMenu->addSeparator();
+        auto*shiftForward=colorMenu->addAction("Shift palette +1");
+        shiftForward->setShortcut(QKeySequence(Qt::Key_Plus));
+        auto*shiftBackward=colorMenu->addAction("Shift palette -1");
+        shiftBackward->setShortcut(QKeySequence(Qt::Key_Minus));
+        auto*shiftReset=colorMenu->addAction("Reset palette shift");
+        auto*cycleFaster=colorMenu->addAction("Cycle faster");
+        auto*cycleSlower=colorMenu->addAction("Cycle slower");
+        colorMenu->addSeparator();
+
+        auto*outMenu=colorMenu->addMenu("Outside coloring");
+        auto*outGroup=new QActionGroup(outMenu);outGroup->setExclusive(true);
+        for(int i=0;i<10;++i) {
+            const auto mode=static_cast<OutColoring>(i);
+            auto*a=outMenu->addAction(QString::fromLatin1(outColoringName(mode)));
+            a->setCheckable(true);a->setData(i);a->setChecked(canvas->settings.outColoring==mode);
+            outGroup->addAction(a);
+            connect(a,&QAction::triggered,canvas,[this,mode]{canvas->setOutColoring(mode);});
+        }
+
+        auto*inMenu=colorMenu->addMenu("Inside coloring");
+        auto*inGroup=new QActionGroup(inMenu);inGroup->setExclusive(true);
+        for(int i=0;i<10;++i) {
+            const auto mode=static_cast<InColoring>(i);
+            auto*a=inMenu->addAction(QString::fromLatin1(inColoringName(mode)));
+            a->setCheckable(true);a->setData(i);a->setChecked(canvas->settings.inColoring==mode);
+            inGroup->addAction(a);
+            connect(a,&QAction::triggered,canvas,[this,mode]{canvas->setInColoring(mode);});
+        }
+
+        connect(cycleForward,&QAction::triggered,canvas,[this]{
+            canvas->setPaletteCycling(canvas->paletteCyclingDirection()==1?0:1);
+        });
+        connect(cycleBackward,&QAction::triggered,canvas,[this]{
+            canvas->setPaletteCycling(canvas->paletteCyclingDirection()==-1?0:-1);
+        });
+        connect(cycleStop,&QAction::triggered,canvas,[this]{canvas->setPaletteCycling(0);});
+        connect(shiftForward,&QAction::triggered,canvas,[this]{canvas->shiftPalette(1);});
+        connect(shiftBackward,&QAction::triggered,canvas,[this]{canvas->shiftPalette(-1);});
+        connect(shiftReset,&QAction::triggered,canvas,[this]{canvas->resetPaletteShift();});
+        connect(cycleFaster,&QAction::triggered,canvas,[this]{canvas->adjustPaletteSpeed(true);});
+        connect(cycleSlower,&QAction::triggered,canvas,[this]{canvas->adjustPaletteSpeed(false);});
+
+        auto*nextOut=new QAction(this);nextOut->setShortcut(QKeySequence(Qt::Key_C));addAction(nextOut);
+        connect(nextOut,&QAction::triggered,canvas,[this]{
+            const int next=(static_cast<int>(canvas->settings.outColoring)+1)%10;
+            canvas->setOutColoring(static_cast<OutColoring>(next));
+        });
+        auto*nextIn=new QAction(this);nextIn->setShortcut(QKeySequence(Qt::Key_F));addAction(nextIn);
+        connect(nextIn,&QAction::triggered,canvas,[this]{
+            const int next=(static_cast<int>(canvas->settings.inColoring)+1)%10;
+            canvas->setInColoring(static_cast<InColoring>(next));
+        });
+        connect(colorMenu,&QMenu::aboutToShow,this,[this,outMenu,inMenu] {
+            for(auto*a:outMenu->actions())
+                a->setChecked(a->data().toInt()==static_cast<int>(canvas->settings.outColoring));
+            for(auto*a:inMenu->actions())
+                a->setChecked(a->data().toInt()==static_cast<int>(canvas->settings.inColoring));
+        });
+
         auto*file=menuBar()->addMenu("File");auto*save=file->addAction("Save frame as PNG");
         connect(save,&QAction::triggered,canvas,&Canvas::saveImage);
         auto*quit=file->addAction("Quit");quit->setShortcut(QKeySequence::Quit);connect(quit,&QAction::triggered,this,&QWidget::close);
