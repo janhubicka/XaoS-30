@@ -163,14 +163,15 @@ class Canvas final:public QWidget {
         double x=reading->xRotation();
         double y=reading->yRotation();
         if(!tiltAutomaticAxes_) {
-            int angle=0;
-            if(auto*s=screen())
-                angle=s->angleBetween(s->nativeOrientation(),s->orientation());
-            switch((angle%360+360)%360) {
-            case 90:  {const double t=x;x=y;y=-t;break;}
-            case 180: x=-x;y=-y;break;
-            case 270: {const double t=x;x=-y;y=t;break;}
-            default: break;
+            if(auto*s=screen()) {
+                // Use the same native->current screen transform as Qt's window
+                // system instead of duplicating 90-degree sign conventions.
+                const QTransform transform=s->transformBetween(
+                    s->nativeOrientation(),s->orientation(),
+                    QRect(QPoint(0,0),s->size()));
+                const QPointF origin=transform.map(QPointF(0,0));
+                const QPointF mapped=transform.map(QPointF(x,y))-origin;
+                x=mapped.x();y=mapped.y();
             }
         }
         // Rotation around screen Y is horizontal roll; around screen X is pitch.
@@ -258,7 +259,6 @@ class Canvas final:public QWidget {
 #ifdef Q_OS_ANDROID
         tiltSteeringFlight_=false;
         tiltSteeringFiltered_=QPointF{};
-        tiltSteeringSuspended_=false;
 #endif
         if(was && refine) submit(false);
         return was;
@@ -710,12 +710,12 @@ protected:
                 viewPixelHeight_=pixelHeight;
             }
         }
-#ifdef Q_OS_ANDROID
-        if(mobileUi_ && tiltSteeringAvailable_) scheduleTiltCalibration(220);
-#endif
         if(initialSubmitted_) {
             if(mobileUi_) {
                 stopTouchMomentum(false);
+#ifdef Q_OS_ANDROID
+                if(tiltSteeringAvailable_) scheduleTiltCalibration(220);
+#endif
                 {
                     std::lock_guard lock(mutex_);
                     pending_.reset(); // discard superseded transient geometry
