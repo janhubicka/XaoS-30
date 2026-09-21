@@ -201,14 +201,16 @@ class Canvas final:public QWidget {
     /// mathematical work is submitted only ~12 Hz, so steering stays fluid
     /// without asking the renderer to chase every sensor sample.
     void tiltNavigationTick() {
+        const bool interactionBlocked=
+            autopilotEnabled_ || touchMomentum_.isActive() ||
+            touchMode_!=TouchMode::None || dragging_ || nativeGestureActive_ ||
+            mobileResizeTimer_.isActive();
         if(!mobileUi_ || !tiltSteeringEnabled_ || !tiltSteeringAvailable_ ||
-           tiltSteeringSuspended_ || autopilotEnabled_ || touchMomentum_.isActive() ||
-           touchMode_!=TouchMode::None || dragging_ || nativeGestureActive_ ||
-           mobileResizeTimer_.isActive()) {
-            if(tiltNavigationMoving_ && !mobileResizeTimer_.isActive()) {
-                tiltNavigationMoving_=false;
-                submit(false);
-            }
+           tiltSteeringSuspended_ || interactionBlocked) {
+            // A touch/animation that takes over will submit its own newest view;
+            // do not inject a long noninteractive tilt refinement underneath it.
+            tiltNavigationMoving_=false;
+            tiltSteeringFiltered_=QPointF{};
             tiltNavigationClock_.restart();
             return;
         }
@@ -2015,8 +2017,9 @@ int main(int argc,char**argv) {
         struct SmokeState {
             int zoomTicks=0,publishedAtStart=0,finishChecks=0;
             int paletteChecks=0,palettePublishedAtStart=0;
-            uint64_t paletteSubmittedAtStart=0;
+            uint64_t paletteSubmittedAtStart=0,resizeSubmittedAtStart=0;
             bool paletteProbeStarted=false;
+            bool resizeProbeStarted=false,resizeProbeDone=false;
         };
         auto state=std::make_shared<SmokeState>();
         auto*continuous=new QTimer(&window);
@@ -2086,13 +2089,32 @@ int main(int argc,char**argv) {
         auto*paletteProbe=new QTimer(&window);
         paletteProbe->setInterval(50);
         QObject::connect(paletteProbe,&QTimer::timeout,&window,
-            [&window,&app,state,paletteProbe,beginMotion] {
+            [&window,&app,state,paletteProbe,beginMotion,mobile] {
                 if(!state->paletteProbeStarted) {
                     // Wait for a completed stationary frame so palette cycling
                     // cannot accidentally trigger compute through the no-frame path.
                     if(!window.canvas->completedFrames) {
                         if(++state->paletteChecks>=120) {
                             paletteProbe->stop();app.exit(5);
+                        }
+                        return;
+                    }
+                    if(mobile && !state->resizeProbeDone) {
+                        if(!state->resizeProbeStarted) {
+                            state->resizeProbeStarted=true;
+                            state->resizeSubmittedAtStart=window.canvas->submittedFrames();
+                            // Android orientation animations often deliver several
+                            // intermediate sizes. Mobile resize handling must turn
+                            // this burst into one settled render request.
+                            window.resize(402,748);
+                            window.resize(382,768);
+                            window.resize(390,760);
+                            QTimer::singleShot(360,&window,[&window,&app,state] {
+                                const uint64_t submitted=
+                                    window.canvas->submittedFrames()-state->resizeSubmittedAtStart;
+                                if(submitted!=1) {app.exit(7);return;}
+                                state->resizeProbeDone=true;
+                            });
                         }
                         return;
                     }
