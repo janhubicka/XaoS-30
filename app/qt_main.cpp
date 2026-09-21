@@ -1782,11 +1782,11 @@ class Window final:public QMainWindow {
 
         mobileMoreMenu_=new QMenu(more);
         auto*coordinates=mobileMoreMenu_->addAction("Coordinates & precision");
-        auto*tilt=mobileMoreMenu_->addAction("Tilt steering");
+        auto*tilt=mobileMoreMenu_->addAction("Tilt navigation");
         tilt->setCheckable(true);
         tilt->setChecked(canvas->tiltSteeringEnabled());
         tilt->setEnabled(canvas->tiltSteeringAvailable());
-        auto*invertTilt=mobileMoreMenu_->addAction("Invert tilt steering");
+        auto*invertTilt=mobileMoreMenu_->addAction("Invert tilt navigation");
         invertTilt->setCheckable(true);
         invertTilt->setChecked(canvas->tiltSteeringInverted());
         invertTilt->setEnabled(canvas->tiltSteeringAvailable());
@@ -1825,10 +1825,11 @@ class Window final:public QMainWindow {
             QMessageBox::information(this,"Explore XaoS",
                 "Motion works like Frax:\n\n"
                 "Swipe with one finger to pan; release with speed to coast.\n"
-                "Move the midpoint of two fingers to steer while pinching; twist to rotate.\n"
+                "Move the midpoint of two fingers to steer; pinch deliberately to zoom.\n"
+                "Rotation unlocks only for a deliberate twist with the midpoint nearly still.\n"
                 "Release a moving gesture to keep flying; tap once to stop and refine.\n"
-                "While a pan is flying, tilt the phone a few degrees to steer, stop or reverse it.\n"
-                "Tilt is relative to the phone angle at release and does not change zoom speed.\n"
+                "Tilt the phone at any time to pan. The current holding angle is calibrated as neutral.\n"
+                "Tilt does not change zoom or rotation and pauses while your fingers are on screen.\n"
                 "Double-tap one finger: exact 3× zoom in and center that point.\n"
                 "Tap with two fingers: exact 3× zoom out and center the midpoint.\n\n"
                 "Explore lets XaoS choose the next interesting boundary automatically.");
