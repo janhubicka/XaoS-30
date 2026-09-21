@@ -290,14 +290,14 @@ class Canvas final:public QWidget {
         if(!hasTouchMomentum()) {stopTouchMomentum(false);idle_.start();return;}
         touchMomentumAnchor_=anchor;
 #ifdef Q_OS_ANDROID
-        // Frax-style tilt is relative to the phone angle at the instant a
-        // panning flight begins. Zoom velocity remains independent of tilt.
+        // A flying pan may still be steered by tilt, but keep the same neutral
+        // angle used by direct tilt navigation. Recalibrating on every release
+        // made "level" move after each gesture and made steering unpredictable.
         tiltSteeringFlight_=tiltSteeringEnabled_ && tiltSteeringAvailable_ &&
             std::hypot(touchPanVelocity_.x(),touchPanVelocity_.y())>12.0;
         if(tiltSteeringFlight_) {
             tiltSteeringFiltered_=QPointF{};
             tiltSteeringSuspended_=false;
-            tiltSensor_.calibrate();
         }
 #endif
         touchMomentumClock_.restart();
