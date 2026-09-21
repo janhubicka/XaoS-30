@@ -128,7 +128,7 @@ class Canvas final:public QWidget {
     bool mobileUi_=false;
     bool initialSubmitted_=false;
     int submittedPixelWidth_=0,submittedPixelHeight_=0;
-    int viewPixelWidth_=0,viewPixelHeight_=0;
+    int pendingResizePixelWidth_=0,pendingResizePixelHeight_=0;
     bool nativeGestureActive_=false,gestureChanged_=false;
     enum class TouchMode { None, Pan, Pinch };
     TouchMode touchMode_=TouchMode::None;
@@ -153,6 +153,23 @@ class Canvas final:public QWidget {
 #endif
     QElapsedTimer lastTapClock_;
     size_t threads_=std::max<size_t>(1,defaultWorkerCount()-presentationWorkerCount());
+    /// Applies one coalesced mobile resize directly from the geometry of the
+    /// last submitted frame to the final settled physical size.
+    void settleMobileResize(bool submitRender=true) {
+        mobileResizeTimer_.stop();
+        if(!mobileUi_ || pendingResizePixelWidth_<1 || pendingResizePixelHeight_<1)
+            return;
+        const int targetWidth=pendingResizePixelWidth_;
+        const int targetHeight=pendingResizePixelHeight_;
+        pendingResizePixelWidth_=pendingResizePixelHeight_=0;
+        if(submittedPixelWidth_>0 && submittedPixelHeight_>0 &&
+           (submittedPixelWidth_!=targetWidth || submittedPixelHeight_!=targetHeight)) {
+            view.resizePreservingPixelGrid(
+                submittedPixelWidth_,submittedPixelHeight_,targetWidth,targetHeight);
+        }
+        if(submitRender) submit(false);
+    }
+
 #ifdef Q_OS_ANDROID
     /// Returns calibrated tilt in screen steering axes: x = horizontal roll,
     /// y = vertical pitch. Backends without QSensor::AxesOrientation remain
@@ -696,18 +713,13 @@ protected:
 
             if(mobileUi_) {
                 const double dpr=devicePixelRatioF();
-                const int pixelWidth=std::max(1,static_cast<int>(std::ceil(width()*dpr)));
-                const int pixelHeight=std::max(1,static_cast<int>(std::ceil(height()*dpr)));
-                if(viewPixelWidth_>0 && viewPixelHeight_>0 &&
-                   (viewPixelWidth_!=pixelWidth || viewPixelHeight_!=pixelHeight)) {
-                    // Preserve the exact sample lattice through every geometry
-                    // update, but do not render transient orientation-animation
-                    // sizes. The final resize is submitted after a short debounce.
-                    view.resizePreservingPixelGrid(
-                        viewPixelWidth_,viewPixelHeight_,pixelWidth,pixelHeight);
-                }
-                viewPixelWidth_=pixelWidth;
-                viewPixelHeight_=pixelHeight;
+                pendingResizePixelWidth_=
+                    std::max(1,static_cast<int>(std::ceil(width()*dpr)));
+                pendingResizePixelHeight_=
+                    std::max(1,static_cast<int>(std::ceil(height()*dpr)));
+                // Do not mutate View here. Android may emit many intermediate
+                // sizes; applying half-pixel parity corrections incrementally is
+                // path-dependent and can walk the center across the fractal.
             }
         }
         if(initialSubmitted_) {
@@ -753,6 +765,7 @@ protected:
             const int activeId1=orderedActive.size()<2?-1:orderedActive[1].first;
 
             if(event->type()==QEvent::TouchBegin) {
+                if(mobileResizeTimer_.isActive()) settleMobileResize(true);
                 const bool stoppedAutopilot=autopilotEnabled_;
                 if(stoppedAutopilot) setAutopilot(false);
                 touchStoppedMotion_=stopTouchMomentum(false) || stoppedAutopilot;
@@ -1290,7 +1303,7 @@ public:
             queuePalettePresentation();
         });
         connect(&mobileResizeTimer_,&QTimer::timeout,this,[this] {
-            if(mobileUi_ && initialSubmitted_) submit(false);
+            if(mobileUi_ && initialSubmitted_) settleMobileResize(true);
         });
 #ifdef Q_OS_ANDROID
         tiltNavigationTimer_.setInterval(16);
@@ -1330,15 +1343,6 @@ public:
         const double dpr=devicePixelRatioF();
         const int pixelWidth=std::max(1,static_cast<int>(std::ceil(width()*dpr)));
         const int pixelHeight=std::max(1,static_cast<int>(std::ceil(height()*dpr)));
-        if(mobileUi_ && viewPixelWidth_>0 && viewPixelHeight_>0 &&
-           (viewPixelWidth_!=pixelWidth || viewPixelHeight_!=pixelHeight)) {
-            view.resizePreservingPixelGrid(
-                viewPixelWidth_,viewPixelHeight_,pixelWidth,pixelHeight);
-        }
-        if(mobileUi_) {
-            viewPixelWidth_=pixelWidth;
-            viewPixelHeight_=pixelHeight;
-        }
         Request request{view,pixelWidth,pixelHeight,settings};
         submittedPixelWidth_=pixelWidth;
         submittedPixelHeight_=pixelHeight;
