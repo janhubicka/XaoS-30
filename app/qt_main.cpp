@@ -33,6 +33,7 @@
 #include <QPinchGesture>
 #include <QPolygonF>
 #include <QResizeEvent>
+#include <QScreen>
 #include <QShowEvent>
 #include <QSpinBox>
 #include <QStatusBar>
@@ -110,7 +111,7 @@ class Canvas final:public QWidget {
     uint64_t latestFrameSerial_=0,latestFrameEpoch_=0;
     QImage image_,fallback_;
     View imageView_,fallbackView_;
-    QTimer motion_,idle_,autopilotTimer_,touchMomentum_,paletteTimer_;
+    QTimer motion_,idle_,autopilotTimer_,touchMomentum_,paletteTimer_,mobileResizeTimer_;
     QElapsedTimer motionClock_,autopilotClock_,touchSampleClock_,touchMomentumClock_,touchGestureClock_,paletteClock_;
     Autopilot autopilotEngine_;
     std::shared_ptr<const FrameBase> latestFrame_;
@@ -127,6 +128,7 @@ class Canvas final:public QWidget {
     bool mobileUi_=false;
     bool initialSubmitted_=false;
     int submittedPixelWidth_=0,submittedPixelHeight_=0;
+    int pendingResizePixelWidth_=0,pendingResizePixelHeight_=0;
     bool nativeGestureActive_=false,gestureChanged_=false;
     enum class TouchMode { None, Pan, Pinch };
     TouchMode touchMode_=TouchMode::None;
@@ -140,14 +142,131 @@ class Canvas final:public QWidget {
     bool touchRotationActive_=false,touchZoomActive_=false;
 #ifdef Q_OS_ANDROID
     QTiltSensor tiltSensor_;
+    QTimer tiltNavigationTimer_;
+    QElapsedTimer tiltNavigationClock_,tiltSubmitClock_;
     QPointF tiltSteeringFiltered_;
     bool tiltSteeringAvailable_=false,tiltSteeringEnabled_=true;
     bool tiltSteeringFlight_=false,tiltSteeringInverted_=false;
-    bool tiltSteeringSuspended_=false;
+    bool tiltSteeringSuspended_=false,tiltAutomaticAxes_=false;
+    bool tiltNavigationMoving_=false;
     uint64_t tiltCalibrationSerial_=0;
 #endif
     QElapsedTimer lastTapClock_;
     size_t threads_=std::max<size_t>(1,defaultWorkerCount()-presentationWorkerCount());
+    /// Applies one coalesced mobile resize directly from the geometry of the
+    /// last submitted frame to the final settled physical size.
+    void settleMobileResize(bool submitRender=true) {
+        mobileResizeTimer_.stop();
+        if(!mobileUi_ || pendingResizePixelWidth_<1 || pendingResizePixelHeight_<1)
+            return;
+        const int targetWidth=pendingResizePixelWidth_;
+        const int targetHeight=pendingResizePixelHeight_;
+        pendingResizePixelWidth_=pendingResizePixelHeight_=0;
+        if(submittedPixelWidth_>0 && submittedPixelHeight_>0 &&
+           (submittedPixelWidth_!=targetWidth || submittedPixelHeight_!=targetHeight)) {
+            view.resizePreservingPixelGrid(
+                submittedPixelWidth_,submittedPixelHeight_,targetWidth,targetHeight);
+        }
+        if(submitRender) submit(false);
+    }
+
+#ifdef Q_OS_ANDROID
+    /// Returns calibrated tilt in screen steering axes: x = horizontal roll,
+    /// y = vertical pitch. Backends without QSensor::AxesOrientation remain
+    /// usable by applying the current QScreen orientation in application code.
+    QPointF screenTilt() const {
+        const auto*reading=tiltSensor_.reading();
+        if(!reading) return {};
+        double x=reading->xRotation();
+        double y=reading->yRotation();
+        if(!tiltAutomaticAxes_) {
+            if(auto*s=screen()) {
+                // Use the same native->current screen transform as Qt's window
+                // system instead of duplicating 90-degree sign conventions.
+                const QTransform transform=s->transformBetween(
+                    s->nativeOrientation(),s->orientation(),
+                    QRect(QPoint(0,0),s->size()));
+                const QPointF origin=transform.map(QPointF(0,0));
+                const QPointF mapped=transform.map(QPointF(x,y))-origin;
+                x=mapped.x();y=mapped.y();
+            }
+        }
+        // Rotation around screen Y is horizontal roll; around screen X is pitch.
+        QPointF steering(y,x);
+        if(tiltSteeringInverted_) steering=-steering;
+        return steering;
+    }
+
+    void scheduleTiltCalibration(int milliseconds=180) {
+        if(!tiltSteeringAvailable_) return;
+        tiltSteeringFiltered_=QPointF{};
+        tiltNavigationMoving_=false;
+        tiltSteeringSuspended_=true;
+        const uint64_t serial=++tiltCalibrationSerial_;
+        QTimer::singleShot(milliseconds,this,[this,serial] {
+            if(serial!=tiltCalibrationSerial_ || !tiltSteeringAvailable_) return;
+            tiltSensor_.calibrate();
+            tiltSteeringFiltered_=QPointF{};
+            tiltNavigationClock_.restart();
+            tiltSubmitClock_.restart();
+            tiltSteeringSuspended_=false;
+            if(tiltSteeringEnabled_ && mobileUi_ && !tiltNavigationTimer_.isActive())
+                tiltNavigationTimer_.start();
+        });
+    }
+
+    /// Direct tilt navigation. The view is transformed at display cadence while
+    /// mathematical work is submitted only ~12 Hz, so steering stays fluid
+    /// without asking the renderer to chase every sensor sample.
+    void tiltNavigationTick() {
+        const bool interactionBlocked=
+            autopilotEnabled_ || touchMomentum_.isActive() ||
+            touchMode_!=TouchMode::None || dragging_ || nativeGestureActive_ ||
+            mobileResizeTimer_.isActive();
+        if(!mobileUi_ || !tiltSteeringEnabled_ || !tiltSteeringAvailable_ ||
+           tiltSteeringSuspended_ || interactionBlocked) {
+            // A touch/animation that takes over will submit its own newest view;
+            // do not inject a long noninteractive tilt refinement underneath it.
+            tiltNavigationMoving_=false;
+            tiltSteeringFiltered_=QPointF{};
+            tiltNavigationClock_.restart();
+            return;
+        }
+        const double seconds=std::clamp(tiltNavigationClock_.restart()/1000.0,.001,.05);
+        auto dead=[](double degrees) {
+            constexpr double zone=1.25;
+            const double magnitude=std::abs(degrees);
+            return magnitude<=zone?0.0:std::copysign(std::min(magnitude-zone,10.0),degrees);
+        };
+        QPointF target(screenTilt());
+        target=QPointF(dead(target.x()),dead(target.y()));
+        constexpr double filter=.22;
+        tiltSteeringFiltered_=tiltSteeringFiltered_*(1.0-filter)+target*filter;
+
+        constexpr double pixelsPerSecondPerDegree=28.0;
+        const QPointF delta=tiltSteeringFiltered_*(pixelsPerSecondPerDegree*seconds);
+        if(std::hypot(delta.x(),delta.y())>.02) {
+            try {
+                view.pan(delta.x(),delta.y(),std::max(1,width()));
+                pointer_=QPointF(width()*.5,height()*.5);
+                tiltNavigationMoving_=true;
+                update();
+                if(!tiltSubmitClock_.isValid() || tiltSubmitClock_.elapsed()>=80) {
+                    tiltSubmitClock_.restart();
+                    submit(true);
+                }
+            } catch(const std::exception&e) {
+                tiltNavigationMoving_=false;
+                if(onStatus) onStatus(e.what());
+            }
+        } else if(tiltNavigationMoving_) {
+            tiltNavigationMoving_=false;
+            idle_.stop();
+            submit(false);
+        }
+    }
+#endif
+
     /// Stops Frax-style kinetic touch motion. Returns whether anything was moving.
     bool stopTouchMomentum(bool refine=true) {
         const bool was=touchMomentum_.isActive();
@@ -158,7 +277,6 @@ class Canvas final:public QWidget {
 #ifdef Q_OS_ANDROID
         tiltSteeringFlight_=false;
         tiltSteeringFiltered_=QPointF{};
-        tiltSteeringSuspended_=false;
 #endif
         if(was && refine) submit(false);
         return was;
@@ -187,17 +305,23 @@ class Canvas final:public QWidget {
 
     /// Starts kinetic continuation of the combined pan/zoom/rotation gesture.
     void startTouchMomentum(const QPointF&anchor) {
+#ifdef Q_OS_ANDROID
+        // Continuous spin is uniquely expensive: every angle step changes the
+        // separable sampling basis and invalidates row/column state. Rotation
+        // remains direct under the fingers but does not coast after release.
+        touchRotationVelocity_=0;
+#endif
         if(!hasTouchMomentum()) {stopTouchMomentum(false);idle_.start();return;}
         touchMomentumAnchor_=anchor;
 #ifdef Q_OS_ANDROID
-        // Frax-style tilt is relative to the phone angle at the instant a
-        // panning flight begins. Zoom velocity remains independent of tilt.
+        // A flying pan may still be steered by tilt, but keep the same neutral
+        // angle used by direct tilt navigation. Recalibrating on every release
+        // made "level" move after each gesture and made steering unpredictable.
         tiltSteeringFlight_=tiltSteeringEnabled_ && tiltSteeringAvailable_ &&
             std::hypot(touchPanVelocity_.x(),touchPanVelocity_.y())>12.0;
         if(tiltSteeringFlight_) {
             tiltSteeringFiltered_=QPointF{};
             tiltSteeringSuspended_=false;
-            tiltSensor_.calibrate();
         }
 #endif
         touchMomentumClock_.restart();
@@ -210,24 +334,14 @@ class Canvas final:public QWidget {
         if(!tiltSteeringFlight_ || !tiltSteeringEnabled_ || !tiltSteeringAvailable_ ||
            tiltSteeringSuspended_)
             return;
-        const auto*reading=tiltSensor_.reading();
-        if(!reading) return;
         auto dead=[](double degrees) {
             constexpr double zone=1.5;
             const double magnitude=std::abs(degrees);
             const double active=magnitude<=zone?0.0:magnitude-zone;
             return std::copysign(std::min(active,12.0),degrees);
         };
-        const double pitch=dead(reading->xRotation());
-        const double roll=dead(reading->yRotation());
-
-        // AutomaticOrientation already expresses the reading in current screen
-        // axes. Rotation about screen X is pitch (vertical steering); rotation
-        // about screen Y is roll (horizontal steering). The old mapping used X
-        // horizontally and Y vertically, which became especially confusing in
-        // landscape orientation.
-        QPointF target(roll,pitch);
-        if(tiltSteeringInverted_) target=-target;
+        QPointF target=screenTilt();
+        target=QPointF(dead(target.x()),dead(target.y()));
 
         // Smooth sensor jitter and make tilt an assist to a thrown pan, not a
         // high-gain joystick. Five degrees now changes velocity by roughly
@@ -604,37 +718,33 @@ protected:
             pointer_.setX(pointer_.x()*widthRatio);
             pointer_.setY(pointer_.y()*static_cast<double>(height())/old.height());
 
-            if(mobileUi_ && submittedPixelWidth_>0 && submittedPixelHeight_>0) {
+            if(mobileUi_) {
                 const double dpr=devicePixelRatioF();
-                const int pixelWidth=std::max(1,static_cast<int>(std::ceil(width()*dpr)));
-                const int pixelHeight=std::max(1,static_cast<int>(std::ceil(height()*dpr)));
-                // Preserve both physical pixel scale and the half-pixel lattice
-                // phase. Without the parity correction an odd<->even orientation
-                // change can make every old row/column miss the new grid.
-                view.resizePreservingPixelGrid(
-                    submittedPixelWidth_,submittedPixelHeight_,pixelWidth,pixelHeight);
+                pendingResizePixelWidth_=
+                    std::max(1,static_cast<int>(std::ceil(width()*dpr)));
+                pendingResizePixelHeight_=
+                    std::max(1,static_cast<int>(std::ceil(height()*dpr)));
+                // Do not mutate View here. Android may emit many intermediate
+                // sizes; applying half-pixel parity corrections incrementally is
+                // path-dependent and can walk the center across the fractal.
             }
         }
+        if(initialSubmitted_) {
+            if(mobileUi_) {
+                stopTouchMomentum(false);
 #ifdef Q_OS_ANDROID
-        if(tiltSteeringFlight_) {
-            // Automatic sensor-axis orientation may update just after the Qt
-            // resize. Suspend steering briefly so the transition cannot inject a
-            // large sideways kick, then calibrate in the settled screen axes.
-            tiltSteeringFiltered_=QPointF{};
-            tiltSteeringSuspended_=true;
-            const uint64_t serial=++tiltCalibrationSerial_;
-            QTimer::singleShot(120,this,[this,serial] {
-                if(serial!=tiltCalibrationSerial_) return;
-                if(tiltSteeringFlight_) tiltSensor_.calibrate();
-                tiltSteeringFiltered_=QPointF{};
-                tiltSteeringSuspended_=false;
-            });
-        }
+                if(tiltSteeringAvailable_) scheduleTiltCalibration(220);
 #endif
-        // Before showEvent there is intentionally no work. Afterwards even
-        // a resize that arrives before frame 1 is published must replace the
-        // pending startup geometry (not wait for another user gesture).
-        if(initialSubmitted_) submit(true);
+                {
+                    std::lock_guard lock(mutex_);
+                    pending_.reset(); // discard superseded transient geometry
+                }
+                mobileResizeTimer_.start();
+                update();
+            } else {
+                submit(true);
+            }
+        }
     }
 
     /// Handles direct mobile touch plus native trackpad and generic pinch gestures.
@@ -662,6 +772,7 @@ protected:
             const int activeId1=orderedActive.size()<2?-1:orderedActive[1].first;
 
             if(event->type()==QEvent::TouchBegin) {
+                if(mobileResizeTimer_.isActive()) settleMobileResize(true);
                 const bool stoppedAutopilot=autopilotEnabled_;
                 if(stoppedAutopilot) setAutopilot(false);
                 touchStoppedMotion_=stopTouchMomentum(false) || stoppedAutopilot;
@@ -840,13 +951,16 @@ protected:
                         // XaoS's reusable row/column coordinate system. Keep rotation
                         // locked until the user has made a deliberate twist.
                         const double minSeparation=std::clamp(width()*.09,32.0,56.0);
-                        constexpr double unlockRotation=8.0*std::numbers::pi/180.0;
+                        constexpr double unlockRotation=12.0*std::numbers::pi/180.0;
                         constexpr double maxSampleRotation=35.0*std::numbers::pi/180.0;
                         const bool stableAngle=distance>=minSeparation &&
                             touchLastDistance_>=minSeparation &&
                             std::abs(rawRotation)<=maxSampleRotation;
+                        const bool rotationIntent=
+                            std::hypot(delta.x(),delta.y())<4.0 &&
+                            std::abs(zoomLog)<.006 && !touchZoomActive_;
                         if(!touchRotationActive_) {
-                            if(stableAngle) {
+                            if(stableAngle && rotationIntent) {
                                 touchRotationCandidate_+=rawRotation;
                                 if(std::abs(touchRotationCandidate_)>=unlockRotation) {
                                     // Unlock without applying the dead-zone angle. The
@@ -1131,6 +1245,7 @@ public:
         grabGesture(Qt::PinchGesture);
         motion_.setInterval(16);idle_.setSingleShot(true);idle_.setInterval(180);
         touchMomentum_.setInterval(16);
+        mobileResizeTimer_.setSingleShot(true);mobileResizeTimer_.setInterval(160);
         paletteTimer_.setInterval(40); // classic XaoS color cycling cadence
         autopilotTimer_.setInterval(40); // original XaoS autopilot timer: 25 Hz
         connect(&touchMomentum_,&QTimer::timeout,this,[this] {
@@ -1194,6 +1309,13 @@ public:
             presentationPaletteShift_.store(shift,std::memory_order_relaxed);
             queuePalettePresentation();
         });
+        connect(&mobileResizeTimer_,&QTimer::timeout,this,[this] {
+            if(mobileUi_ && initialSubmitted_) settleMobileResize(true);
+        });
+#ifdef Q_OS_ANDROID
+        tiltNavigationTimer_.setInterval(16);
+        connect(&tiltNavigationTimer_,&QTimer::timeout,this,[this]{tiltNavigationTick();});
+#endif
         connect(&autopilotTimer_,&QTimer::timeout,this,[this]{autopilotTick();});
         presenter_=std::thread([this]{presentationLoop();});
         coordinator_=std::thread([this]{coordinator();});
@@ -1201,6 +1323,10 @@ public:
     /// Releases resources owned by the Canvas instance.
     ~Canvas() override {
         motion_.stop();idle_.stop();autopilotTimer_.stop();touchMomentum_.stop();paletteTimer_.stop();
+        mobileResizeTimer_.stop();
+#ifdef Q_OS_ANDROID
+        tiltNavigationTimer_.stop();
+#endif
         shutdown_.store(true,std::memory_order_relaxed);
         {
             std::lock_guard lock(mutex_);
@@ -1227,6 +1353,9 @@ public:
         Request request{view,pixelWidth,pixelHeight,settings};
         submittedPixelWidth_=pixelWidth;
         submittedPixelHeight_=pixelHeight;
+        if(pendingResizePixelWidth_==pixelWidth &&
+           pendingResizePixelHeight_==pixelHeight)
+            pendingResizePixelWidth_=pendingResizePixelHeight_=0;
         request.settings.uniform=false;
         request.settings.focusX=pointer_.x()/width();request.settings.focusY=pointer_.y()/height();
 
@@ -1367,22 +1496,20 @@ public:
 #ifdef Q_OS_ANDROID
         if(enabled) {
             tiltSensor_.setDataRate(60);
-            // Steering is defined in screen axes. Only enable it when the backend
-            // can rotate readings with the GUI orientation; raw native-device
-            // axes would swap/change direction in landscape.
             tiltSteeringAvailable_=tiltSensor_.connectToBackend();
             if(tiltSteeringAvailable_) {
-                if(tiltSensor_.isFeatureSupported(QSensor::AxesOrientation)) {
-                    tiltSensor_.setAxesOrientationMode(QSensor::AutomaticOrientation);
-                    tiltSteeringAvailable_=tiltSensor_.start();
-                } else {
-                    tiltSteeringAvailable_=false;
-                }
+                tiltAutomaticAxes_=tiltSensor_.isFeatureSupported(QSensor::AxesOrientation);
+                tiltSensor_.setAxesOrientationMode(
+                    tiltAutomaticAxes_?QSensor::AutomaticOrientation:QSensor::FixedOrientation);
+                tiltSteeringAvailable_=tiltSensor_.start();
+                if(tiltSteeringAvailable_) scheduleTiltCalibration(220);
             }
         } else {
+            tiltNavigationTimer_.stop();
             tiltSensor_.stop();
             tiltSteeringAvailable_=false;
             tiltSteeringFlight_=false;
+            tiltNavigationMoving_=false;
         }
 #endif
         update();
@@ -1409,10 +1536,15 @@ public:
         tiltSteeringEnabled_=enabled;
         if(!enabled) {
             tiltSteeringFlight_=false;
+            tiltNavigationMoving_=false;
+            tiltNavigationTimer_.stop();
             tiltSteeringFiltered_=QPointF{};
             tiltSteeringSuspended_=false;
+            submit(false);
+        } else if(tiltSteeringAvailable_) {
+            scheduleTiltCalibration();
         }
-        if(onStatus) onStatus(enabled?"Tilt steering on":"Tilt steering off");
+        if(onStatus) onStatus(enabled?"Tilt navigation on":"Tilt navigation off");
 #else
         (void)enabled;
 #endif
@@ -1664,11 +1796,11 @@ class Window final:public QMainWindow {
 
         mobileMoreMenu_=new QMenu(more);
         auto*coordinates=mobileMoreMenu_->addAction("Coordinates & precision");
-        auto*tilt=mobileMoreMenu_->addAction("Tilt steering");
+        auto*tilt=mobileMoreMenu_->addAction("Tilt navigation");
         tilt->setCheckable(true);
         tilt->setChecked(canvas->tiltSteeringEnabled());
         tilt->setEnabled(canvas->tiltSteeringAvailable());
-        auto*invertTilt=mobileMoreMenu_->addAction("Invert tilt steering");
+        auto*invertTilt=mobileMoreMenu_->addAction("Invert tilt navigation");
         invertTilt->setCheckable(true);
         invertTilt->setChecked(canvas->tiltSteeringInverted());
         invertTilt->setEnabled(canvas->tiltSteeringAvailable());
@@ -1707,10 +1839,11 @@ class Window final:public QMainWindow {
             QMessageBox::information(this,"Explore XaoS",
                 "Motion works like Frax:\n\n"
                 "Swipe with one finger to pan; release with speed to coast.\n"
-                "Move the midpoint of two fingers to steer while pinching; twist to rotate.\n"
-                "Release a moving gesture to keep flying; tap once to stop and refine.\n"
-                "While a pan is flying, tilt the phone a few degrees to steer, stop or reverse it.\n"
-                "Tilt is relative to the phone angle at release and does not change zoom speed.\n"
+                "Move the midpoint of two fingers to steer; pinch deliberately to zoom.\n"
+                "Rotation unlocks only for a deliberate twist with the midpoint nearly still.\n"
+                "Rotation stops at release; pan/zoom motion may keep flying until a tap.\n"
+                "Tilt the phone at any time to pan. The current holding angle is calibrated as neutral.\n"
+                "Tilt does not change zoom or rotation and pauses while your fingers are on screen.\n"
                 "Double-tap one finger: exact 3× zoom in and center that point.\n"
                 "Tap with two fingers: exact 3× zoom out and center the midpoint.\n\n"
                 "Explore lets XaoS choose the next interesting boundary automatically.");
@@ -1899,8 +2032,10 @@ int main(int argc,char**argv) {
         struct SmokeState {
             int zoomTicks=0,publishedAtStart=0,finishChecks=0;
             int paletteChecks=0,palettePublishedAtStart=0;
-            uint64_t paletteSubmittedAtStart=0;
+            uint64_t paletteSubmittedAtStart=0,resizeSubmittedAtStart=0;
+            std::optional<View> resizeViewAtStart;
             bool paletteProbeStarted=false;
+            bool resizeProbeStarted=false,resizeProbeDone=false;
         };
         auto state=std::make_shared<SmokeState>();
         auto*continuous=new QTimer(&window);
@@ -1970,13 +2105,35 @@ int main(int argc,char**argv) {
         auto*paletteProbe=new QTimer(&window);
         paletteProbe->setInterval(50);
         QObject::connect(paletteProbe,&QTimer::timeout,&window,
-            [&window,&app,state,paletteProbe,beginMotion] {
+            [&window,&app,state,paletteProbe,beginMotion,mobile] {
                 if(!state->paletteProbeStarted) {
                     // Wait for a completed stationary frame so palette cycling
                     // cannot accidentally trigger compute through the no-frame path.
                     if(!window.canvas->completedFrames) {
                         if(++state->paletteChecks>=120) {
                             paletteProbe->stop();app.exit(5);
+                        }
+                        return;
+                    }
+                    if(mobile && !state->resizeProbeDone) {
+                        if(!state->resizeProbeStarted) {
+                            state->resizeProbeStarted=true;
+                            state->resizeSubmittedAtStart=window.canvas->submittedFrames();
+                            state->resizeViewAtStart=window.canvas->view;
+                            // Android orientation animations often deliver several
+                            // intermediate sizes. Mobile resize handling must turn
+                            // this burst into one settled render request.
+                            window.resize(402,748);
+                            window.resize(382,768);
+                            window.resize(390,760);
+                            QTimer::singleShot(360,&window,[&window,&app,state] {
+                                const uint64_t submitted=
+                                    window.canvas->submittedFrames()-state->resizeSubmittedAtStart;
+                                const bool sameView=state->resizeViewAtStart &&
+                                    window.canvas->view==*state->resizeViewAtStart;
+                                if(submitted!=1 || !sameView) {app.exit(7);return;}
+                                state->resizeProbeDone=true;
+                            });
                         }
                         return;
                     }
