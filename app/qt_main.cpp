@@ -261,6 +261,7 @@ class Canvas final:public QWidget {
             }
         } else if(tiltNavigationMoving_) {
             tiltNavigationMoving_=false;
+            idle_.stop();
             submit(false);
         }
     }
@@ -1346,6 +1347,9 @@ public:
         Request request{view,pixelWidth,pixelHeight,settings};
         submittedPixelWidth_=pixelWidth;
         submittedPixelHeight_=pixelHeight;
+        if(pendingResizePixelWidth_==pixelWidth &&
+           pendingResizePixelHeight_==pixelHeight)
+            pendingResizePixelWidth_=pendingResizePixelHeight_=0;
         request.settings.uniform=false;
         request.settings.focusX=pointer_.x()/width();request.settings.focusY=pointer_.y()/height();
 
@@ -2023,6 +2027,7 @@ int main(int argc,char**argv) {
             int zoomTicks=0,publishedAtStart=0,finishChecks=0;
             int paletteChecks=0,palettePublishedAtStart=0;
             uint64_t paletteSubmittedAtStart=0,resizeSubmittedAtStart=0;
+            std::optional<View> resizeViewAtStart;
             bool paletteProbeStarted=false;
             bool resizeProbeStarted=false,resizeProbeDone=false;
         };
@@ -2108,6 +2113,7 @@ int main(int argc,char**argv) {
                         if(!state->resizeProbeStarted) {
                             state->resizeProbeStarted=true;
                             state->resizeSubmittedAtStart=window.canvas->submittedFrames();
+                            state->resizeViewAtStart=window.canvas->view;
                             // Android orientation animations often deliver several
                             // intermediate sizes. Mobile resize handling must turn
                             // this burst into one settled render request.
@@ -2117,7 +2123,9 @@ int main(int argc,char**argv) {
                             QTimer::singleShot(360,&window,[&window,&app,state] {
                                 const uint64_t submitted=
                                     window.canvas->submittedFrames()-state->resizeSubmittedAtStart;
-                                if(submitted!=1) {app.exit(7);return;}
+                                const bool sameView=state->resizeViewAtStart &&
+                                    window.canvas->view==*state->resizeViewAtStart;
+                                if(submitted!=1 || !sameView) {app.exit(7);return;}
                                 state->resizeProbeDone=true;
                             });
                         }
