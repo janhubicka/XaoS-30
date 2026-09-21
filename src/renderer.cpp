@@ -1863,6 +1863,17 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
     if(paletteShiftOverride!=std::numeric_limits<int>::min())
         out->request.settings.paletteShift=paletteShiftOverride;
     const Settings&displaySettings=out->request.settings;
+    const bool previousCompatible=
+        previous && displayCompatible(previous->request,frame.request) &&
+        previous->request.settings.inColoring==displaySettings.inColoring &&
+        previous->request.settings.outColoring==displaySettings.outColoring &&
+        previous->request.width>0 && previous->request.height>0 &&
+        previous->pixels.size()==static_cast<size_t>(previous->request.width)*
+                                 static_cast<size_t>(previous->request.height) &&
+        previous->paletteCodes.size()==previous->pixels.size();
+    const bool basisChanged=
+        previousCompatible &&
+        previous->request.view.rotation!=frame.request.view.rotation;
     const size_t width=static_cast<size_t>(frame.request.width);
     const size_t height=static_cast<size_t>(frame.request.height);
     const size_t displayPixels=multiplyChecked(width,height);
@@ -1887,19 +1898,38 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
     const ColorContext colors=makeColorContext(frame);
 
     std::vector<int> nearestX(width,-1),nearestY(height,-1);
-    if(frame.displayXSource.size()==width) nearestX=frame.displayXSource;
-    if(frame.displayYSource.size()==height) nearestY=frame.displayYSource;
+    if(frame.displayXSource.size()==width) {
+        if(basisChanged) {
+            for(size_t x=0;x<width;++x)
+                if(frame.displayXSource[x]==static_cast<int>(x))
+                    nearestX[x]=static_cast<int>(x);
+        } else nearestX=frame.displayXSource;
+    }
+    if(frame.displayYSource.size()==height) {
+        if(basisChanged) {
+            for(size_t y=0;y<height;++y)
+                if(frame.displayYSource[y]==static_cast<int>(y))
+                    nearestY[y]=static_cast<int>(y);
+        } else nearestY=frame.displayYSource;
+    }
 
     std::vector<LinearPoint> linearX,linearY;
     std::vector<CubicPoint> cubicX,cubicY;
-    if(frame.request.settings.reconstruction!=Reconstruction::Nearest) {
+    // When the screen basis has just changed, interpolation/collapsed rows from
+    // the sparse new grid create long strips and overwrite a much better affine
+    // transform of the already computed image. Keep that old image until exact
+    // intersections in the new basis replace it. Once a same-angle frame follows,
+    // ordinary reconstruction is enabled again.
+    if(!basisChanged &&
+       frame.request.settings.reconstruction!=Reconstruction::Nearest) {
         linearX.resize(width); linearY.resize(height);
         for(int x=0;x<frame.request.width;++x)
             linearX[static_cast<size_t>(x)]=linearPoint(xaxis,xaxis.target.empty()?0.0:xaxis.target[static_cast<size_t>(x)]);
         for(int y=0;y<frame.request.height;++y)
             linearY[static_cast<size_t>(y)]=linearPoint(yaxis,yaxis.target.empty()?0.0:yaxis.target[static_cast<size_t>(y)]);
     }
-    if(frame.request.settings.reconstruction==Reconstruction::Bicubic) {
+    if(!basisChanged &&
+       frame.request.settings.reconstruction==Reconstruction::Bicubic) {
         cubicX.resize(width); cubicY.resize(height);
         for(int x=0;x<frame.request.width;++x)
             cubicX[static_cast<size_t>(x)]=cubicPoint(xaxis,xaxis.target.empty()?0.0:xaxis.target[static_cast<size_t>(x)]);
@@ -1908,13 +1938,7 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
     }
 
     DisplayFallback fallback;
-    if(previous && displayCompatible(previous->request,frame.request) &&
-       previous->request.settings.inColoring==displaySettings.inColoring &&
-       previous->request.settings.outColoring==displaySettings.outColoring &&
-       previous->request.width>0 && previous->request.height>0 &&
-       previous->pixels.size()==static_cast<size_t>(previous->request.width)*
-                                static_cast<size_t>(previous->request.height) &&
-       previous->paletteCodes.size()==previous->pixels.size())
+    if(previousCompatible)
         fallback=makeDisplayFallback(frame.request,*previous);
 
     std::atomic<int> nextRow{0};
@@ -1929,7 +1953,11 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
                 const int nx=nearestX[static_cast<size_t>(x)];
                 const int ny=nearestY[static_cast<size_t>(y)];
                 uint32_t paletteCode=BlackPaletteCode;
-                bool paletteCodeKnown=
+                const bool currentSampleUsable=
+                    nx>=0 && ny>=0 &&
+                    (!basisChanged ||
+                     frame.qualityAt(nx,ny)==DisplayQuality::Exact);
+                bool paletteCodeKnown=currentSampleUsable &&
                     gridPaletteCode(frame,colors,displaySettings,nx,ny,paletteCode);
                 if(!paletteCodeKnown && !linearX.empty() && !linearY.empty()) {
                     const auto&lx=linearX[static_cast<size_t>(x)];
@@ -1943,13 +1971,15 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
                 }
                 switch(displaySettings.reconstruction) {
                 case Reconstruction::Nearest:
-                    ok=gridColor(frame,colors,displaySettings,nx,ny,color);
+                    if(currentSampleUsable)
+                        ok=gridColor(frame,colors,displaySettings,nx,ny,color);
                     break;
                 case Reconstruction::Bilinear:
                     if(!linearX.empty() && !linearY.empty())
                         ok=bilinearColor(frame,colors,displaySettings,linearX[static_cast<size_t>(x)],
                                         linearY[static_cast<size_t>(y)],color);
-                    if(!ok) ok=gridColor(frame,colors,displaySettings,nx,ny,color);
+                    if(!ok && currentSampleUsable)
+                        ok=gridColor(frame,colors,displaySettings,nx,ny,color);
                     break;
                 case Reconstruction::Bicubic:
                     if(!cubicX.empty() && !cubicY.empty())
@@ -1958,7 +1988,8 @@ std::shared_ptr<const DisplayFrame> presentFrame(const FrameBase&frame,Executor&
                     if(!ok && !linearX.empty() && !linearY.empty())
                         ok=bilinearColor(frame,colors,displaySettings,linearX[static_cast<size_t>(x)],
                                         linearY[static_cast<size_t>(y)],color);
-                    if(!ok) ok=gridColor(frame,colors,displaySettings,nx,ny,color);
+                    if(!ok && currentSampleUsable)
+                        ok=gridColor(frame,colors,displaySettings,nx,ny,color);
                     break;
                 }
                 bool usedFallback=false;

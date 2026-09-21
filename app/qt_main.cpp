@@ -132,11 +132,12 @@ class Canvas final:public QWidget {
     TouchMode touchMode_=TouchMode::None;
     QPointF touchLastCenter_,touchStart_,lastTapPosition_,touchLastTwoCenter_;
     QPointF touchPanVelocity_,touchMomentumAnchor_;
-    double touchLastDistance_=0,touchLastAngle_=0,touchRotationCandidate_=0;
+    double touchLastDistance_=0,touchLastAngle_=0,touchRotationCandidate_=0,touchZoomCandidate_=0;
     double touchZoomVelocity_=0,touchRotationVelocity_=0,touchGestureMaxTravel_=0;
     int touchGestureMaxPoints_=0,touchPointId0_=-1,touchPointId1_=-1;
     bool touchChanged_=false,touchTapCandidate_=false,touchPanStarted_=false;
-    bool touchAfterPinchSingle_=false,touchStoppedMotion_=false,touchRotationActive_=false;
+    bool touchAfterPinchSingle_=false,touchStoppedMotion_=false;
+    bool touchRotationActive_=false,touchZoomActive_=false;
 #ifdef Q_OS_ANDROID
     QTiltSensor tiltSensor_;
     QPointF tiltSteeringFiltered_;
@@ -388,6 +389,9 @@ class Canvas final:public QWidget {
                 presentationActive_=token;
             }
             try {
+                const bool rotatingFromStable=
+                    previous &&
+                    previous->request.view.rotation!=job.frame->request.view.rotation;
                 auto display=presentFrame(*job.frame,executor,*token,previous.get(),job.paletteShift);
                 if(token->cancelled.load(std::memory_order_relaxed)) {
                     std::lock_guard lock(presentationMutex_);
@@ -400,7 +404,13 @@ class Canvas final:public QWidget {
                     if(presentationActive_==token) presentationActive_.reset();
                     continue;
                 }
-                previous=display;
+                // During a basis transition keep the last stable image
+                // as the fallback across *all* partial refinement slices. If we
+                // replaced it with the first sparse rotated frame, the following
+                // same-angle slice would start nearest-filling its few rows again.
+                // Promote the new angle only once its grid is complete.
+                if(!rotatingFromStable || job.frame->stats.complete)
+                    previous=display;
                 const auto stats=job.frame->stats;
                 const auto view=job.frame->request.view;
                 const auto reconstruction=job.frame->request.settings.reconstruction;
@@ -667,7 +677,9 @@ protected:
                 touchPanVelocity_=QPointF{};
                 touchZoomVelocity_=0;
                 touchRotationVelocity_=0;
+                touchZoomCandidate_=0;
                 touchRotationCandidate_=0;
+                touchZoomActive_=false;
                 touchRotationActive_=false;
                 touchPointId0_=touchPointId1_=-1;
                 if(!active.empty()) {
@@ -695,7 +707,7 @@ protected:
                 const bool quick=touchGestureClock_.isValid() && touchGestureClock_.elapsed()<380;
                 const bool twoFingerTap=!cancelled && !touchStoppedMotion_ &&
                     touchGestureMaxPoints_>=2 && quick && touchGestureMaxTravel_<14.0 &&
-                    !touchRotationActive_ && !touchChanged_;
+                    !touchZoomActive_ && !touchRotationActive_ && !touchChanged_;
                 bool handledTap=false;
 
                 try {
@@ -754,7 +766,9 @@ protected:
                 touchStoppedMotion_=false;
                 touchGestureMaxPoints_=0;
                 touchGestureMaxTravel_=0;
+                touchZoomCandidate_=0;
                 touchRotationCandidate_=0;
+                touchZoomActive_=false;
                 touchRotationActive_=false;
                 touchPointId0_=touchPointId1_=-1;
                 dragging_=false;
@@ -783,7 +797,9 @@ protected:
                         touchLastCenter_=center;
                         touchLastDistance_=distance;
                         touchLastAngle_=angle;
+                        touchZoomCandidate_=0;
                         touchRotationCandidate_=0;
+                        touchZoomActive_=false;
                         touchRotationActive_=false;
                         touchPanVelocity_=QPointF{};
                         touchZoomVelocity_=0;
@@ -791,21 +807,31 @@ protected:
                         touchSampleClock_.restart();
                     } else {
                         bool changed=false;
-                        const QPointF delta=center-touchLastCenter_;
-                        double zoomLog=0,rotation=0;
-                        if(std::hypot(delta.x(),delta.y())>.01) {
-                            view.pan(delta.x(),delta.y(),std::max(1,width()));
-                            changed=true;
-                        }
+                        const QPointF previousCenter=touchLastCenter_;
+                        const QPointF delta=center-previousCenter;
+                        double zoomLog=0,rotation=0,gestureScale=1.0;
                         if(distance>4.0 && touchLastDistance_>4.0) {
                             const double scale=distance/touchLastDistance_;
-                            if(std::isfinite(scale) && scale>0 && std::abs(scale-1.0)>1e-4) {
-                                zoomLog=std::log(scale);
-                                view.zoom(center.x()/std::max(1,width()),
-                                          center.y()/std::max(1,height()),1.0/scale,
-                                          std::max(1,width()),std::max(1,height()));
-                                changed=true;
+                            if(std::isfinite(scale) && scale>0) {
+                                const double rawZoom=std::log(scale);
+                                const double unlockZoom=std::log(1.012);
+                                if(!touchZoomActive_) {
+                                    touchZoomCandidate_+=rawZoom;
+                                    if(std::abs(touchZoomCandidate_)>=unlockZoom) {
+                                        // Consume the dead zone rather than making
+                                        // the image jump when pinch mode unlocks.
+                                        touchZoomActive_=true;
+                                        touchZoomCandidate_=0;
+                                        touchZoomVelocity_=0;
+                                    }
+                                } else if(std::abs(rawZoom)>1e-5) {
+                                    gestureScale=scale;
+                                    zoomLog=rawZoom;
+                                    changed=true;
+                                }
                             }
+                        } else {
+                            touchZoomCandidate_=0;
                         }
                         const double rawRotation=
                             std::remainder(angle-touchLastAngle_,2.0*std::numbers::pi);
@@ -814,7 +840,7 @@ protected:
                         // XaoS's reusable row/column coordinate system. Keep rotation
                         // locked until the user has made a deliberate twist.
                         const double minSeparation=std::clamp(width()*.09,32.0,56.0);
-                        constexpr double unlockRotation=6.0*std::numbers::pi/180.0;
+                        constexpr double unlockRotation=8.0*std::numbers::pi/180.0;
                         constexpr double maxSampleRotation=35.0*std::numbers::pi/180.0;
                         const bool stableAngle=distance>=minSeparation &&
                             touchLastDistance_>=minSeparation &&
@@ -841,13 +867,20 @@ protected:
                             rotation=0;
                             touchRotationVelocity_=0;
                         }
-                        if(std::abs(rotation)>1e-5) {
-                            view.rotate(center.x()/std::max(1,width()),
-                                        center.y()/std::max(1,height()),rotation,
-                                        std::max(1,width()),std::max(1,height()));
-                            changed=true;
+                        if(std::abs(rotation)>1e-5) changed=true;
+                        if(std::hypot(delta.x(),delta.y())>.01) changed=true;
+                        if(changed) {
+                            const int w=std::max(1,width()),h=std::max(1,height());
+                            // Apply the complete two-finger similarity in one
+                            // operation. This maps the old midpoint to the new
+                            // midpoint while changing scale/angle, so dragging
+                            // both fingers directly steers the zoom instead of
+                            // pan/zoom/rotation partially cancelling each other.
+                            view.gesture(previousCenter.x()/w,previousCenter.y()/h,
+                                         center.x()/w,center.y()/h,
+                                         gestureScale,rotation,w,h);
+                            sampleTouchVelocity(delta,zoomLog,rotation);
                         }
-                        if(changed) sampleTouchVelocity(delta,zoomLog,rotation);
                         touchLastCenter_=center;
                         touchLastDistance_=distance;
                         touchLastAngle_=angle;
@@ -866,7 +899,7 @@ protected:
                             touchAfterPinchSingle_=true;
                             touchStart_=touchLastCenter_=position;
                         } else if(std::hypot(position.x()-touchStart_.x(),
-                                             position.y()-touchStart_.y())>=8.0) {
+                                             position.y()-touchStart_.y())>=5.0) {
                             touchMode_=TouchMode::Pan;
                             touchPanStarted_=true;
                             touchPanVelocity_=QPointF{};
@@ -885,7 +918,7 @@ protected:
                         // The dead zone gives a second finger time to land without
                         // moving the image underneath an intended pinch.
                         if(std::hypot(position.x()-touchStart_.x(),
-                                      position.y()-touchStart_.y())>=8.0) {
+                                      position.y()-touchStart_.y())>=5.0) {
                             touchPanStarted_=true;
                             touchTapCandidate_=false;
                             touchLastCenter_=position;
@@ -1674,7 +1707,7 @@ class Window final:public QMainWindow {
             QMessageBox::information(this,"Explore XaoS",
                 "Motion works like Frax:\n\n"
                 "Swipe with one finger to pan; release with speed to coast.\n"
-                "Move, pinch and twist two fingers together — pan, zoom and rotation combine.\n"
+                "Move the midpoint of two fingers to steer while pinching; twist to rotate.\n"
                 "Release a moving gesture to keep flying; tap once to stop and refine.\n"
                 "While a pan is flying, tilt the phone a few degrees to steer, stop or reverse it.\n"
                 "Tilt is relative to the phone angle at release and does not change zoom speed.\n"

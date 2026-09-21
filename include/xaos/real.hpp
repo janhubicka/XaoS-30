@@ -250,6 +250,30 @@ struct View {
         re=center.first;im=center.second;
     }
 
+    /// Applies one two-finger similarity transform in screen space.
+    ///
+    /// The mathematical point under the previous midpoint is kept under the new
+    /// midpoint while the finger separation changes by scale and the pair turns
+    /// by radians. Doing pan/zoom/rotation independently around the newest center
+    /// makes the midpoint drift during combined gestures; solving the transform
+    /// in one step gives predictable Maps-style steering.
+    void gesture(double oldU,double oldV,double newU,double newV,
+                 double scaleFactor,double radians,int width,int height) {
+        if(width<1||height<1 || !std::isfinite(oldU)||!std::isfinite(oldV) ||
+           !std::isfinite(newU)||!std::isfinite(newV) ||
+           !std::isfinite(scaleFactor)||scaleFactor<=0 || !std::isfinite(radians))
+            throw std::invalid_argument("invalid gesture transform");
+        Big next=scale(span,1.0/scaleFactor);
+        View future{re,im,next,normalizeRotation(rotation+radians)};
+        ensure(std::max<mp_bitcnt_t>(128,future.requiredBits(width,32)));
+        const auto anchor=screenToComplex(oldU,oldV,width,height);
+        span=scale(span,1.0/scaleFactor);
+        rotation=normalizeRotation(rotation+radians);
+        const auto moved=screenToComplex(newU,newV,width,height);
+        re=add(re,sub(anchor.first,moved.first));
+        im=add(im,sub(anchor.second,moved.second));
+    }
+
     /// Moves the arbitrary-precision viewport by a screen-space offset.
     void pan(double dx,double dy,int width) {
         if(width<1||!std::isfinite(dx)||!std::isfinite(dy)) throw std::invalid_argument("invalid pan");
