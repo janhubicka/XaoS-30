@@ -305,6 +305,12 @@ class Canvas final:public QWidget {
 
     /// Starts kinetic continuation of the combined pan/zoom/rotation gesture.
     void startTouchMomentum(const QPointF&anchor) {
+#ifdef Q_OS_ANDROID
+        // Continuous spin is uniquely expensive: every angle step changes the
+        // separable sampling basis and invalidates row/column state. Rotation
+        // remains direct under the fingers but does not coast after release.
+        touchRotationVelocity_=0;
+#endif
         if(!hasTouchMomentum()) {stopTouchMomentum(false);idle_.start();return;}
         touchMomentumAnchor_=anchor;
 #ifdef Q_OS_ANDROID
@@ -945,7 +951,7 @@ protected:
                         // XaoS's reusable row/column coordinate system. Keep rotation
                         // locked until the user has made a deliberate twist.
                         const double minSeparation=std::clamp(width()*.09,32.0,56.0);
-                        constexpr double unlockRotation=8.0*std::numbers::pi/180.0;
+                        constexpr double unlockRotation=12.0*std::numbers::pi/180.0;
                         constexpr double maxSampleRotation=35.0*std::numbers::pi/180.0;
                         const bool stableAngle=distance>=minSeparation &&
                             touchLastDistance_>=minSeparation &&
@@ -1835,7 +1841,7 @@ class Window final:public QMainWindow {
                 "Swipe with one finger to pan; release with speed to coast.\n"
                 "Move the midpoint of two fingers to steer; pinch deliberately to zoom.\n"
                 "Rotation unlocks only for a deliberate twist with the midpoint nearly still.\n"
-                "Release a moving gesture to keep flying; tap once to stop and refine.\n"
+                "Rotation stops at release; pan/zoom motion may keep flying until a tap.\n"
                 "Tilt the phone at any time to pan. The current holding angle is calibrated as neutral.\n"
                 "Tilt does not change zoom or rotation and pauses while your fingers are on screen.\n"
                 "Double-tap one finger: exact 3× zoom in and center that point.\n"
